@@ -1,0 +1,13 @@
+# Local exploration: includes specs, decision issues, and execution tickets.
+/.scratch/
+
+# Personal skills and local tool integration.
+/.agents/
+/.pi/
+/skills-lock.json
+
+# Local credentials and machine files.
+.env
+.env.*
+!.env.example
+.DS_Store
