@@ -13,11 +13,13 @@ Review the intended files and ignore rules before staging. Inspect the staged di
 ## Feature work
 
 1. Define one cohesive delivery from a local ticket, several closely related tickets, or a small direct request. One branch and PR should be independently reviewable, mergeable, and reversible; ticket count does not determine branch count.
-2. Start a short-lived `<type>/<delivery-name>` branch (see naming below) from up-to-date `main`. Create branches when work starts. For dependent deliveries, merge the prerequisite first, then branch from updated `main`; unrelated work can proceed independently.
+2. Start a `<type>/<delivery-name>` branch (see naming below) from up-to-date `main`. Create branches when work starts. For dependent deliveries, merge the prerequisite first, then branch from updated `main`; unrelated work can proceed independently.
 3. Implement the selected scope and update relevant tests and documentation. Keep local execution status according to [the task tracker](issue-tracker.md).
 4. Run checks appropriate to the change, select files to stage, and inspect the staged diff before committing.
 5. Push the feature branch and open a PR describing the problem, resulting behavior, scope, and validation. Include necessary context directly; reviewers must not need local planning files. A GitHub Issue is optional.
-6. Merge after review and required checks pass. Keep `main` usable and verifiable. Update local ticket outcomes and PR links, sync local `main`, and remove merged branches when no longer needed.
+6. Merge after review and required checks pass. Keep `main` usable and verifiable. Update local ticket outcomes and PR links, sync local `main`, and retain the remote feature branch at its final head. Local feature branches may be removed after delivery.
+
+Keep GitHub automatic head-branch deletion disabled and merge PRs without `--delete-branch`. Delete remote branches only when explicitly requested. Start later deliveries on new branches from updated `main` rather than reusing retained branches.
 
 Split a large feature into independently useful deliveries. Group small tickets when they contribute to the same result. Code, tests, and necessary documentation for one behavior normally belong together. Routine feature development reaches `main` through PRs.
 
