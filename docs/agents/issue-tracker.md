@@ -1,50 +1,37 @@
-# Issue tracker: GitHub
+# Task tracker: local files
 
-GitHub Issues are the shared source for specifications, decision questions, and execution tickets. Pull requests record the implementation and validation and link to the relevant issues.
+Specifications, decision questions, execution tickets, and their current status live in `.scratch/<feature-slug>/`. GitHub Issues are optional for external reports or explicitly requested collaboration; routine planning uses local files. PRs record delivered changes and validation.
 
-## GitHub operations
+## Local layout
 
-Use the `gh` CLI from this repository; resolve the target from `git remote -v` (currently `hliei/omh`).
+- `spec.md`: authoritative requirements, scope, and acceptance criteria.
+- `tickets/<NN>-<slug>.md`: execution ticket with a stable ID, objective, acceptance criteria, direct blockers, status, and branch/PR links when assigned.
+- `ticket-plan.md`: links to tickets, dependency order, and proposed delivery groups. Ticket files own their status.
+- `issue/<NN>-<slug>.md`: decision question with type, state (`open`, `claimed`, `resolved`), and eventual answer.
+- `map.md`: feature entry point and links to the current planning material.
+- `archive/`: historical drafts and imported records; consult for provenance, not current scope or status.
 
-- Read a ticket with `gh issue view <number> --comments` and inspect its labels and dependencies.
-- List work with `gh issue list --state open`, filtering by the triage labels when needed.
-- Create an issue with `gh issue create --title "..." --body-file <draft-path>`; use a body file for multiline descriptions and comments.
-- Update labels with `gh issue edit <number> --add-label <label>` or `--remove-label <label>`.
-- Close completed work with `gh issue close <number>` after recording its outcome.
+`.scratch/` is ignored by Git. Copy or back up local planning separately when changing machines or checkouts. A fresh clone contains the project conventions, not the active backlog.
 
-## Pull requests as a triage surface
+## Skill integration
 
-**PRs as a request surface: no.**
+When a skill says “publish to the issue tracker”, save or update the authoritative local file and return its path. Map issue references and blocking edges to local ticket IDs and relative Markdown links. Keep requirements and acceptance criteria readable without the original conversation. Split tickets remain ready for execution; incoming requests use [triage roles](triage-labels.md).
 
-## Local preparation
+When fetching work, read the ticket, its parent specification, direct blockers, and relevant project documentation. Claim decision questions before resolving them and record answers locally. Create GitHub Issues only when explicitly requested; an existing external issue may remain the discussion source for that report.
 
-Use `.scratch/<feature-slug>/` for drafts, exploration, and unpublished work:
+## Execution and status
 
-- `spec.md`: draft specification.
-- `issue/<NN>-<slug>.md`: one decision question per file.
-- `tickets/<NN>-<slug>.md`: one execution ticket per file, ordered by dependencies.
-- `map.md`: local wayfinding map and links to decision questions.
+Use ticket status `todo`, `in-progress`, `in-review`, `done`, or `cancelled`. Readiness and blockers are separate from execution status. Record branch and PR links in the ticket once available.
 
-The entire `.scratch/` directory is ignored by Git, including `issue/` and `tickets/`. It is available to local sessions but is not backed up by a Git push. Shared work must include its requirements and acceptance criteria on GitHub rather than relying on a local path.
+1. Select a ticket or cohesive group whose external blockers are `done`. Work internal dependencies in order when several tickets share a branch.
+2. Follow [the Git workflow](git-workflow.md) to define a reviewable delivery and create its branch. Mark selected tickets `in-progress`.
+3. Verify acceptance criteria and record results. Mark tickets `in-review` when their PR is ready.
+4. Mark tickets `done` after their acceptance criteria are met and the changes merge. Complete a parent specification only when its full scope is delivered.
 
-## Publishing and fetching
+A closed historical GitHub issue does not imply its migrated local ticket is done. Migration closes records administratively; implementation status stays local.
 
-When a skill says "publish to the issue tracker":
+## Public delivery and durable knowledge
 
-- Publish a specification as an issue with the problem, scope, and acceptance criteria.
-- Publish each execution ticket as a separate issue linked to its parent specification. Publish blockers first; use native dependency relationships when available, otherwise a `Blocked by` section with issue links.
-- Publish shared decision questions as separate issues, linked from a parent planning issue. Record the question type and state (`open`, `claimed`, or `resolved`) in the body. Claim before working; resolve with the answer and update the parent map.
-- Apply [triage labels](triage-labels.md) to execution issues. Approved tickets produced by the ticket-splitting flow are `ready-for-agent`.
-- Record the resulting issue URLs in any local drafts that remain in use. Once published, update shared scope and status on GitHub.
+PR descriptions explain the problem, delivered scope, and validation without depending on `.scratch/` paths. Local ticket IDs may supplement that explanation. Issue links and closing keywords are needed only for actual GitHub-tracked work.
 
-When fetching a ticket, read the GitHub issue body, comments, and dependencies. A local file path explicitly supplied by the user can be used for unpublished work.
-
-Choose work whose blocking issues are complete. Link the implementation PR to its issue; use a closing reference only when the PR fulfills that issue's acceptance criteria. Keep parent planning issues open until their full scope is complete.
-
-## Before a GitHub repository is connected
-
-Prepare drafts in `.scratch/` and report them as unpublished. Resolve the target repository from its configured remote or a user-provided repository URL before publishing. A local draft does not count as a published issue.
-
-## Durable decisions
-
-When discussion settles an important architecture trade-off, capture its context, alternatives, decision, and consequences in `docs/adr/`, with links to related issues or PRs when available. Ordinary implementation tasks do not require ADRs. Record agreed domain terms in `CONTEXT.md` according to [the domain documentation](domain.md).
+Keep agreed domain terms in `CONTEXT.md`. Record important architectural trade-offs in `docs/adr/`, including context, alternatives, decision, and consequences. Maintain lasting user and developer guidance with the code. Temporary plans remain local.

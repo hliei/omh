@@ -8,6 +8,6 @@ Keep this guide focused on the project's module responsibilities, stable boundar
 
 ## Tasks and changes
 
-GitHub Issues hold shared specifications and tasks; pull requests connect implementation, validation, and related issues. Read [the issue tracker conventions](docs/agents/issue-tracker.md) when drafting, publishing, fetching, or updating a spec or ticket. Read [triage labels](docs/agents/triage-labels.md) when classifying issues.
+Local specifications and tickets in `.scratch/` guide execution; pull requests record delivered changes and validation. Read [the task tracker conventions](docs/agents/issue-tracker.md) when creating, fetching, updating, or executing a spec or ticket, including when a skill asks to publish to an issue tracker. Read [triage roles](docs/agents/triage-labels.md) when classifying incoming requests.
 
 Read [the Git workflow](docs/agents/git-workflow.md) before the first commit, preparing a pull request, or publishing a version. `.scratch/` holds local working material and is excluded from Git.
