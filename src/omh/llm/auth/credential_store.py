@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 
 from omh.llm.auth.types import (
@@ -13,7 +14,7 @@ from omh.llm.utils.abort import operation_signal, race_with_abort_signal
 class InMemoryCredentialStore:
     def __init__(self) -> None:
         self._credentials: dict[str, Credential] = {}
-        self._chains: dict[str, Awaitable[object]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _enqueue[T](
         self,
@@ -22,19 +23,14 @@ class InMemoryCredentialStore:
         options: AuthOperationOptions | None,
     ) -> Awaitable[T]:
         signal = operation_signal(options.signal if options else None)
+        lock = self._locks.setdefault(provider_id, asyncio.Lock())
 
         async def queued() -> T:
-            previous = self._chains.get(provider_id)
-            if previous is not None:
-                try:
-                    await previous
-                except Exception:
-                    pass
-            signal.throw_if_aborted()
-            return await task()
+            async with lock:
+                signal.throw_if_aborted()
+                return await task()
 
-        operation = queued()
-        self._chains[provider_id] = operation
+        operation = asyncio.get_running_loop().create_task(queued())
         return race_with_abort_signal(operation, signal)
 
     async def read(self, provider_id: str, options: AuthOperationOptions | None = None) -> Credential | None:

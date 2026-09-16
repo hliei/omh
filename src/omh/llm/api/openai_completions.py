@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import platform
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Any
@@ -236,7 +239,8 @@ def convert_messages(
         params.append({"role": role, "content": context.system_prompt})
 
     last_role: str | None = None
-    for message in transformed:
+    tool_images: list[dict[str, object]] = []
+    for message_index, message in enumerate(transformed):
         if compat.requires_assistant_after_tool_result and last_role == "toolResult" and message.role == "user":
             params.append({"role": "assistant", "content": "I have processed the tool results."})
         if message.role == "user":
@@ -315,6 +319,31 @@ def convert_messages(
             if compat.requires_tool_result_name and message.tool_name:
                 tool_result["name"] = message.tool_name
             params.append(tool_result)
+            if "image" in model.input:
+                tool_images.extend(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{block.mime_type};base64,{block.data}"},
+                    }
+                    for block in message.content
+                    if block.type == "image"
+                )
+            next_message = transformed[message_index + 1] if message_index + 1 < len(transformed) else None
+            if tool_images and (next_message is None or next_message.role != "toolResult"):
+                if compat.requires_assistant_after_tool_result:
+                    params.append({"role": "assistant", "content": "I have processed the tool results."})
+                params.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Attached image(s) from tool result:"},
+                            *tool_images,
+                        ],
+                    }
+                )
+                tool_images = []
+                last_role = "user"
+                continue
         last_role = message.role
     return params
 
@@ -379,17 +408,25 @@ def _request_headers(model: Model, api_key: str, options: OpenAICompletionsOptio
     return headers
 
 
-async def _default_fetch(request: FetchRequest) -> FetchResponse:
+@asynccontextmanager
+async def _fetch_response(request: FetchRequest, fetch: FetchFunction | None) -> AsyncIterator[FetchResponse]:
+    if fetch is not None:
+        yield await fetch(request)
+        return
+
     import httpx
 
     timeout = None if request.timeout_ms is None else request.timeout_ms / 1000
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(request.url, headers=request.headers, json=request.json_body)
-        return FetchResponse(
-            status=response.status_code,
-            headers=dict(response.headers),
-            text=response.text,
-        )
+        async with client.stream(request.method, request.url, headers=request.headers, json=request.json_body) as response:
+            if response.status_code >= 400:
+                await response.aread()
+            yield FetchResponse(
+                status=response.status_code,
+                headers=dict(response.headers),
+                text=response.text if response.status_code >= 400 else "",
+                lines=response.aiter_lines(),
+            )
 
 
 def _map_stop_reason(reason: str | None) -> tuple[StopReason, str | None]:
@@ -453,7 +490,17 @@ def stream(
             stop_reason="pending",
             timestamp=_now_ms(),
         )
+        task = asyncio.current_task()
+        assert task is not None
+        signal = options.signal if options else None
+
+        def cancel_request() -> None:
+            task.cancel()
+
         try:
+            if signal is not None:
+                signal.throw_if_aborted()
+                signal.add_callback(cancel_request)
             api_key = _client_api_key(model.provider, options.api_key if options else None, options.headers if options else None)
             compat = get_compat(model)
             params = build_params(model, context, options, compat)
@@ -463,7 +510,6 @@ def stream(
                     next_params = await next_params
                 if next_params is not None:
                     params = next_params
-            fetch: FetchFunction = options.fetch if options and options.fetch else _default_fetch
             request = FetchRequest(
                 method="POST",
                 url=f"{model.base_url.rstrip('/')}/chat/completions",
@@ -471,150 +517,150 @@ def stream(
                 json_body=params,
                 timeout_ms=options.timeout_ms if options else None,
             )
-            response = await fetch(request)
-            if response.status >= 400:
-                raise RuntimeError(f"HTTP {response.status}: {response.text}")
-            events.push(StartEvent(partial=output))
+            async with _fetch_response(request, options.fetch if options else None) as response:
+                if response.status >= 400:
+                    raise RuntimeError(f"HTTP {response.status}: {response.text}")
+                events.push(StartEvent(partial=output))
 
-            text_block: TextContent | None = None
-            thinking_block: ThinkingContent | None = None
-            has_finish_reason = False
-            tool_blocks_by_index: dict[int, ToolCall] = {}
-            tool_blocks_by_id: dict[str, ToolCall] = {}
-            partial_args: dict[int, str] = {}
+                text_block: TextContent | None = None
+                thinking_block: ThinkingContent | None = None
+                has_finish_reason = False
+                tool_blocks_by_index: dict[int, ToolCall] = {}
+                tool_blocks_by_id: dict[str, ToolCall] = {}
+                partial_args: dict[int, str] = {}
 
-            def content_index(block: TextContent | ThinkingContent | ToolCall) -> int:
-                return output.content.index(block)
+                def content_index(block: TextContent | ThinkingContent | ToolCall) -> int:
+                    return output.content.index(block)
 
-            def finish_block(block: TextContent | ThinkingContent | ToolCall) -> None:
-                index = content_index(block)
-                if isinstance(block, TextContent):
-                    events.push(TextEndEvent(content_index=index, content=block.text, partial=output))
-                elif isinstance(block, ThinkingContent):
-                    events.push(ThinkingEndEvent(content_index=index, content=block.thinking, partial=output))
-                else:
-                    raw = partial_args.get(index)
-                    if raw is not None:
-                        block.arguments = parse_streaming_json(raw)
-                    events.push(ToolCallEndEvent(content_index=index, tool_call=block, partial=output))
-
-            def ensure_text() -> TextContent:
-                nonlocal text_block
-                if text_block is None:
-                    text_block = TextContent(text="")
-                    output.content.append(text_block)
-                    events.push(TextStartEvent(content_index=content_index(text_block), partial=output))
-                return text_block
-
-            def ensure_thinking(signature: str) -> ThinkingContent:
-                nonlocal thinking_block
-                if thinking_block is None:
-                    thinking_block = ThinkingContent(thinking="", thinking_signature=signature)
-                    output.content.append(thinking_block)
-                    events.push(ThinkingStartEvent(content_index=content_index(thinking_block), partial=output))
-                return thinking_block
-
-            def ensure_tool(delta: dict[str, Any]) -> ToolCall:
-                stream_index = delta.get("index")
-                function = delta.get("function") or {}
-                name = function.get("name") or ""
-                block = tool_blocks_by_index.get(stream_index) if isinstance(stream_index, int) else None
-                tool_id = delta.get("id")
-                if block is None and isinstance(tool_id, str):
-                    block = tool_blocks_by_id.get(tool_id)
-                if block is None:
-                    block = ToolCall(id=tool_id if isinstance(tool_id, str) else "", name=name, arguments={})
-                    output.content.append(block)
+                def finish_block(block: TextContent | ThinkingContent | ToolCall) -> None:
                     index = content_index(block)
-                    partial_args[index] = ""
-                    if isinstance(stream_index, int):
-                        tool_blocks_by_index[stream_index] = block
-                    if isinstance(tool_id, str) and tool_id:
-                        tool_blocks_by_id[tool_id] = block
-                    events.push(ToolCallStartEvent(content_index=index, partial=output))
-                if isinstance(tool_id, str) and tool_id:
-                    block.id = tool_id
-                    tool_blocks_by_id[tool_id] = block
-                if name:
-                    block.name = name
-                return block
+                    if isinstance(block, TextContent):
+                        events.push(TextEndEvent(content_index=index, content=block.text, partial=output))
+                    elif isinstance(block, ThinkingContent):
+                        events.push(ThinkingEndEvent(content_index=index, content=block.thinking, partial=output))
+                    else:
+                        raw = partial_args.get(index)
+                        if raw is not None:
+                            block.arguments = parse_streaming_json(raw)
+                        events.push(ToolCallEndEvent(content_index=index, tool_call=block, partial=output))
 
-            async for line in response.aiter_lines():
-                if options and options.signal and options.signal.aborted:
-                    raise RuntimeError("Request was aborted")
-                stripped = line.strip()
-                if not stripped or not stripped.startswith("data:"):
-                    continue
-                payload = stripped[5:].strip()
-                if payload == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(chunk, dict):
-                    continue
-                chunk_id = chunk.get("id")
-                if isinstance(chunk_id, str) and chunk_id and not output.response_id:
-                    output.response_id = chunk_id
-                chunk_model = chunk.get("model")
-                if isinstance(chunk_model, str) and chunk_model and chunk_model != model.id and not output.response_model:
-                    output.response_model = chunk_model
-                if isinstance(chunk.get("usage"), dict):
-                    output.usage = parse_chunk_usage(chunk["usage"], model)
-                choices = chunk.get("choices")
-                if not isinstance(choices, list) or not choices:
-                    continue
-                choice = choices[0]
-                if not isinstance(choice, dict):
-                    continue
-                finish_reason = choice.get("finish_reason")
-                if finish_reason:
-                    output.raw_stop_reason = str(finish_reason)
-                    stop_reason, error_message = _map_stop_reason(str(finish_reason))
-                    output.stop_reason = stop_reason
-                    if error_message:
-                        output.error_message = error_message
-                    has_finish_reason = True
-                delta = choice.get("delta")
-                if not isinstance(delta, dict):
-                    continue
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    block = ensure_text()
-                    block.text += content
-                    events.push(
-                        TextDeltaEvent(content_index=content_index(block), delta=content, partial=output)
-                    )
-                found_reasoning: str | None = None
-                for field in _REASONING_FIELDS:
-                    value = delta.get(field)
-                    if isinstance(value, str) and value:
-                        found_reasoning = field
+                def ensure_text() -> TextContent:
+                    nonlocal text_block
+                    if text_block is None:
+                        text_block = TextContent(text="")
+                        output.content.append(text_block)
+                        events.push(TextStartEvent(content_index=content_index(text_block), partial=output))
+                    return text_block
+
+                def ensure_thinking(signature: str) -> ThinkingContent:
+                    nonlocal thinking_block
+                    if thinking_block is None:
+                        thinking_block = ThinkingContent(thinking="", thinking_signature=signature)
+                        output.content.append(thinking_block)
+                        events.push(ThinkingStartEvent(content_index=content_index(thinking_block), partial=output))
+                    return thinking_block
+
+                def ensure_tool(delta: dict[str, Any]) -> ToolCall:
+                    stream_index = delta.get("index")
+                    function = delta.get("function") or {}
+                    name = function.get("name") or ""
+                    block = tool_blocks_by_index.get(stream_index) if isinstance(stream_index, int) else None
+                    tool_id = delta.get("id")
+                    if block is None and isinstance(tool_id, str):
+                        block = tool_blocks_by_id.get(tool_id)
+                    if block is None:
+                        block = ToolCall(id=tool_id if isinstance(tool_id, str) else "", name=name, arguments={})
+                        output.content.append(block)
+                        index = content_index(block)
+                        partial_args[index] = ""
+                        if isinstance(stream_index, int):
+                            tool_blocks_by_index[stream_index] = block
+                        if isinstance(tool_id, str) and tool_id:
+                            tool_blocks_by_id[tool_id] = block
+                        events.push(ToolCallStartEvent(content_index=index, partial=output))
+                    if isinstance(tool_id, str) and tool_id:
+                        block.id = tool_id
+                        tool_blocks_by_id[tool_id] = block
+                    if name:
+                        block.name = name
+                    return block
+
+                async for line in response.aiter_lines():
+                    if options and options.signal and options.signal.aborted:
+                        raise RuntimeError("Request was aborted")
+                    stripped = line.strip()
+                    if not stripped or not stripped.startswith("data:"):
+                        continue
+                    payload = stripped[5:].strip()
+                    if payload == "[DONE]":
                         break
-                if found_reasoning:
-                    value = delta[found_reasoning]
-                    if isinstance(value, str) and value:
-                        thinking = ensure_thinking(found_reasoning)
-                        thinking.thinking += value
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    chunk_id = chunk.get("id")
+                    if isinstance(chunk_id, str) and chunk_id and not output.response_id:
+                        output.response_id = chunk_id
+                    chunk_model = chunk.get("model")
+                    if isinstance(chunk_model, str) and chunk_model and chunk_model != model.id and not output.response_model:
+                        output.response_model = chunk_model
+                    if isinstance(chunk.get("usage"), dict):
+                        output.usage = parse_chunk_usage(chunk["usage"], model)
+                    choices = chunk.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice = choices[0]
+                    if not isinstance(choice, dict):
+                        continue
+                    finish_reason = choice.get("finish_reason")
+                    if finish_reason:
+                        output.raw_stop_reason = str(finish_reason)
+                        stop_reason, error_message = _map_stop_reason(str(finish_reason))
+                        output.stop_reason = stop_reason
+                        if error_message:
+                            output.error_message = error_message
+                        has_finish_reason = True
+                    delta = choice.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        block = ensure_text()
+                        block.text += content
                         events.push(
-                            ThinkingDeltaEvent(content_index=content_index(thinking), delta=value, partial=output)
+                            TextDeltaEvent(content_index=content_index(block), delta=content, partial=output)
                         )
-                tool_calls = delta.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    for tool_delta in tool_calls:
-                        if not isinstance(tool_delta, dict):
-                            continue
-                        tool_block = ensure_tool(tool_delta)
-                        index = content_index(tool_block)
-                        function = tool_delta.get("function") or {}
-                        arguments = function.get("arguments") if isinstance(function, dict) else None
-                        delta_text = arguments if isinstance(arguments, str) else ""
-                        partial_args[index] = partial_args.get(index, "") + delta_text
-                        tool_block.arguments = parse_streaming_json(partial_args[index])
-                        events.push(
-                            ToolCallDeltaEvent(content_index=index, delta=delta_text, partial=output)
-                        )
+                    found_reasoning: str | None = None
+                    for field in _REASONING_FIELDS:
+                        value = delta.get(field)
+                        if isinstance(value, str) and value:
+                            found_reasoning = field
+                            break
+                    if found_reasoning:
+                        value = delta[found_reasoning]
+                        if isinstance(value, str) and value:
+                            thinking = ensure_thinking(found_reasoning)
+                            thinking.thinking += value
+                            events.push(
+                                ThinkingDeltaEvent(content_index=content_index(thinking), delta=value, partial=output)
+                            )
+                    tool_calls = delta.get("tool_calls")
+                    if isinstance(tool_calls, list):
+                        for tool_delta in tool_calls:
+                            if not isinstance(tool_delta, dict):
+                                continue
+                            tool_block = ensure_tool(tool_delta)
+                            index = content_index(tool_block)
+                            function = tool_delta.get("function") or {}
+                            arguments = function.get("arguments") if isinstance(function, dict) else None
+                            delta_text = arguments if isinstance(arguments, str) else ""
+                            partial_args[index] = partial_args.get(index, "") + delta_text
+                            tool_block.arguments = parse_streaming_json(partial_args[index])
+                            events.push(
+                                ToolCallDeltaEvent(content_index=index, delta=delta_text, partial=output)
+                            )
 
             for item in list(output.content):
                 finish_block(item)
@@ -632,13 +678,15 @@ def stream(
                 raise RuntimeError(output.error_message or "Stream ended without a successful stop reason")
             events.push(DoneEvent(reason=output.stop_reason, message=output))
             events.end()
-        except Exception as error:
+        except (Exception, asyncio.CancelledError) as error:
             output.stop_reason = "aborted" if options and options.signal and options.signal.aborted else "error"
-            output.error_message = _format_error(error)
+            output.error_message = "Request was aborted" if output.stop_reason == "aborted" else _format_error(error)
             events.push(ErrorEvent(reason=output.stop_reason, error=output))
             events.end()
 
-    import asyncio
+        finally:
+            if signal is not None:
+                signal.remove_callback(cancel_request)
 
     asyncio.get_running_loop().create_task(run())
     return events

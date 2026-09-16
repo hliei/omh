@@ -254,7 +254,7 @@ class ModelsImpl:
         if resolution.env or (options and options.env):
             env = {**(resolution.env or {}), **((options.env if options else None) or {})}
         request_model = replace(model, base_url=resolution.auth.base_url) if resolution.auth.base_url else model
-        request_options = options if options is not None else StreamOptions()
+        request_options = replace(options) if options is not None else StreamOptions()
         request_options.api_key = api_key
         request_options.headers = headers
         request_options.env = env

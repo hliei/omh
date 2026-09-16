@@ -48,6 +48,10 @@ class AbortSignal:
         else:
             self._callbacks.append(callback)
 
+    def remove_callback(self, callback: Callable[[], None]) -> None:
+        if callback in self._callbacks:
+            self._callbacks.remove(callback)
+
     def _abort(self, reason: BaseException | None) -> None:
         if self._aborted:
             return
@@ -79,8 +83,13 @@ class FetchResponse:
     status: int
     headers: Mapping[str, str]
     text: str
+    lines: AsyncIterator[str] | None = None
 
     async def aiter_lines(self) -> AsyncIterator[str]:
+        if self.lines is not None:
+            async for line in self.lines:
+                yield line
+            return
         for line in self.text.splitlines():
             yield line
 

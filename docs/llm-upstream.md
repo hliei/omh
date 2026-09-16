@@ -30,7 +30,9 @@
 - 方法和字段使用 snake_case。消息块类型值仍用上游字符串（`toolCall`、`toolUse`），以便对照流协议。
 - 首版只落地 DeepSeek 官方 Chat Completions。`openai_completions` 保留该路径需要的兼容探测（`thinking: { type }`、`max_tokens`、`reasoning_content` 回放），不实现其它 Provider 的 thinkingFormat、OAuth、deferred 或图片生成 API。
 - 工具参数是 JSON Schema 字典，不引入 TypeBox。
-- HTTP 通过可注入的 `fetch` 或 httpx 发出，不依赖 OpenAI Python SDK。默认 httpx 路径在响应完成后按行解析 SSE；离线测试注入的 `fetch` 使用完整样例正文。
+- HTTP 通过可注入的 `fetch` 或 httpx 发出，不依赖 OpenAI Python SDK。默认 httpx 路径在响应到达时逐行解析 SSE，取消信号可中断等待响应头或后续增量，并关闭响应。离线测试覆盖完整样例正文与受控异步 HTTP 流；不宣称真实 DeepSeek 调用或图片能力已验证。
+- `omh.llm.Context` 保留上游 AI 层的输入上下文含义（messages/system_prompt/tools），不同于后续 harness 的取消/遥测调用 Context。
+- 内存凭据存储以每个 Provider 的 `asyncio.Lock` 对应上游的串行修改队列；鉴权解析使用请求选项副本，避免改变调用者配置。
 - `AbortSignal` 是进程内取消对象，对应上游 `AbortSignal`，不是持久化 Context。
 - Result/Ok/Err 属于后续 harness 票，本票 llm 流协议与上游一致：接口准备失败和请求失败进入 `error` 事件，成功终结进入 `done`。
 - 未实现的能力没有公开 stub：不暴露 deferred、OAuth、图片生成、或其它真实 Provider。`openai_completions` 对非 DeepSeek URL 仍探测 Chat Completions 默认字段，这是共享协议适配，不表示那些 Provider 已支持。
