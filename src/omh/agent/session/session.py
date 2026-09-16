@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 import time
 import uuid
-from asyncio import Lock
+from asyncio import Lock, Task, create_task, gather, shield
 from collections.abc import Callable
 
 from omh.agent.context import Context
@@ -89,10 +89,13 @@ class Uuid7Generator:
 
 
 class _StorageBackedSessionMutation:
-    def __init__(self, storage: Storage) -> None:
+    def __init__(self, storage: Storage, release: Callable[[], None]) -> None:
         self._storage = storage
+        self._release = release
         self._active = True
         self._commit_attempted = False
+        self._commit_task: Task[CommitResult] | None = None
+        self._end_task: Task[None] | None = None
 
     async def commit(self, writes: list[Write], context: Context) -> CommitResult:
         self._assert_active()
@@ -107,7 +110,8 @@ class _StorageBackedSessionMutation:
                 and write.entry.message.stop_reason == "pending"
             ):
                 raise SessionPendingAssistantMessageError()
-        return await self._storage.commit(writes, context)
+        self._commit_task = create_task(self._storage.commit(writes, context))
+        return await shield(self._commit_task)
 
     async def get_entries(self, ids: list[str], context: Context) -> dict[str, Entry]:
         self._assert_active()
@@ -117,8 +121,35 @@ class _StorageBackedSessionMutation:
         self._assert_active()
         return await self._storage.get_value(address, context)
 
-    def end(self) -> None:
+    async def scan_values[T](self, prefix: Value[T], context: Context) -> list[StoredValue[T]]:
+        self._assert_active()
+        return await self._storage.scan_values(prefix, context)
+
+    async def read_list[T](
+        self, address: ValueList[T], options: ListReadOptions | None, context: Context
+    ) -> list[ListElement[T]]:
+        self._assert_active()
+        return await self._storage.read_list(address, options, context)
+
+    async def scan_branch(self, query: StorageBranchScan, context: Context) -> list[Entry]:
+        self._assert_active()
+        return await self._storage.scan_branch(query, context)
+
+    async def get_stats(self, context: Context) -> SessionStats:
+        self._assert_active()
+        return await self._storage.get_stats(context)
+
+    async def end(self, context: Context) -> None:
+        del context
+        if self._end_task is None:
+            self._end_task = create_task(self._settle_and_release())
+        await shield(self._end_task)
+
+    async def _settle_and_release(self) -> None:
         self._active = False
+        if self._commit_task is not None:
+            await gather(self._commit_task, return_exceptions=True)
+        self._release()
 
     def _assert_active(self) -> None:
         if not self._active:
@@ -154,6 +185,7 @@ class StorageBackedBranch:
 
     async def find_entry(self, query: BranchScan | None, context: Context) -> Entry | None:
         query = query or BranchScan()
+        limit = 1 if query.limit is None else min(query.limit, 1)
         entries = await self.find_entries(
             BranchScan(
                 start=query.start,
@@ -162,7 +194,7 @@ class StorageBackedBranch:
                 type=query.type,
                 custom_type=query.custom_type,
                 order=query.order,
-                limit=1,
+                limit=limit,
                 cursor=query.cursor,
             ),
             context,
@@ -191,15 +223,23 @@ class StorageBackedSession:
         self._branches: dict[str, StorageBackedBranch] = {}
         self._closed = False
 
-    async def mutate[T](self, mutation: SessionMutationCallback[T], context: Context) -> T:
+    async def begin_mutation(self, context: Context) -> _StorageBackedSessionMutation:
+        del context
         self._assert_open()
-        async with self._mutation_lock:
+        await self._mutation_lock.acquire()
+        try:
             self._assert_open()
-            mutator = _StorageBackedSessionMutation(self._storage)
-            try:
-                return await mutation(mutator, context)
-            finally:
-                mutator.end()
+        except BaseException:
+            self._mutation_lock.release()
+            raise
+        return _StorageBackedSessionMutation(self._storage, self._mutation_lock.release)
+
+    async def mutate[T](self, mutation: SessionMutationCallback[T], context: Context) -> T:
+        mutator = await self.begin_mutation(context)
+        try:
+            return await mutation(mutator, context)
+        finally:
+            await mutator.end(context)
 
     async def get_entries(self, ids: list[str], context: Context) -> dict[str, Entry]:
         self._assert_open()
@@ -251,12 +291,13 @@ class StorageBackedSession:
 
     async def find_entry(self, query: EntryQuery | None, context: Context) -> Entry | None:
         query = query or EntryQuery()
+        limit = 1 if query.limit is None else min(query.limit, 1)
         entries = await self.find_entries(
             EntryQuery(
                 type=query.type,
                 custom_type=query.custom_type,
                 order=query.order,
-                limit=1,
+                limit=limit,
                 cursor=query.cursor,
             ),
             context,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -15,6 +16,7 @@ from omh.agent import (
     NewMessageEntry,
     SessionCreateOptions,
     SessionMutator,
+    SessionRepo,
     UsageRow,
     UsageScan,
     Value,
@@ -32,7 +34,7 @@ NOW = 1_700_000_000_000
 
 
 async def test_memory_session_preserves_named_branch_history() -> None:
-    repo = MemorySessionRepo(now=lambda: NOW)
+    repo: SessionRepo = MemorySessionRepo(now=lambda: NOW)
     session = await repo.create(SessionCreateOptions(), BACKGROUND_CONTEXT)
 
     assert session.metadata.created_at == NOW
@@ -208,4 +210,72 @@ async def test_failed_transaction_has_no_partial_writes_or_sequence_gap() -> Non
     assert result.first_seq == 3
 
     await session.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_find_entry_preserves_a_zero_limit() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    branch = await session.create_branch("main", None, BACKGROUND_CONTEXT)
+    await branch.append_message(UserMessage(content="saved", timestamp=NOW), BACKGROUND_CONTEXT)
+
+    assert await branch.find_entry(BranchScan(limit=0), BACKGROUND_CONTEXT) is None
+    assert await session.find_entry(EntryQuery(limit=0), BACKGROUND_CONTEXT) is None
+
+    await session.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_explicit_mutation_scope_supports_atomic_read_then_write() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    status: Value[str] = value("app.status")
+    await session.set_value(status, "before", BACKGROUND_CONTEXT)
+
+    mutation = await session.begin_mutation(BACKGROUND_CONTEXT)
+    stored = await mutation.get_value(status, BACKGROUND_CONTEXT)
+    assert stored is not None
+    result = await mutation.commit([set_value(status, f"{stored.value}-after")], BACKGROUND_CONTEXT)
+    await mutation.end(BACKGROUND_CONTEXT)
+
+    assert result.first_seq == 2
+    updated = await session.get_value(status, BACKGROUND_CONTEXT)
+    assert updated is not None
+    assert updated.value == "before-after"
+
+    await session.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_close_drains_an_admitted_mutation_before_reopen() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    status: Value[str] = value("app.status")
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_commit(mutator: SessionMutator, context: Context) -> None:
+        started.set()
+        await release.wait()
+        await mutator.commit([set_value(status, "committed")], context)
+
+    admitted = asyncio.create_task(session.mutate(delayed_commit, BACKGROUND_CONTEXT))
+    await started.wait()
+    closing = asyncio.create_task(session.close(BACKGROUND_CONTEXT))
+    await asyncio.sleep(0)
+
+    assert not closing.done()
+    with pytest.raises(RuntimeError, match="Session is closed"):
+        await session.get_value(status, BACKGROUND_CONTEXT)
+
+    release.set()
+    await admitted
+    await closing
+
+    reopened = await repo.open(session.metadata, BACKGROUND_CONTEXT)
+    stored = await reopened.get_value(status, BACKGROUND_CONTEXT)
+    assert stored is not None
+    assert stored.value == "committed"
+
+    await reopened.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)
