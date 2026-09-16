@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import re
 import time
-from asyncio import gather
+from asyncio import Task, create_task, gather, shield
 from collections.abc import Callable
 from pathlib import Path
 
@@ -83,6 +83,7 @@ class SqliteSessionRepo:
         self._pending_ids: set[str] = set()
         self._open_sessions: set[SqliteOpenSession] = set()
         self._closed = False
+        self._close_task: Task[None] | None = None
 
     async def create(self, options: SessionCreateOptions, context: Context) -> Session:
         del context
@@ -100,6 +101,7 @@ class SqliteSessionRepo:
             path.open("x").close()
             reserved_file = True
             database = await self._database_factory.open(str(path))
+            self._assert_open()
             _configure_writable_connection(database)
             apply_initial_schema(database)
             metadata = SessionMetadata(
@@ -138,6 +140,7 @@ class SqliteSessionRepo:
         session: Session | None = None
         try:
             database = await self._database_factory.open_existing(str(self._session_path(metadata.id)))
+            self._assert_open()
             _configure_writable_connection(database)
             stored = metadata_from_session_row(read_session_row(database, metadata.id), SQLITE_STORAGE_VERSION)
             session = self._open_storage_backed_session(stored, database)
@@ -194,9 +197,12 @@ class SqliteSessionRepo:
             self._pending_ids.discard(metadata.id)
 
     async def close(self, context: Context) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = create_task(self._close_sessions(context))
+        await shield(self._close_task)
+
+    async def _close_sessions(self, context: Context) -> None:
         results = await gather(
             *(session.close(context) for session in list(self._open_sessions)),
             return_exceptions=True,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,8 @@ from omh.llm import (
     UserMessage,
 )
 from omh.session_backends.sqlite import SqliteSessionRepo, create_sqlite3_factory
+from omh.session_backends.sqlite.sqlite3_database import Sqlite3DatabaseFactory
+from omh.session_backends.sqlite.types import SqliteDatabase
 
 SESSION_ID = "session"
 NOW = 1_700_000_000_000
@@ -427,4 +430,85 @@ async def test_unsafe_session_id_round_trips_inside_the_repository_directory(tmp
     assert reopened.metadata.id == "unsafe/id.ü"
 
     await reopened.close(BACKGROUND_CONTEXT)
+    await reopened_repo.close(BACKGROUND_CONTEXT)
+
+
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_repo_close_waiters_share_the_complete_drain(tmp_path: Path, cancel_first: bool) -> None:
+    repo = _repo(tmp_path)
+    session = await repo.create(SessionCreateOptions(id=SESSION_ID), BACKGROUND_CONTEXT)
+    mutation = await session.begin_mutation(BACKGROUND_CONTEXT)
+    first = asyncio.create_task(repo.close(BACKGROUND_CONTEXT))
+    await asyncio.sleep(0)
+    if cancel_first:
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+    second = asyncio.create_task(repo.close(BACKGROUND_CONTEXT))
+    await asyncio.sleep(0)
+    try:
+        assert not second.done()
+        await mutation.commit([set_value(SETTINGS, "drained")], BACKGROUND_CONTEXT)
+    finally:
+        await mutation.end(BACKGROUND_CONTEXT)
+        await asyncio.gather(first, second, return_exceptions=True)
+
+    with pytest.raises(RuntimeError, match="Session is closed"):
+        await session.get_value(SETTINGS, BACKGROUND_CONTEXT)
+    reopened_repo = _repo(tmp_path)
+    reopened = await reopened_repo.open(session.metadata, BACKGROUND_CONTEXT)
+    stored = await reopened.get_value(SETTINGS, BACKGROUND_CONTEXT)
+    assert stored is not None and stored.value == "drained"
+    await reopened_repo.close(BACKGROUND_CONTEXT)
+
+
+@pytest.mark.parametrize("operation", ["create", "open"])
+async def test_repo_close_rejects_a_session_from_a_pending_factory(tmp_path: Path, operation: str) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    connections: list[SqliteDatabase] = []
+
+    class DelayedFactory(Sqlite3DatabaseFactory):
+        async def open(self, path: str) -> SqliteDatabase:
+            entered.set()
+            await release.wait()
+            database = await super().open(path)
+            connections.append(database)
+            return database
+
+        async def open_existing(self, path: str) -> SqliteDatabase:
+            entered.set()
+            await release.wait()
+            database = await super().open_existing(path)
+            connections.append(database)
+            return database
+
+    metadata = SessionMetadata(id=SESSION_ID, created_at=NOW, storage_version=1)
+    if operation == "open":
+        seed_repo = _repo(tmp_path)
+        seed = await seed_repo.create(SessionCreateOptions(id=SESSION_ID), BACKGROUND_CONTEXT)
+        await seed.set_name("preserved", BACKGROUND_CONTEXT)
+        metadata = seed.metadata
+        await seed_repo.close(BACKGROUND_CONTEXT)
+    repo = SqliteSessionRepo(tmp_path, database_factory=DelayedFactory())
+    pending = asyncio.create_task(
+        repo.create(SessionCreateOptions(id=SESSION_ID), BACKGROUND_CONTEXT)
+        if operation == "create"
+        else repo.open(metadata, BACKGROUND_CONTEXT)
+    )
+    await entered.wait()
+    await repo.close(BACKGROUND_CONTEXT)
+    release.set()
+    with pytest.raises(RuntimeError, match="SqliteSessionRepo is closed"):
+        await pending
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connections[0].exec("SELECT 1")
+
+    reopened_repo = _repo(tmp_path)
+    if operation == "create":
+        assert await reopened_repo.list(BACKGROUND_CONTEXT) == []
+        await reopened_repo.create(SessionCreateOptions(id=SESSION_ID), BACKGROUND_CONTEXT)
+    else:
+        reopened = await reopened_repo.open(metadata, BACKGROUND_CONTEXT)
+        assert await reopened.get_name(BACKGROUND_CONTEXT) == "preserved"
     await reopened_repo.close(BACKGROUND_CONTEXT)
