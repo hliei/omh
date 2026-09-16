@@ -8,7 +8,7 @@ Keep this guide focused on the project's module responsibilities, stable boundar
 
 ## SDK layout
 
-The installable package lives in `src/omh/`. `omh.llm` is independently usable and must not import `omh.agent`. File-to-file correspondence with the pinned pi baseline is in [docs/llm-upstream.md](docs/llm-upstream.md).
+The installable package lives in `src/omh/`. `omh.llm` is independently usable and must not import `omh.agent`. File-to-file correspondence and recorded differences with the pinned pi baseline are in [docs/llm-upstream.md](docs/llm-upstream.md), [docs/agent-session-upstream.md](docs/agent-session-upstream.md), and [docs/sqlite-session-upstream.md](docs/sqlite-session-upstream.md).
 
 ## Development commands
 

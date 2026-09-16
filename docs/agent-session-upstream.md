@@ -1,6 +1,6 @@
 # Agent Session 与 pi 的对应关系
 
-基线：[pi f9bcd351dc3cedf989bc5fc0f8aa012db5737df2](https://github.com/earendil-works/pi/tree/f9bcd351dc3cedf989bc5fc0f8aa012db5737df2)。这是职责与主要函数对应，不是逐行翻译。
+基线：[pi f9bcd351dc3cedf989bc5fc0f8aa012db5737df2](https://github.com/earendil-works/pi/tree/f9bcd351dc3cedf989bc5fc0f8aa012db5737df2)。这是职责与主要函数对应，不是逐行翻译。SQLite 后端的对应与差异见 [sqlite-session-upstream.md](sqlite-session-upstream.md)。
 
 ## 文件
 
@@ -16,6 +16,8 @@
 | `packages/agent/src/harness/session/in-memory-storage-state.ts` | `src/omh/agent/session/in_memory_storage_state.py` |
 | `packages/agent/src/harness/session/session.ts` | `src/omh/agent/session/session.py` |
 | `packages/agent/src/harness/session/memory.ts` | `src/omh/agent/session/memory.py` |
+| `memory.ts` 的 `MemorySessionFacade` 与 `sqlite-node/src/sqlite/session.ts` 的 `SqliteOpenSession`（同一接纳/排空规则） | `src/omh/agent/session/facade.py`（两后端共用） |
+| 消息与 usage 的落盘 JSON 形状（上游依赖普通对象可直接 JSON 化） | `src/omh/agent/session/codec.py`（新增） |
 
 主要公开能力：`MemorySessionRepo.create/open/list/delete`、`StorageBackedSession.begin_mutation/mutate`、`create_branch`、`branch`、Branch 的 `append_message`/`append_custom_entry` 与历史查询、绑定值和列表读写、usage 查询及统计。`Session`、`SessionMutation`、`SessionMutator` 和 `SessionRepo` Protocol 描述这些公开边界。
 
@@ -28,3 +30,4 @@
 - 固定 pi 基线只在 `Storage.scan_usage` 提供 ledger 查询；本 Python 切片也从 Session 暴露同一筛选/分页查询，以直接满足 SDK 的 usage 查询行为。底层数据和筛选语义不变。
 - Memory repo 的 Session facade 会拒绝新操作并等待已接纳操作结束，再允许重新打开同一进程内记录；关闭的 facade 及其 Branch 能力失效。跨进程持久化、SQLite、跨 Session fork 和 JSONL 不属于本票。
 - Memory 路径接收可信的类型化 Python 对象，不做深拷贝或重复 payload 形状校验；存储仍强制检查 ID 唯一、父条目存在、事务原子性和序号单调性。
+- SQLite 后端由 T03 加入后，`MemorySession` 与 `SqliteOpenSession` 共用 `facade.py` 的接纳/排空规则，提交准备与校验移到 `commit.py`（对应上游 `harness/session/commit.ts`）；落盘编解码由 `codec.py` 承担，因为 Python 存的是 dataclass 而不是可直接 JSON 化的对象。SQLite 后端的对应与差异见 [sqlite-session-upstream.md](sqlite-session-upstream.md)。
