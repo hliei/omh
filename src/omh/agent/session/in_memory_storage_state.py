@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import cast
 
+from omh.agent.session.commit import (
+    CommittedStateWrite,
+    CommittedWrite,
+    prepare_storage_commit,
+    validate_committed_writes,
+)
 from omh.agent.session.types import (
     CommitResult,
     CustomEntry,
@@ -16,15 +22,11 @@ from omh.agent.session.types import (
     Write,
 )
 from omh.agent.session.values import (
-    ListAppendWrite,
-    ListDeleteWrite,
     ListElement,
     ListReadOptions,
     StoredValue,
     Value,
-    ValueDeleteWrite,
     ValueList,
-    ValueSetWrite,
     list_value,
     resolve_list_read_options,
     value,
@@ -34,13 +36,6 @@ from omh.agent.utils.usage import add_usage, empty_usage
 
 def _physical_key(namespace: str, key: str) -> str:
     return f"{namespace}\0{key}"
-
-
-type CommittedWrite = (
-    Entry
-    | UsageRow
-    | tuple[ValueSetWrite | ValueDeleteWrite | ListAppendWrite | ListDeleteWrite, int]
-)
 
 
 class InMemoryStorageState:
@@ -54,63 +49,21 @@ class InMemoryStorageState:
         self._next_seq = 1
 
     def commit(self, writes: list[Write], timestamp: int) -> CommitResult:
-        committed = self._prepare(writes, timestamp)
-        self._validate(committed)
-        self._apply(committed)
-        seqs = list(range(self._next_seq - len(writes), self._next_seq))
-        first_seq = seqs[0] if seqs else self._next_seq
-        return CommitResult(first_seq=first_seq, seqs=seqs, timestamp=timestamp, stats=self._stats)
+        prepared = prepare_storage_commit(writes, self._next_seq, timestamp)
+        validate_committed_writes(prepared.writes, prepared.first_seq, self)
+        self._apply(prepared.writes)
+        return CommitResult(
+            first_seq=prepared.first_seq,
+            seqs=prepared.seqs,
+            timestamp=prepared.timestamp,
+            stats=self._stats,
+        )
 
-    def _prepare(self, writes: list[Write], timestamp: int) -> list[CommittedWrite]:
-        committed: list[CommittedWrite] = []
-        for offset, write in enumerate(writes):
-            seq = self._next_seq + offset
-            if write.kind == "entry":
-                entry = write.entry
-                if entry.type == "message":
-                    committed.append(
-                        MessageEntry(
-                            id=entry.id,
-                            parent_id=entry.parent_id,
-                            seq=seq,
-                            timestamp=timestamp,
-                            message=entry.message,
-                        )
-                    )
-                else:
-                    committed.append(
-                        CustomEntry(
-                            id=entry.id,
-                            parent_id=entry.parent_id,
-                            seq=seq,
-                            timestamp=timestamp,
-                            custom_type=entry.custom_type,
-                            data=entry.data,
-                        )
-                    )
-            elif write.kind == "usage":
-                committed.append(replace(write.row, seq=seq))
-            else:
-                committed.append((write, seq))
-        return committed
+    def has_entry_or_usage_id(self, entry_id: str) -> bool:
+        return entry_id in self._entries or entry_id in self._usage
 
-    def _validate(self, writes: list[CommittedWrite]) -> None:
-        transaction_ids: set[str] = set()
-        transaction_entry_ids: set[str] = set()
-        for write in writes:
-            if isinstance(write, tuple):
-                continue
-            if write.id in self._entries or write.id in self._usage or write.id in transaction_ids:
-                raise ValueError(f"Duplicate entry or usage id: {write.id}")
-            if isinstance(write, (MessageEntry, CustomEntry)):
-                if (
-                    write.parent_id is not None
-                    and write.parent_id not in self._entries
-                    and write.parent_id not in transaction_entry_ids
-                ):
-                    raise ValueError(f"Missing parent entry: {write.parent_id}")
-                transaction_entry_ids.add(write.id)
-            transaction_ids.add(write.id)
+    def has_entry_id(self, entry_id: str) -> bool:
+        return entry_id in self._entries
 
     def _apply(self, writes: list[CommittedWrite]) -> None:
         for write in writes:
@@ -119,31 +72,27 @@ class InMemoryStorageState:
                 self._entries_by_seq.append(write)
                 if isinstance(write, MessageEntry):
                     self._stats = replace(self._stats, message_count=self._stats.message_count + 1)
-                self._next_seq = write.seq + 1
             elif isinstance(write, UsageRow):
                 self._usage[write.id] = write
                 self._stats = replace(self._stats, usage=add_usage(self._stats.usage, write.usage))
-                self._next_seq = write.seq + 1
             else:
-                operation, seq = write
-                self._apply_current_state(operation, seq)
-                self._next_seq = seq + 1
+                self._apply_current_state(write)
+            self._next_seq = write.seq + 1
 
-    def _apply_current_state(
-        self,
-        write: ValueSetWrite | ValueDeleteWrite | ListAppendWrite | ListDeleteWrite,
-        seq: int,
-    ) -> None:
+    def _apply_current_state(self, write: CommittedStateWrite) -> None:
         key = _physical_key(write.namespace, write.key)
-        if isinstance(write, ValueDeleteWrite):
-            self._scalar_values.pop(key, None)
-        elif isinstance(write, ValueSetWrite):
-            self._scalar_values[key] = StoredValue(address=value(write.namespace, write.key), value=write.value, seq=seq)
-        elif isinstance(write, ListDeleteWrite):
+        if write.kind == "value":
+            if write.op == "delete":
+                self._scalar_values.pop(key, None)
+            else:
+                self._scalar_values[key] = StoredValue(
+                    address=value(write.namespace, write.key), value=write.value, seq=write.seq
+                )
+        elif write.op == "delete":
             self._list_values.pop(key, None)
         else:
             stored = self._list_values.get(key)
-            element = ListElement(seq=seq, value=write.value)
+            element = ListElement(seq=write.seq, value=write.value)
             if stored is None:
                 self._list_values[key] = (list_value(write.namespace, write.key), [element])
             else:

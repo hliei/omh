@@ -1,6 +1,6 @@
 # oh-my-harness
 
-Python SDK imported as `omh`. The llm layer configures DeepSeek through Models/Provider and exposes unified text, thinking, and tool-call streams. The agent layer provides in-memory durable Sessions with named Branch history, current values/lists, and an append-only usage ledger.
+Python SDK imported as `omh`. The llm layer configures DeepSeek through Models/Provider and exposes unified text, thinking, and tool-call streams. The agent layer provides durable Sessions with named Branch history, current values/lists, and an append-only usage ledger; Sessions run in memory or in a SQLite file that survives closing and reopening.
 
 The supported platforms are macOS and Linux, using standard CPython 3.14 and asyncio. Ubuntu 24.04 x86_64 is the Linux CI baseline; other Linux distributions and architectures are not separately validated. Offline pytest is the implementation check; it does not call a live provider.
 
@@ -13,6 +13,22 @@ session = await repo.create(SessionCreateOptions(), BACKGROUND_CONTEXT)
 main = await session.create_branch("main", None, BACKGROUND_CONTEXT)
 await main.append_message(UserMessage(content="hello", timestamp=0), BACKGROUND_CONTEXT)
 history = await main.find_entries(None, BACKGROUND_CONTEXT)
+```
+
+```python
+from pathlib import Path
+
+from omh.agent import BACKGROUND_CONTEXT, SessionCreateOptions
+from omh.session_backends.sqlite import SqliteSessionRepo
+
+repo = SqliteSessionRepo(Path("sessions"))
+session = await repo.create(SessionCreateOptions(id="chat"), BACKGROUND_CONTEXT)
+await session.close(BACKGROUND_CONTEXT)
+await repo.close(BACKGROUND_CONTEXT)
+
+# A later process reopens the same durable history and state.
+repo = SqliteSessionRepo(Path("sessions"))
+session = await repo.open(session.metadata, BACKGROUND_CONTEXT)
 ```
 
 ```bash
