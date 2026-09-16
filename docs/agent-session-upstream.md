@@ -20,17 +20,24 @@
 | 消息与 usage 的落盘 JSON 形状（上游依赖普通对象可直接 JSON 化） | `src/omh/agent/session/codec.py`（新增） |
 | `packages/agent/src/harness/agent-harness.ts` 的 T04 公开类型 | `src/omh/agent/agent_harness.py` |
 | `packages/agent/src/harness/runtime/harness.ts` | `src/omh/agent/runtime/harness.py` |
-| `packages/agent/src/harness/runtime/lane.ts` 及本票 run 驱动过程 | `src/omh/agent/runtime/lane.py` |
+| `packages/agent/src/harness/runtime/lane.ts` | `src/omh/agent/runtime/lane.py` |
+| `packages/agent/src/harness/runtime/types.ts` 的 T04 状态类型 | `src/omh/agent/runtime/types.py` |
+| `packages/agent/src/harness/runtime/drive.ts` | `src/omh/agent/runtime/drive/drive.py` |
+| `packages/agent/src/harness/runtime/drive/checkpoint.ts` | `src/omh/agent/runtime/drive/checkpoint.py` |
+| `packages/agent/src/harness/runtime/drive/generation.ts` | `src/omh/agent/runtime/drive/generation.py` |
+| `packages/agent/src/harness/runtime/drive/recovery.ts` | `src/omh/agent/runtime/drive/recovery.py` |
+| `packages/agent/src/harness/runtime/drive/response.ts` | `src/omh/agent/runtime/drive/response.py` |
+| `packages/agent/src/harness/runtime/drive/retry.ts` | `src/omh/agent/runtime/drive/retry.py` 与 `src/omh/agent/runtime/retry.py` |
+| `packages/agent/src/harness/runtime/drive/terminal.ts` | `src/omh/agent/runtime/drive/terminal.py` |
 | `packages/agent/src/harness/runtime/restore.ts` | `src/omh/agent/runtime/restore.py` |
-| `packages/agent/src/harness/runtime/drive/retry.ts` 与 `pi-ai` retry 分类 | `src/omh/agent/runtime/retry.py` |
-| assistant frame 的 SQLite JSON 形状（上游帧为普通对象） | `src/omh/agent/runtime/codec.py`（新增） |
+| durable runtime state 与 assistant frame 的 SQLite JSON 形状（上游对象可直接 JSON 化） | `src/omh/agent/runtime/codec.py`（新增） |
 
 主要公开能力：`MemorySessionRepo.create/open/list/delete`、`StorageBackedSession.begin_mutation/mutate`、`create_branch`、`branch`、Branch 的 `append_message`/`append_custom_entry` 与历史查询、绑定值和列表读写、usage 查询及统计。`Session`、`SessionMutation`、`SessionMutator` 和 `SessionRepo` Protocol 描述这些公开边界。
 
 ## 本票范围和明确差异
 
 - Python API 使用 snake_case、dataclass、Protocol 与 async/await；`list_value` 对应上游 `list`，避免遮蔽 Python 内置名称。
-- `AgentMessage` 复用 `omh.llm.Message`；Agent 层保留独立的调用 `Context`，不会把 `omh.llm.Context` 当作会话调用上下文。取消和遥测派生在实际消费它们的后续执行票实现，本票不公开空操作接口。
+- `AgentMessage` 复用 `omh.llm.Message`；Agent 层保留独立的调用 `Context`，不会把 `omh.llm.Context` 当作会话调用上下文。遥测派生留待实际消费它的后续执行票，本票不公开空操作接口。
 - 本票只实现消息与 custom 条目。compaction、branch summary、lane、operation 及其持久化地址在对应后续票实现，不以 stub 暴露。
 - Memory 实现保留一个 Session 的全局递增写序号、UUIDv7 标识、绑定当前值/列表、追加式 usage ledger 与提交前完整校验。失败事务不改变状态，也不消耗序号。
 - 固定 pi 基线只在 `Storage.scan_usage` 提供 ledger 查询；本 Python 切片也从 Session 暴露同一筛选/分页查询，以直接满足 SDK 的 usage 查询行为。底层数据和筛选语义不变。
@@ -41,9 +48,12 @@
 ## T04 单 lane 模型对话
 
 - `AgentHarness.create` 在一次 Session mutation 中盘点完整 lane 与 open operation，只恢复投影，不自动 drive。`lane.accept` 原子提交 prompt entries、branch tip、`pi.op.meta`、完整当前 `pi.op.state` 与 lane current id；同一 lane 有 current operation 时返回 `LaneBusy`。
+- T04 的 harness 只配置一个 lane；重复获取同名 lane 返回同一对象，第二个 lane 在入口拒绝。多 lane 配置、隔离与部分配置恢复由 T08 实现。
 - 本票实现 run 所需的 `starting`、`checkpoint`、`assistant.ready`、`assistant.effect_pending`、`assistant.retry_wait` 状态，`accept`/`drive`/`get_result`/`inspect_execution` 基础原语及 `prompt`/`resume` 便捷组合。compaction、navigation、队列、abort、hooks、events/watch 和工具执行由后续票提供，不公开空实现。
+- drive 由 lane 持有的 asyncio task 执行，调用者通过 shield 观察；取消某个调用只结束该观察，不取消共享执行或写入持久化 abort。harness close 会停止进程内 task，但保留最近完整 durable state，供重开后显式 resume。
 - 模型请求先提交带 response/usage 预留 id 的 durable intent；流事件用 llm 层 `AssistantMessageFrameEncoder` 编码到 `pi.pending.assistant_frame`。Python 当前逐帧等待 Session mutation，而上游在进程内排队后继续消费 provider 流；两者的 durable 顺序与恢复内容相同，本实现暂时接受额外流背压，不声称相同吞吐。
 - 完整 response、usage、branch tip、frame-list 删除及后继状态在一个事务中结算。成功 run 的终结事务删除 operation meta/state，写 immutable `pi.result` 并清空 lane current id；模型身份在实际 effect 前解析，不可用时以无伪造 response/usage 的 failed result 终结。
 - 普通可重试错误进入带 `not_before` 的 durable wait；`wait_for_retry=False` 返回等待，`prompt`/`resume` 选择等待后继续。恢复 orphaned assistant effect 时不续接旧流：归并已提交帧、以 zero usage 写入明确 unknown-outcome 错误，再按原 retry policy 使用新 intent 重试。
+- Retry policy 在入口按 pi 的非负 safe-integer 范围校验；指数退避和 `not_before` 在 `Number.MAX_SAFE_INTEGER` 对应上限饱和，长等待分段调度，避免产生不可互操作的 durable 数值。
 - 本票不公开 deferred。工具执行也未公开；live 完整 tool-call response 以 unsupported assistant response 终结。恢复帧中的部分 tool call 只保留在 error assistant 历史中，error assistant 不进入下一次模型上下文，因此不会执行或回放。
 - 离线公共行为测试覆盖：接纳不执行与单 operation 排斥；完整 response/usage/终结清理；`prompt` 组合；durable retry wait；模型不可用；SQLite 中断、重开盘点、部分 tool-call unknown-outcome 恢复及显式 `resume`。

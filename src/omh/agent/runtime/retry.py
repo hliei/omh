@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import re
-from typing import cast
+from asyncio import sleep
+from collections.abc import Callable
 
+from omh.agent.numbers import MAX_SAFE_INTEGER
 from omh.llm.types import AssistantMessage
+
+_MAX_TIMER_DELAY_MS = 2_147_483_647
 
 _NON_RETRYABLE = re.compile(
     r"GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|"
@@ -33,4 +37,19 @@ def is_retryable_assistant_error(message: AssistantMessage) -> bool:
 
 
 def retry_delay_ms(base_delay_ms: int, max_agent_delay_ms: int, attempt: int) -> int:
-    return cast(int, min(base_delay_ms * 2 ** max(0, attempt - 1), max_agent_delay_ms))
+    if base_delay_ms == 0 or max_agent_delay_ms == 0:
+        return 0
+    exponent = max(0, attempt - 1)
+    delay = MAX_SAFE_INTEGER if exponent >= 53 else base_delay_ms * (1 << exponent)
+    safe_delay = delay if delay <= MAX_SAFE_INTEGER else MAX_SAFE_INTEGER
+    return min(safe_delay, max_agent_delay_ms)
+
+
+def retry_not_before(base_delay_ms: int, max_agent_delay_ms: int, attempt: int, now: int) -> int:
+    delay = retry_delay_ms(base_delay_ms, max_agent_delay_ms, attempt)
+    return min(now + delay, MAX_SAFE_INTEGER)
+
+
+async def wait_until(not_before: int, now: Callable[[], int]) -> None:
+    while (remaining_ms := not_before - now()) > 0:
+        await sleep(min(remaining_ms, _MAX_TIMER_DELAY_MS) / 1_000)

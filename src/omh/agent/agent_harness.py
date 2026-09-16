@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from omh.agent.context import Context
+from omh.agent.numbers import MAX_SAFE_INTEGER
 from omh.agent.result import Result
 from omh.agent.session.types import Session
 from omh.agent.types import AgentMessage, ThinkingLevel
@@ -20,6 +21,24 @@ class RetryPolicy:
     max_retries: int = 3
     base_delay_ms: int = 1_000
     max_agent_delay_ms: int = 60_000
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("retry.enabled must be a boolean")
+        values = {
+            "max_retries": self.max_retries,
+            "base_delay_ms": self.base_delay_ms,
+            "max_agent_delay_ms": self.max_agent_delay_ms,
+        }
+        for name, value in values.items():
+            maximum = MAX_SAFE_INTEGER - 1 if name == "max_retries" else MAX_SAFE_INTEGER
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or value > maximum
+            ):
+                raise ValueError(f"retry.{name} must be a non-negative safe integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +134,9 @@ class NothingToResume:
 
 
 type ResumeResult = Result[DriveOutcome, NothingToResume | OperationMismatch]
-type RunResult = Result[OperationResultRecord, LaneBusy | InvalidMessage | OperationMismatch]
+type RunResult = Result[
+    OperationResultRecord, LaneBusy | InvalidMessage | OperationMismatch
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,18 +167,18 @@ class AgentHarnessCreateResult:
     open: list[OpenOperation]
 
 
-class AgentHarness:
+class AgentHarness(Protocol):
     @staticmethod
-    async def create(options: AgentHarnessOptions, context: Context) -> AgentHarnessCreateResult:
+    async def create(
+        options: AgentHarnessOptions, context: Context
+    ) -> AgentHarnessCreateResult:
         from omh.agent.runtime.harness import create_agent_harness
 
         return await create_agent_harness(options, context)
 
-    async def lane(self, name: str, context: Context) -> AgentLane:
-        raise NotImplementedError
+    async def lane(self, name: str, context: Context) -> AgentLane: ...
 
-    async def close(self, context: Context) -> None:
-        raise NotImplementedError
+    async def close(self, context: Context) -> None: ...
 
 
 async def create_agent_harness(

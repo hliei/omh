@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from omh.llm.types import JsonObject
+
 
 @dataclass(frozen=True, slots=True)
 class Value[T]:
@@ -116,11 +118,15 @@ def delete_list[T](address: ValueList[T]) -> ListDeleteWrite:
     return ListDeleteWrite(namespace=address.namespace, key=address.key)
 
 
-def resolve_list_read_options(options: ListReadOptions | None = None) -> ListReadOptions:
+def resolve_list_read_options(
+    options: ListReadOptions | None = None,
+) -> ListReadOptions:
     resolved = options or ListReadOptions()
     if isinstance(resolved.limit, bool) or resolved.limit <= 0:
         raise ValueError("List read limit must be a positive integer")
-    return ListReadOptions(cursor=resolved.cursor, order=resolved.order, limit=min(resolved.limit, 10_000))
+    return ListReadOptions(
+        cursor=resolved.cursor, order=resolved.order, limit=min(resolved.limit, 10_000)
+    )
 
 
 def branch_tip(branch: str) -> Value[str | None]:
@@ -138,25 +144,29 @@ def entry_label(entry_id: str) -> Value[str]:
     return value("pi.entry.label", entry_id)
 
 
-def lane_config(lane: str) -> Value[object]:
+def lane_config(lane: str) -> Value[JsonObject]:
     return value("pi.lane.config", lane)
 
 
-def lane_state(lane: str) -> Value[object]:
+def lane_state(lane: str) -> Value[JsonObject]:
     return value("pi.lane.state", lane)
 
 
-def operation_result(operation_id: str) -> Value[object]:
+def operation_result(operation_id: str) -> Value[JsonObject]:
     return value("pi.result", operation_id)
 
 
-def operation_meta(operation_id: str) -> Value[object]:
+def operation_meta(operation_id: str) -> Value[JsonObject]:
     return value("pi.op.meta", operation_id)
 
 
-def operation_state(operation_id: str) -> Value[object]:
+def operation_state(operation_id: str) -> Value[JsonObject]:
     return value("pi.op.state", operation_id)
 
 
-def pending_assistant_frames(operation_id: str, response_entry_id: str) -> ValueList[object]:
-    return list_value("pi.pending.assistant_frame", f"{operation_id}:{response_entry_id}")
+def pending_assistant_frames(
+    operation_id: str, response_entry_id: str
+) -> ValueList[JsonObject]:
+    return list_value(
+        "pi.pending.assistant_frame", f"{operation_id}:{response_entry_id}"
+    )
