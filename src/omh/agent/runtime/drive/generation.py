@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from omh.agent.agent_harness import OperationError
+from omh.agent.agent_harness import AgentHarnessTool, OperationError
 from omh.agent.context import Context
 from omh.agent.runtime.codec import encode_assistant_frame, encode_operation_state
 from omh.agent.runtime.drive.response import settle_response
@@ -20,7 +20,7 @@ from omh.agent.session.values import (
     pending_assistant_frames,
     set_value,
 )
-from omh.llm.types import AssistantMessage, Model, SimpleStreamOptions
+from omh.llm.types import AssistantMessage, Model, SimpleStreamOptions, Tool
 from omh.llm.types import Context as LlmContext
 from omh.llm.utils.assistant_message_frame import (
     AssistantMessageFrame,
@@ -44,6 +44,18 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
             context,
         )
         return
+    active_tools = await _resolve_active_tools(lane, operation_id, context)
+    if active_tools is None:
+        await _finish_ready_failure(
+            lane,
+            operation_id,
+            OperationError(
+                code="tool_unavailable",
+                message="A configured active tool is unavailable in this process",
+            ),
+            context,
+        )
+        return
     intent = await _publish_generation_intent(lane, operation_id, model, context)
     entries = await lane.find_entries(BranchScan(order="oldest_first"), context)
     provider_messages = [
@@ -59,7 +71,20 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
     reasoning = None if thinking_level == "off" else thinking_level
     stream = lane._options.models.stream_simple(
         model,
-        LlmContext(messages=provider_messages),
+        LlmContext(
+            messages=provider_messages,
+            tools=(
+                [
+                    Tool(
+                        name=tool.name,
+                        description=tool.description,
+                        parameters=tool.parameters,
+                    )
+                    for tool in active_tools
+                ]
+                or None
+            ),
+        ),
         SimpleStreamOptions(reasoning=reasoning),
     )
     encoder = AssistantMessageFrameEncoder()
@@ -88,6 +113,29 @@ async def _resolve_ready_model(
         raise RuntimeError(f"Operation {operation_id!r} is not ready for generation")
     identity = state.generation_context.configuration.model
     return lane._options.models.get_model(identity.provider, identity.model_id)
+
+
+async def _resolve_active_tools(
+    lane: AgentLane, operation_id: str, context: Context
+) -> tuple[AgentHarnessTool, ...] | None:
+    stored = await lane._options.session.get_value(
+        operation_state(operation_id), context
+    )
+    if stored is None:
+        raise RuntimeError(f"Operation {operation_id!r} is missing state")
+    from omh.agent.runtime.codec import decode_operation_state
+
+    state = decode_operation_state(stored.value)
+    if not isinstance(state, AssistantReadyOperation):
+        raise RuntimeError(f"Operation {operation_id!r} is not ready for generation")
+    registered = {tool.name: tool for tool in await lane._tool_registry.get()}
+    active: list[AgentHarnessTool] = []
+    for name in state.generation_context.configuration.active_tool_names:
+        tool = registered.get(name)
+        if tool is None:
+            return None
+        active.append(tool)
+    return tuple(active)
 
 
 async def _finish_ready_failure(

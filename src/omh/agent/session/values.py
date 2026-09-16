@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from omh.llm.types import JsonObject
+from omh.llm.types import JsonObject, JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,3 +170,33 @@ def pending_assistant_frames(
     return list_value(
         "pi.pending.assistant_frame", f"{operation_id}:{response_entry_id}"
     )
+
+
+def operation_tool_args(
+    operation_id: str, step_id: str, source_index: int
+) -> Value[JsonObject]:
+    return value(
+        "pi.op.tool_args", f"{operation_id}:{step_id}:{source_index}"
+    )
+
+
+def operation_tool_args_prefix(operation_id: str, step_id: str = "") -> Value[JsonObject]:
+    suffix = f":{step_id}:" if step_id else ":"
+    return value("pi.op.tool_args", f"{operation_id}{suffix}")
+
+
+def operation_tool_memo(
+    operation_id: str, invocation_id: str, name: str
+) -> Value[JsonValue]:
+    return value("pi.op.tool_memo", f"{operation_id}:{invocation_id}:{name}")
+
+
+def operation_tool_memo_prefix(
+    operation_id: str, invocation_id: str = ""
+) -> Value[JsonValue]:
+    suffix = f":{invocation_id}:" if invocation_id else ":"
+    return value("pi.op.tool_memo", f"{operation_id}{suffix}")
+
+
+def pending_entry(entry_id: str) -> Value[JsonObject]:
+    return value("pi.pending.entry", entry_id)

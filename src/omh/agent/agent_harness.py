@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -9,10 +10,42 @@ from omh.agent.result import Result
 from omh.agent.session.types import Session
 from omh.agent.types import AgentMessage, ThinkingLevel
 from omh.llm.models import Models
-from omh.llm.types import Model
+from omh.llm.types import JsonValue, Model, ToolResultContent, Usage
 
 if TYPE_CHECKING:
     from omh.agent.runtime.lane import AgentLane
+
+
+@dataclass(frozen=True, slots=True)
+class AgentToolResult:
+    content: list[ToolResultContent]
+    details: JsonValue = None
+    usage: Usage | None = None
+    terminate: bool = False
+
+
+class AgentHarnessToolInvocation(Protocol):
+    invocation_id: str
+    operation_id: str
+    turn_id: str
+
+    async def get_memo(self, name: str) -> JsonValue | None: ...
+    async def set_memo(self, name: str, value: JsonValue | None) -> None: ...
+
+
+type AgentHarnessToolExecute = Callable[
+    [str, dict[str, object], AgentHarnessToolInvocation, Context],
+    Awaitable[AgentToolResult],
+]
+
+
+@dataclass(frozen=True, slots=True)
+class AgentHarnessTool:
+    name: str
+    description: str
+    parameters: dict[str, object]
+    execute: AgentHarnessToolExecute
+    replay: Literal["never", "safe"] = "never"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +81,8 @@ class AgentHarnessOptions:
     model: Model
     thinking_level: ThinkingLevel = "off"
     retry: RetryPolicy = field(default_factory=RetryPolicy)
+    tools: tuple[AgentHarnessTool, ...] = ()
+    active_tool_names: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +212,12 @@ class AgentHarness(Protocol):
         return await create_agent_harness(options, context)
 
     async def lane(self, name: str, context: Context) -> AgentLane: ...
+
+    async def get_tools(self, context: Context) -> tuple[AgentHarnessTool, ...]: ...
+
+    async def set_tools(
+        self, tools: tuple[AgentHarnessTool, ...], context: Context
+    ) -> None: ...
 
     async def close(self, context: Context) -> None: ...
 

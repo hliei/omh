@@ -9,6 +9,8 @@ from omh.agent.runtime.types import (
     AssistantRetryWaitOperation,
     CheckpointOperation,
     CompactionSettings,
+    CompletedToolCall,
+    EffectPendingToolCall,
     GenerationContext,
     GenerationRetryPolicy,
     LaneConfiguration,
@@ -18,11 +20,16 @@ from omh.agent.runtime.types import (
     NeedAssistant,
     OperationMeta,
     OperationState,
+    OutcomeReadyToolCall,
+    PlannedToolCall,
     RunContinuation,
     RunControl,
     RunIntent,
     RunSettings,
     StartingOperation,
+    ToolBatch,
+    ToolCallState,
+    ToolsOperation,
 )
 from omh.agent.session.codec import decode_message, encode_message
 from omh.llm.types import (
@@ -464,6 +471,50 @@ def _operation_base(state: OperationState) -> dict[str, JsonValue]:
     }
 
 
+def _encode_tool_call_state(call: ToolCallState) -> dict[str, JsonValue]:
+    encoded: dict[str, JsonValue] = {
+        "sourceIndex": call.source_index,
+        "resultEntryId": call.result_entry_id,
+        "status": call.status,
+    }
+    if isinstance(call, EffectPendingToolCall):
+        encoded["replay"] = call.replay
+    elif isinstance(call, OutcomeReadyToolCall | CompletedToolCall):
+        encoded["terminate"] = call.terminate
+    return encoded
+
+
+def _decode_tool_call_state(value: object) -> ToolCallState:
+    record = _record(value, "operation state.batch.calls[]")
+    source_index = _integer(record, "sourceIndex", "operation state.batch.calls[]")
+    if source_index < 0:
+        raise ValueError("operation state.batch.calls[].sourceIndex must be non-negative")
+    result_entry_id = _text(
+        record, "resultEntryId", "operation state.batch.calls[]"
+    )
+    status = record.get("status")
+    if status == "planned":
+        return PlannedToolCall(source_index, result_entry_id)
+    if status == "effect_pending":
+        replay = record.get("replay")
+        if replay not in {"never", "safe"}:
+            raise ValueError("operation state.batch.calls[].replay is invalid")
+        return EffectPendingToolCall(source_index, result_entry_id, replay)
+    if status == "outcome_ready":
+        return OutcomeReadyToolCall(
+            source_index,
+            result_entry_id,
+            _boolean(record, "terminate", "operation state.batch.calls[]"),
+        )
+    if status == "completed":
+        return CompletedToolCall(
+            source_index,
+            result_entry_id,
+            _boolean(record, "terminate", "operation state.batch.calls[]"),
+        )
+    raise ValueError("operation state.batch.calls[].status is invalid")
+
+
 def encode_operation_state(state: OperationState) -> dict[str, JsonValue]:
     encoded = _operation_base(state)
     if isinstance(state, StartingOperation):
@@ -485,6 +536,14 @@ def encode_operation_state(state: OperationState) -> dict[str, JsonValue]:
                 "triggerEntryId": state.trigger_entry_id,
             }
         )
+        return encoded
+    if isinstance(state, ToolsOperation):
+        encoded["batch"] = {
+            "assistantEntryId": state.batch.assistant_entry_id,
+            "configuration": encode_lane_configuration(state.batch.configuration),
+            "turnId": state.batch.turn_id,
+            "calls": [_encode_tool_call_state(call) for call in state.batch.calls],
+        }
         return encoded
     encoded["generationContext"] = _encode_generation_context(state.generation_context)
     if isinstance(state, AssistantReadyOperation):
@@ -544,6 +603,24 @@ def decode_operation_state(value: object) -> OperationState:
             latest_assistant_entry_id=latest,
             continuation=decoded_continuation,
             trigger_entry_id=_text(record, "triggerEntryId", "operation state"),
+            control=control,
+            settings=settings,
+        )
+    if at == "tools":
+        batch = _record(record.get("batch"), "operation state.batch")
+        calls = batch.get("calls")
+        if not isinstance(calls, list) or not calls:
+            raise ValueError("operation state.batch.calls must be a non-empty list")
+        return ToolsOperation(
+            latest_assistant_entry_id=latest,
+            batch=ToolBatch(
+                assistant_entry_id=_text(
+                    batch, "assistantEntryId", "operation state.batch"
+                ),
+                configuration=decode_lane_configuration(batch.get("configuration")),
+                turn_id=_text(batch, "turnId", "operation state.batch"),
+                calls=tuple(_decode_tool_call_state(call) for call in calls),
+            ),
             control=control,
             settings=settings,
         )

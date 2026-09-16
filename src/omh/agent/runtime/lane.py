@@ -34,7 +34,9 @@ from omh.agent.runtime.codec import (
 )
 from omh.agent.runtime.drive import drive_operation
 from omh.agent.runtime.drive.terminal import now_ms
+from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
 from omh.agent.runtime.types import (
+    LaneConfiguration,
     LaneState,
     OperationMeta,
     RunIntent,
@@ -44,6 +46,7 @@ from omh.agent.session.commit import insert_entry
 from omh.agent.session.types import BranchScan, Entry, NewMessageEntry, SessionMutator
 from omh.agent.session.values import (
     branch_tip,
+    lane_config,
     lane_state,
     operation_meta,
     operation_result,
@@ -67,9 +70,15 @@ def _normalize_prompt(
 
 
 class AgentLane:
-    def __init__(self, name: str, options: AgentHarnessOptions) -> None:
+    def __init__(
+        self,
+        name: str,
+        options: AgentHarnessOptions,
+        tool_registry: ToolRegistry,
+    ) -> None:
         self.name = name
         self._options = options
+        self._tool_registry = tool_registry
         self._drive_lock = Lock()
         self._drive_task: Task[DriveResult] | None = None
         self._drive_operation_id: str | None = None
@@ -276,6 +285,49 @@ class AgentLane:
         if stored is None:
             raise RuntimeError(f"Lane {self.name!r} is missing branch state")
         return stored.value
+
+    async def get_active_tools(self, context: Context) -> tuple[str, ...]:
+        stored = await self._options.session.get_value(lane_config(self.name), context)
+        if stored is None:
+            raise RuntimeError(f"Lane {self.name!r} is missing configuration")
+        from omh.agent.runtime.codec import decode_lane_configuration
+
+        return decode_lane_configuration(stored.value).active_tool_names
+
+    async def set_active_tools(
+        self, names: tuple[str, ...], context: Context
+    ) -> None:
+        validate_active_tool_names(names)
+
+        async def update(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> None:
+            stored = await mutator.get_value(lane_config(self.name), mutation_context)
+            if stored is None:
+                raise RuntimeError(f"Lane {self.name!r} is missing configuration")
+            from omh.agent.runtime.codec import (
+                decode_lane_configuration,
+                encode_lane_configuration,
+            )
+
+            current = decode_lane_configuration(stored.value)
+            await mutator.commit(
+                [
+                    set_value(
+                        lane_config(self.name),
+                        encode_lane_configuration(
+                            LaneConfiguration(
+                                model=current.model,
+                                thinking_level=current.thinking_level,
+                                active_tool_names=names,
+                            )
+                        ),
+                    )
+                ],
+                mutation_context,
+            )
+
+        await self._options.session.mutate(update, context)
 
     async def find_entries(
         self, query: BranchScan | None, context: Context
