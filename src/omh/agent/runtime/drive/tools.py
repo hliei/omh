@@ -520,7 +520,9 @@ def _replace_call(
 
 def _validate_schema(schema: dict[str, object], value: object, path: str) -> str | None:
     enum = schema.get("enum")
-    if isinstance(enum, list) and value not in enum:
+    if isinstance(enum, list) and not any(
+        _json_equal(value, candidate) for candidate in enum
+    ):
         return f"{path} must be one of {enum!r}"
     expected = schema.get("type")
     matches = {
@@ -557,3 +559,22 @@ def _validate_schema(schema: dict[str, object], value: object, path: str) -> str
             if error is not None:
                 return error
     return None
+
+
+def _json_equal(left: object, right: object) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left == right
+    if isinstance(left, int | float) and isinstance(right, int | float):
+        return left == right
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _json_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _json_equal(left[key], right[key]) for key in left
+        )
+    return left == right

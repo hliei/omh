@@ -116,6 +116,10 @@ class ToolCallingModels:
 
 
 class InvalidToolArgumentsModels(ToolCallingModels):
+    def __init__(self, arguments: dict[str, object]) -> None:
+        super().__init__()
+        self.arguments = arguments
+
     def stream_simple(
         self, model: Model, context: LlmContext, options: object
     ) -> AssistantMessageEventStream:
@@ -136,7 +140,7 @@ class InvalidToolArgumentsModels(ToolCallingModels):
                     ToolCall(
                         id="call-1",
                         name="add",
-                        arguments={"left": 2},
+                        arguments=self.arguments,
                     )
                 ],
             )
@@ -289,10 +293,41 @@ async def test_prompt_executes_active_tool_then_continues_model() -> None:
     await repo.close(BACKGROUND_CONTEXT)
 
 
-async def test_invalid_tool_arguments_become_error_result_without_execution() -> None:
+@pytest.mark.parametrize(
+    ("arguments", "parameters", "expected_error"),
+    [
+        (
+            {"left": 2},
+            {
+                "type": "object",
+                "properties": {
+                    "left": {"type": "integer"},
+                    "right": {"type": "integer"},
+                },
+                "required": ["left", "right"],
+                "additionalProperties": False,
+            },
+            "missing required property 'right'",
+        ),
+        (
+            {"flag": 1},
+            {
+                "type": "object",
+                "properties": {"flag": {"enum": [True]}},
+                "required": ["flag"],
+            },
+            "must be one of [True]",
+        ),
+    ],
+)
+async def test_invalid_tool_arguments_become_error_result_without_execution(
+    arguments: dict[str, object],
+    parameters: dict[str, object],
+    expected_error: str,
+) -> None:
     repo = MemorySessionRepo(now=lambda: NOW)
     session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
-    models = InvalidToolArgumentsModels()
+    models = InvalidToolArgumentsModels(arguments)
     calls = 0
 
     async def execute_add(
@@ -309,15 +344,7 @@ async def test_invalid_tool_arguments_become_error_result_without_execution() ->
     tool = AgentHarnessTool(
         name="add",
         description="Add two integers",
-        parameters={
-            "type": "object",
-            "properties": {
-                "left": {"type": "integer"},
-                "right": {"type": "integer"},
-            },
-            "required": ["left", "right"],
-            "additionalProperties": False,
-        },
+        parameters=parameters,
         execute=execute_add,
     )
     created = await AgentHarness.create(
@@ -346,7 +373,7 @@ async def test_invalid_tool_arguments_become_error_result_without_execution() ->
     )
     assert tool_result.is_error is True
     assert tool_result.details is None
-    assert "missing required property 'right'" in tool_result.content[0].text
+    assert expected_error in tool_result.content[0].text
 
     await created.harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)
