@@ -15,7 +15,7 @@ Review the intended files and ignore rules before staging. Inspect the staged di
 1. Define one cohesive delivery from a local ticket, several closely related tickets, or a small direct request. One branch and PR should be independently reviewable, mergeable, and reversible; ticket count does not determine branch count.
 2. Start a `<type>/<delivery-name>` branch (see naming below) from up-to-date `main`. Create branches when work starts. For dependent deliveries, merge the prerequisite first, then branch from updated `main`; unrelated work can proceed independently.
 3. Implement the selected scope and update relevant tests and documentation. Keep local execution status according to [the task tracker](issue-tracker.md).
-4. Run checks appropriate to the change, select files to stage, and inspect the staged diff before committing.
+4. Before pushing Python code, dependency, or check-configuration changes, run `ruff check src tests`, `mypy`, and `pytest` in the development environment and resolve failures. For documentation-only changes, verify the affected content and links. Select files to stage and inspect the staged diff before committing.
 5. Push the feature branch and open a PR describing the problem, resulting behavior, scope, and validation. Include necessary context directly; reviewers must not need local planning files. A GitHub Issue is optional.
 6. Merge after review and required checks pass. Keep `main` usable and verifiable. Update local ticket outcomes and PR links, sync local `main`, and retain the remote feature branch at its final head. Local feature branches may be removed after delivery.
 
@@ -24,6 +24,12 @@ Keep GitHub automatic head-branch deletion disabled and merge PRs without `--del
 Split a large feature into independently useful deliveries. Group small tickets when they contribute to the same result. Code, tests, and necessary documentation for one behavior normally belong together. Routine feature development reaches `main` through PRs.
 
 Pushing a branch shares its reachable commits, including their history. Ignore rules affect untracked files; they do not remove previously committed files or history.
+
+## Local checks and CI failures
+
+Run the local checks before each push of code changes. `ruff check --fix src tests` can fix supported lint findings; review its changes and rerun the checks. Local checks run on the developer platform; CI repeats Ruff, mypy, and pytest on macOS and Ubuntu 24.04 to cover both supported platforms.
+
+If CI fails, inspect the failing job and reproduce its command locally where possible. Fix the cause on the same feature branch, verify the fix, commit, and push again. The existing PR updates and CI reruns; merge only after the required checks pass. Platform-specific failures need verification on the affected platform. CI reports failures and does not automatically commit fixes.
 
 ## Branch naming
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from omh.llm.api.openai_completions import openai_completions_api
 from omh.llm.auth.helpers import env_api_key_auth
 from omh.llm.auth.types import ProviderAuth
-from omh.llm.models import CreateProviderOptions, CreatedProvider, create_provider
+from omh.llm.models import CreatedProvider, CreateProviderOptions, create_provider
 from omh.llm.providers.deepseek_models import DEEPSEEK_MODELS
 
 

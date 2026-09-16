@@ -6,7 +6,6 @@ from omh.llm.types import (
     ImageContent,
     Message,
     TextContent,
-    Tool,
     Usage,
 )
 

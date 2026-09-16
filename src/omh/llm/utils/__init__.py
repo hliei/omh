@@ -6,7 +6,10 @@ from omh.llm.utils.assistant_message_frame import (
     AssistantMessageFrameEncoder,
     reduce_assistant_message_frames,
 )
-from omh.llm.utils.event_stream import AssistantMessageEventStream, create_assistant_message_event_stream
+from omh.llm.utils.event_stream import (
+    AssistantMessageEventStream,
+    create_assistant_message_event_stream,
+)
 from omh.llm.utils.json_parse import parse_streaming_json
 from omh.llm.utils.lazy import lazy_stream
 from omh.llm.utils.text import content_text
