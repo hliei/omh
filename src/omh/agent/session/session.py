@@ -4,7 +4,7 @@ import secrets
 import time
 import uuid
 from asyncio import Lock, Task, create_task, gather, shield
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from omh.agent.context import Context
 from omh.agent.session.commit import insert_entry
@@ -139,14 +139,14 @@ class _StorageBackedSessionMutation:
         self._assert_active()
         return await self._storage.get_stats(context)
 
-    async def end(self, context: Context) -> None:
+    def end(self, context: Context) -> Awaitable[None]:
         del context
         if self._end_task is None:
+            self._active = False
             self._end_task = create_task(self._settle_and_release())
-        await shield(self._end_task)
+        return shield(self._end_task)
 
     async def _settle_and_release(self) -> None:
-        self._active = False
         if self._commit_task is not None:
             await gather(self._commit_task, return_exceptions=True)
         self._release()

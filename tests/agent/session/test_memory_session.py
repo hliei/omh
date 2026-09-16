@@ -247,6 +247,24 @@ async def test_explicit_mutation_scope_supports_atomic_read_then_write() -> None
     await repo.close(BACKGROUND_CONTEXT)
 
 
+async def test_ending_mutation_invalidates_it_before_the_wait_begins() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    status: Value[str] = value("app.status")
+    mutation = await session.begin_mutation(BACKGROUND_CONTEXT)
+
+    ending = mutation.end(BACKGROUND_CONTEXT)
+    with pytest.raises(RuntimeError, match="outside its mutation callback"):
+        await mutation.commit([set_value(status, "too late")], BACKGROUND_CONTEXT)
+    await ending
+    await mutation.end(BACKGROUND_CONTEXT)
+
+    assert await session.get_value(status, BACKGROUND_CONTEXT) is None
+
+    await session.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
 async def test_close_drains_an_admitted_mutation_before_reopen() -> None:
     repo = MemorySessionRepo(now=lambda: NOW)
     session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)

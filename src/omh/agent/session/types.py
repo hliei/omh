@@ -204,7 +204,7 @@ class SessionMutator(Protocol):
 
 
 class SessionMutation(SessionMutator, Protocol):
-    async def end(self, context: Context) -> None: ...
+    def end(self, context: Context) -> Awaitable[None]: ...
 
 
 type SessionMutationCallback[T] = Callable[[SessionMutator, Context], Awaitable[T]]

@@ -110,7 +110,7 @@ class _MemorySessionMutationFacade:
     def __init__(self, source: SessionMutation, owner: _MemorySessionFacade) -> None:
         self._source = source
         self._owner = owner
-        self._ended = False
+        self._end_task: Task[None] | None = None
 
     async def commit(self, writes: list[Write], context: Context) -> CommitResult:
         return await self._source.commit(writes, context)
@@ -135,12 +135,14 @@ class _MemorySessionMutationFacade:
     async def scan_branch(self, query: StorageBranchScan, context: Context) -> list[Entry]:
         return await self._source.scan_branch(query, context)
 
-    async def end(self, context: Context) -> None:
-        if self._ended:
-            return
-        self._ended = True
+    def end(self, context: Context) -> Awaitable[None]:
+        if self._end_task is None:
+            self._end_task = create_task(self._finish_end(self._source.end(context)))
+        return shield(self._end_task)
+
+    async def _finish_end(self, source_end: Awaitable[None]) -> None:
         try:
-            await self._source.end(context)
+            await source_end
         finally:
             await self._owner._finish_admission()
 
