@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "oh-my-harness"
 version = "0.1.0"
-description = "Python SDK llm layer for DeepSeek streaming via Models/Provider"
+description = "Durable agent SDK with unified LLM streaming and session storage"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
