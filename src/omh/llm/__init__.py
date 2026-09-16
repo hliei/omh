@@ -42,6 +42,7 @@ from omh.llm.types import (
     ToolCallStartEvent,
     ToolResultMessage,
     Usage,
+    UsageCost,
     UserMessage,
     empty_usage,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "ToolCallStartEvent",
     "ToolResultMessage",
     "Usage",
+    "UsageCost",
     "UserMessage",
     "calculate_cost",
     "clamp_thinking_level",
