@@ -136,3 +136,27 @@ session_name: Value[str] = value("pi.session.name")
 
 def entry_label(entry_id: str) -> Value[str]:
     return value("pi.entry.label", entry_id)
+
+
+def lane_config(lane: str) -> Value[object]:
+    return value("pi.lane.config", lane)
+
+
+def lane_state(lane: str) -> Value[object]:
+    return value("pi.lane.state", lane)
+
+
+def operation_result(operation_id: str) -> Value[object]:
+    return value("pi.result", operation_id)
+
+
+def operation_meta(operation_id: str) -> Value[object]:
+    return value("pi.op.meta", operation_id)
+
+
+def operation_state(operation_id: str) -> Value[object]:
+    return value("pi.op.state", operation_id)
+
+
+def pending_assistant_frames(operation_id: str, response_entry_id: str) -> ValueList[object]:
+    return list_value("pi.pending.assistant_frame", f"{operation_id}:{response_entry_id}")
