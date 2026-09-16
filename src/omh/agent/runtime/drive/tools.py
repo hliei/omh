@@ -5,9 +5,12 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 from omh.agent.agent_harness import (
+    TOOL_MEMO_UNSET,
     AgentHarnessTool,
     AgentHarnessToolInvocation,
     AgentToolResult,
+    ToolMemo,
+    ToolMemoUnset,
 )
 from omh.agent.context import Context
 from omh.agent.runtime.codec import encode_operation_state
@@ -41,7 +44,6 @@ from omh.agent.session.values import (
 from omh.llm.types import (
     AssistantMessage,
     JsonObject,
-    JsonValue,
     TextContent,
     ToolCall,
     ToolResultMessage,
@@ -67,7 +69,7 @@ class ToolInvocation(AgentHarnessToolInvocation):
         self._context = context
         self._active = True
 
-    async def get_memo(self, name: str) -> JsonValue | None:
+    async def get_memo(self, name: str) -> ToolMemo:
         self._validate_name(name)
         self._assert_active()
         stored = await self._lane._options.session.get_value(
@@ -75,9 +77,9 @@ class ToolInvocation(AgentHarnessToolInvocation):
             self._context,
         )
         self._assert_active()
-        return None if stored is None else stored.value
+        return TOOL_MEMO_UNSET if stored is None else stored.value
 
-    async def set_memo(self, name: str, value: JsonValue | None) -> None:
+    async def set_memo(self, name: str, value: ToolMemo) -> None:
         self._validate_name(name)
         self._assert_active()
 
@@ -98,7 +100,11 @@ class ToolInvocation(AgentHarnessToolInvocation):
                 self.operation_id, self.invocation_id, name
             )
             await mutator.commit(
-                [delete_value(address) if value is None else set_value(address, value)],
+                [
+                    delete_value(address)
+                    if isinstance(value, ToolMemoUnset)
+                    else set_value(address, value)
+                ],
                 mutation_context,
             )
 
@@ -193,7 +199,9 @@ async def _start_planned_call(
             context,
         )
         return
-    validation_error = _validate_parameters(tool.parameters, tool_call.arguments)
+    validation_error = _validate_schema(
+        tool.parameters, tool_call.arguments, "arguments"
+    )
     if validation_error is not None:
         await _stage_error(
             lane,
@@ -466,6 +474,7 @@ async def _materialize_outcome(
                     id=call.result_entry_id,
                     parent_id=tip.value,
                     message=message,
+                    terminate=call.terminate,
                 )
             ),
             delete_value(pending_entry(call.result_entry_id)),
@@ -507,10 +516,6 @@ def _replace_call(
             calls[index] = replacement
             return replace(state, batch=replace(state.batch, calls=tuple(calls)))
     raise RuntimeError("Tool call state changed before transition")
-
-
-def _validate_parameters(schema: dict[str, object], value: object) -> str | None:
-    return _validate_schema(schema, value, "arguments")
 
 
 def _validate_schema(schema: dict[str, object], value: object, path: str) -> str | None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from omh.agent.agent_harness import OperationResultRecord
+from omh.agent.agent_harness import OperationResultRecord, ToolReplayPolicy
 from omh.agent.types import ThinkingLevel
 from omh.llm.types import JsonValue
 
@@ -159,7 +159,7 @@ class PlannedToolCall:
 class EffectPendingToolCall:
     source_index: int
     result_entry_id: str
-    replay: Literal["never", "safe"]
+    replay: ToolReplayPolicy
     status: Literal["effect_pending"] = "effect_pending"
 
 

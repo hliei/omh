@@ -6,6 +6,7 @@ import pytest
 
 from omh.agent import (
     BACKGROUND_CONTEXT,
+    TOOL_MEMO_UNSET,
     AgentHarness,
     AgentHarnessOptions,
     AgentHarnessTool,
@@ -19,6 +20,7 @@ from omh.agent import (
     Session,
     SessionCreateOptions,
     SessionMutator,
+    ToolReplayPolicy,
     Write,
 )
 from omh.llm import (
@@ -350,6 +352,77 @@ async def test_invalid_tool_arguments_become_error_result_without_execution() ->
     await repo.close(BACKGROUND_CONTEXT)
 
 
+async def test_terminating_tool_result_is_durable_and_skips_another_model_request(
+    tmp_path,
+) -> None:
+    repo = SqliteSessionRepo(tmp_path, now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    models = ToolCallingModels()
+
+    async def execute_add(
+        tool_call_id: str,
+        params: dict[str, object],
+        invocation: AgentHarnessToolInvocation,
+        context: Context,
+    ) -> AgentToolResult:
+        del tool_call_id, params, invocation, context
+        return AgentToolResult(
+            content=[TextContent(text="5")],
+            terminate=True,
+        )
+
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=models,
+            model=MODEL,
+            tools=(
+                AgentHarnessTool(
+                    name="add",
+                    description="Add two integers",
+                    parameters={"type": "object"},
+                    execute=execute_add,
+                ),
+            ),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+
+    result = await lane.prompt("what is 2 + 3?", BACKGROUND_CONTEXT)
+
+    assert result.ok is True
+    assert result.value.status == "completed"
+    assert len(models.contexts) == 1
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+    reopened_repo = SqliteSessionRepo(tmp_path, now=lambda: NOW + 1)
+    reopened_session = await reopened_repo.open(session.metadata, BACKGROUND_CONTEXT)
+    reopened = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=reopened_session,
+            models=FinishingModels(),
+            model=MODEL,
+            tools=(),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    reopened_lane = await reopened.harness.lane("main", BACKGROUND_CONTEXT)
+    history = await reopened_lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    tool_entry = next(
+        entry
+        for entry in history
+        if entry.type == "message" and isinstance(entry.message, ToolResultMessage)
+    )
+    assert tool_entry.terminate is True
+
+    await reopened.harness.close(BACKGROUND_CONTEXT)
+    await reopened_repo.close(BACKGROUND_CONTEXT)
+
+
 async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
     tmp_path,
 ) -> None:
@@ -373,6 +446,7 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
             invocation.turn_id,
         )
         await invocation.set_memo("request", {"id": "durable-request"})
+        await invocation.set_memo("nullable", None)
         started.set()
         try:
             await asyncio.Future[None]()
@@ -417,7 +491,9 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
 
     reopened_repo = SqliteSessionRepo(tmp_path, now=lambda: NOW + 1)
     reopened_session = await reopened_repo.open(session.metadata, BACKGROUND_CONTEXT)
-    replayed: list[tuple[str, str, str, dict[str, object], object]] = []
+    replayed: list[
+        tuple[str, str, str, dict[str, object], object, object]
+    ] = []
 
     async def finish_replay(
         tool_call_id: str,
@@ -433,8 +509,10 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
                 invocation.turn_id,
                 params,
                 await invocation.get_memo("request"),
+                await invocation.get_memo("nullable"),
             )
         )
+        assert await invocation.get_memo("missing") is TOOL_MEMO_UNSET
         return AgentToolResult(content=[TextContent(text="5")])
 
     replay_tool = AgentHarnessTool(
@@ -466,7 +544,12 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
     assert resumed.value.outcome.status == "completed"
     assert first_identity is not None
     assert replayed == [
-        (*first_identity, {"left": 2, "right": 3}, {"id": "durable-request"})
+        (
+            *first_identity,
+            {"left": 2, "right": 3},
+            {"id": "durable-request"},
+            None,
+        )
     ]
     assert len(models.contexts) == 1
 
@@ -480,8 +563,8 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
 )
 async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
     tmp_path,
-    stored_replay: str,
-    current_replay: str,
+    stored_replay: ToolReplayPolicy,
+    current_replay: ToolReplayPolicy,
 ) -> None:
     repo = SqliteSessionRepo(tmp_path, now=lambda: NOW)
     session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
@@ -503,7 +586,7 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
         description="Add two integers",
         parameters={"type": "object"},
         execute=interrupted_tool,
-        replay=stored_replay,  # type: ignore[arg-type]
+        replay=stored_replay,
     )
     created = await AgentHarness.create(
         AgentHarnessOptions(
@@ -549,7 +632,7 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
         description="Add two integers",
         parameters={"type": "object"},
         execute=must_not_replay,
-        replay=current_replay,  # type: ignore[arg-type]
+        replay=current_replay,
     )
     reopened = await AgentHarness.create(
         AgentHarnessOptions(

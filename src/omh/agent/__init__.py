@@ -1,4 +1,5 @@
 from omh.agent.agent_harness import (
+    TOOL_MEMO_UNSET,
     AgentHarness,
     AgentHarnessCreateResult,
     AgentHarnessOptions,
@@ -26,6 +27,9 @@ from omh.agent.agent_harness import (
     RetryPolicy,
     RunResult,
     SettledDriveOutcome,
+    ToolMemo,
+    ToolMemoUnset,
+    ToolReplayPolicy,
     WaitingDriveOutcome,
     create_agent_harness,
 )
@@ -143,6 +147,10 @@ __all__ = [
     "RetryPolicy",
     "RunResult",
     "SettledDriveOutcome",
+    "TOOL_MEMO_UNSET",
+    "ToolMemo",
+    "ToolMemoUnset",
+    "ToolReplayPolicy",
     "Session",
     "SessionBranchExistsError",
     "SessionCreateOptions",

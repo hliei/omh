@@ -69,6 +69,7 @@ def commit_write(write: Write, seq: int, timestamp: int) -> CommittedWrite:
                 seq=seq,
                 timestamp=timestamp,
                 message=entry.message,
+                terminate=entry.terminate,
             )
         return CustomEntry(
             id=entry.id,

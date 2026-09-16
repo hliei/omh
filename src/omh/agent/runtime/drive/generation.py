@@ -101,6 +101,14 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
 async def _resolve_ready_model(
     lane: AgentLane, operation_id: str, context: Context
 ) -> Model | None:
+    state = await _read_ready_state(lane, operation_id, context)
+    identity = state.generation_context.configuration.model
+    return lane._options.models.get_model(identity.provider, identity.model_id)
+
+
+async def _read_ready_state(
+    lane: AgentLane, operation_id: str, context: Context
+) -> AssistantReadyOperation:
     stored = await lane._options.session.get_value(
         operation_state(operation_id), context
     )
@@ -111,23 +119,13 @@ async def _resolve_ready_model(
     state = decode_operation_state(stored.value)
     if not isinstance(state, AssistantReadyOperation):
         raise RuntimeError(f"Operation {operation_id!r} is not ready for generation")
-    identity = state.generation_context.configuration.model
-    return lane._options.models.get_model(identity.provider, identity.model_id)
+    return state
 
 
 async def _resolve_active_tools(
     lane: AgentLane, operation_id: str, context: Context
 ) -> tuple[AgentHarnessTool, ...] | None:
-    stored = await lane._options.session.get_value(
-        operation_state(operation_id), context
-    )
-    if stored is None:
-        raise RuntimeError(f"Operation {operation_id!r} is missing state")
-    from omh.agent.runtime.codec import decode_operation_state
-
-    state = decode_operation_state(stored.value)
-    if not isinstance(state, AssistantReadyOperation):
-        raise RuntimeError(f"Operation {operation_id!r} is not ready for generation")
+    state = await _read_ready_state(lane, operation_id, context)
     registered = {tool.name: tool for tool in await lane._tool_registry.get()}
     active: list[AgentHarnessTool] = []
     for name in state.generation_context.configuration.active_tool_names:

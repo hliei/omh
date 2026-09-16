@@ -24,19 +24,29 @@ class AgentToolResult:
     terminate: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ToolMemoUnset:
+    pass
+
+
+TOOL_MEMO_UNSET = ToolMemoUnset()
+type ToolMemo = JsonValue | ToolMemoUnset
+
+
 class AgentHarnessToolInvocation(Protocol):
     invocation_id: str
     operation_id: str
     turn_id: str
 
-    async def get_memo(self, name: str) -> JsonValue | None: ...
-    async def set_memo(self, name: str, value: JsonValue | None) -> None: ...
+    async def get_memo(self, name: str) -> ToolMemo: ...
+    async def set_memo(self, name: str, value: ToolMemo) -> None: ...
 
 
 type AgentHarnessToolExecute = Callable[
     [str, dict[str, object], AgentHarnessToolInvocation, Context],
     Awaitable[AgentToolResult],
 ]
+type ToolReplayPolicy = Literal["never", "safe"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +55,7 @@ class AgentHarnessTool:
     description: str
     parameters: dict[str, object]
     execute: AgentHarnessToolExecute
-    replay: Literal["never", "safe"] = "never"
+    replay: ToolReplayPolicy = "never"
 
 
 @dataclass(frozen=True, slots=True)
