@@ -17,7 +17,7 @@ Review the intended files and ignore rules before staging. Inspect the staged di
 3. Implement the selected scope and update relevant tests and documentation. Keep local execution status according to [the task tracker](issue-tracker.md).
 4. Before pushing Python code, dependency, or check-configuration changes, run `ruff check src tests`, `mypy`, and `pytest` in the development environment and resolve failures. For documentation-only changes, verify the affected content and links. Select files to stage and inspect the staged diff before committing.
 5. Push the feature branch and open a PR describing the problem, resulting behavior, scope, and validation. Include necessary context directly; reviewers must not need local planning files. A GitHub Issue is optional.
-6. Merge after review and required checks pass. Keep `main` usable and verifiable. Update local ticket outcomes and PR links, sync local `main`, and retain the remote feature branch at its final head. Local feature branches may be removed after delivery.
+6. Merge after review and required checks pass. Use GitHub's **Create a merge commit** for every PR so `main` preserves the delivery's branch boundary and original commit history; do not use squash merges or rebase merges. Keep `main` usable and verifiable. Update local ticket outcomes and PR links, sync local `main`, and retain the remote feature branch at its final head. Local feature branches may be removed after delivery.
 
 Keep GitHub automatic head-branch deletion disabled and merge PRs without `--delete-branch`. Delete remote branches only when explicitly requested. Start later deliveries on new branches from updated `main` rather than reusing retained branches.
 
