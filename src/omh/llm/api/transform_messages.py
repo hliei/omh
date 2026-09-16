@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from omh.llm.types import ImageContent, Message, Model, TextContent, ToolResultMessage, UserMessage
+from omh.llm.types import (
+    ImageContent,
+    Message,
+    Model,
+    TextContent,
+    ToolResultMessage,
+    UserMessage,
+)
 
 NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)"
 NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)"

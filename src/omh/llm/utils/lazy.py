@@ -3,7 +3,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterable, Awaitable, Callable
 
-from omh.llm.types import AssistantMessage, AssistantMessageEvent, ErrorEvent, Model, empty_usage
+from omh.llm.types import (
+    AssistantMessage,
+    AssistantMessageEvent,
+    ErrorEvent,
+    Model,
+    empty_usage,
+)
 from omh.llm.utils.event_stream import AssistantMessageEventStream
 
 

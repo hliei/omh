@@ -6,7 +6,11 @@ from typing import Protocol
 
 from omh.llm.auth.context import default_provider_auth_context
 from omh.llm.auth.credential_store import InMemoryCredentialStore
-from omh.llm.auth.resolve import AuthResolutionOverrides, ModelsError, resolve_provider_auth
+from omh.llm.auth.resolve import (
+    AuthResolutionOverrides,
+    ModelsError,
+    resolve_provider_auth,
+)
 from omh.llm.auth.types import (
     AuthCheck,
     AuthContext,
