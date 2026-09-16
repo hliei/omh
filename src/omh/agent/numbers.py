@@ -1,0 +1,1 @@
+MAX_SAFE_INTEGER = (1 << 53) - 1
