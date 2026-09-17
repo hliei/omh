@@ -47,9 +47,14 @@ class AgentHarnessToolUpdateOptions:
     checkpoint: bool = False
 
 
-type AgentHarnessToolUpdateCallback = Callable[
-    [AgentToolResult, AgentHarnessToolUpdateOptions | None], None
-]
+class AgentHarnessToolUpdateCallback(Protocol):
+    def __call__(
+        self,
+        partial_result: AgentToolResult,
+        options: AgentHarnessToolUpdateOptions | None = None,
+    ) -> None: ...
+
+
 type AgentHarnessToolExecute = Callable[
     [
         str,
@@ -107,6 +112,7 @@ class AgentHarnessOptions:
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     tools: tuple[AgentHarnessTool, ...] = ()
     active_tool_names: tuple[str, ...] | None = None
+    tool_execution: Literal["sequential", "parallel"] = "parallel"
 
 
 @dataclass(frozen=True, slots=True)

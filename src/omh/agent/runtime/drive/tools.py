@@ -21,6 +21,7 @@ from omh.agent.runtime.codec import (
 from omh.agent.runtime.drive.tool_placement import materialize_ready_prefix
 from omh.agent.runtime.progress import ToolProgress
 from omh.agent.runtime.state import read_operation
+from omh.agent.runtime.tool_effect import ToolEffect
 from omh.agent.runtime.types import (
     CompletedToolCall,
     EffectPendingToolCall,
@@ -57,15 +58,14 @@ class ToolInvocation(AgentHarnessToolInvocation):
     def __init__(
         self,
         lane: AgentLane,
-        operation_id: str,
-        turn_id: str,
-        invocation_id: str,
+        effect: ToolEffect,
         context: Context,
     ) -> None:
-        self.invocation_id = invocation_id
-        self.operation_id = operation_id
-        self.turn_id = turn_id
+        self.invocation_id = effect.invocation_id
+        self.operation_id = effect.operation_id
+        self.turn_id = effect.turn_id
         self._lane = lane
+        self._effect = effect
         self._context = context
         self._active = True
 
@@ -89,12 +89,7 @@ class ToolInvocation(AgentHarnessToolInvocation):
             snapshot = await read_operation(
                 mutator, self._lane.name, self.operation_id, mutation_context
             )
-            state = snapshot.state
-            if not isinstance(state, ToolsOperation) or not any(
-                isinstance(call, EffectPendingToolCall)
-                and call.result_entry_id == self.invocation_id
-                for call in state.batch.calls
-            ):
+            if not self._effect.owns(snapshot.state):
                 raise RuntimeError("Tool invocation is no longer active")
             address = operation_tool_memo(
                 self.operation_id, self.invocation_id, name
@@ -161,6 +156,9 @@ async def run_tools(
         async with materialization_lock:
             await materialize_ready_prefix(lane, operation_id, context)
 
+    if state.settings.tool_execution == "sequential":
+        await run_call(calls[0])
+        return
     await asyncio.gather(*(run_call(call) for call in calls))
     async with materialization_lock:
         await materialize_ready_prefix(lane, operation_id, context)
@@ -263,7 +261,14 @@ async def _recover_pending_call(
         raise RuntimeError("Pending tool call is missing durable arguments")
     if tool is not None and call.replay == "safe" and tool.replay == "safe":
         await _clear_replay_checkpoint(
-            lane, operation_id, state, call, context
+            lane,
+            ToolEffect(
+                operation_id,
+                state.batch.turn_id,
+                call.source_index,
+                call.result_entry_id,
+            ),
+            context,
         )
         await _execute_tool(
             lane,
@@ -304,26 +309,23 @@ async def _recover_pending_call(
 
 async def _clear_replay_checkpoint(
     lane: AgentLane,
-    operation_id: str,
-    state: ToolsOperation,
-    call: EffectPendingToolCall,
+    effect: ToolEffect,
     context: Context,
 ) -> None:
     async def clear(
         mutator: SessionMutator, mutation_context: Context
     ) -> None:
         snapshot = await read_operation(
-            mutator, lane.name, operation_id, mutation_context
+            mutator, lane.name, effect.operation_id, mutation_context
         )
-        current = snapshot.state
-        if (
-            not isinstance(current, ToolsOperation)
-            or current.batch.turn_id != state.batch.turn_id
-            or not any(item == call for item in current.batch.calls)
-        ):
+        if not effect.owns(snapshot.state):
             raise RuntimeError("Tool invocation no longer owns its durable effect")
         await mutator.commit(
-            [delete_value(pending_tool_output(operation_id, call.result_entry_id))],
+            [
+                delete_value(
+                    pending_tool_output(effect.operation_id, effect.invocation_id)
+                )
+            ],
             mutation_context,
         )
 
@@ -387,24 +389,21 @@ async def _execute_tool(
     arguments: dict[str, object],
     context: Context,
 ) -> None:
-    invocation = ToolInvocation(
-        lane, operation_id, state.batch.turn_id, call.result_entry_id, context
-    )
-    progress = ToolProgress(
-        lane,
+    effect = ToolEffect(
         operation_id,
         state.batch.turn_id,
         call.source_index,
         call.result_entry_id,
-        context,
     )
+    invocation = ToolInvocation(lane, effect, context)
+    progress = ToolProgress(lane, effect, context)
 
     def on_update(
-        partial: AgentToolResult,
+        partial_result: AgentToolResult,
         options: AgentHarnessToolUpdateOptions | None = None,
     ) -> None:
         if options is not None and options.checkpoint:
-            progress.write(partial)
+            progress.write(partial_result)
 
     is_error = False
     try:

@@ -435,10 +435,11 @@ def _decode_settings(value: object) -> RunSettings:
     compaction = _record(
         record.get("compaction"), "operation state.settings.compaction"
     )
+    tool_execution = record.get("toolExecution")
     if (
         record.get("steeringMode") != "all"
         or record.get("followUpMode") != "all"
-        or record.get("toolExecution") != "parallel"
+        or tool_execution not in {"sequential", "parallel"}
     ):
         raise ValueError("operation state.settings contains unsupported values")
     return RunSettings(
@@ -452,7 +453,8 @@ def _decode_settings(value: object) -> RunSettings:
             keep_recent_tokens=_integer(
                 compaction, "keepRecentTokens", "operation state.settings.compaction"
             ),
-        )
+        ),
+        tool_execution=tool_execution,
     )
 
 

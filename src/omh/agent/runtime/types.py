@@ -60,7 +60,7 @@ class RunSettings:
     compaction: CompactionSettings = field(default_factory=CompactionSettings)
     steering_mode: Literal["all"] = "all"
     follow_up_mode: Literal["all"] = "all"
-    tool_execution: Literal["parallel"] = "parallel"
+    tool_execution: Literal["sequential", "parallel"] = "parallel"
 
 
 @dataclass(frozen=True, slots=True)

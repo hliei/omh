@@ -204,6 +204,31 @@ class ParallelToolCallingModels(FinishingModels):
         )
 
 
+class TwoToolCallingModels(FinishingModels):
+    def stream_simple(
+        self, model: Model, context: LlmContext, options: object
+    ) -> AssistantMessageEventStream:
+        if self.contexts:
+            return super().stream_simple(model, context, options)
+        del options
+        assert model is MODEL
+        self.contexts.append(context)
+        return _stream(
+            AssistantMessage(
+                api=MODEL.api,
+                provider=MODEL.provider,
+                model=MODEL.id,
+                usage=USAGE,
+                stop_reason="toolUse",
+                timestamp=NOW + 1,
+                content=[
+                    ToolCall(id="call-a", name="a", arguments={}),
+                    ToolCall(id="call-b", name="b", arguments={}),
+                ],
+            )
+        )
+
+
 class PauseAfterToolStagingSession:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -338,6 +363,64 @@ async def test_parallel_tools_stage_independently_and_enter_history_in_source_or
         with suppress(asyncio.CancelledError):
             await running
         await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_sequential_tool_setting_waits_for_each_source_call() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    first_started = asyncio.Event()
+    first_finish = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def execute_a(
+        tool_call_id: str,
+        params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
+        invocation: AgentHarnessToolInvocation,
+        context: Context,
+    ) -> AgentToolResult:
+        del tool_call_id, params, on_update, invocation, context
+        first_started.set()
+        await first_finish.wait()
+        return AgentToolResult(content=[TextContent(text="a")])
+
+    async def execute_b(
+        tool_call_id: str,
+        params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
+        invocation: AgentHarnessToolInvocation,
+        context: Context,
+    ) -> AgentToolResult:
+        del tool_call_id, params, on_update, invocation, context
+        second_started.set()
+        return AgentToolResult(content=[TextContent(text="b")])
+
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=TwoToolCallingModels(),
+            model=MODEL,
+            tools=(
+                AgentHarnessTool("a", "a", {"type": "object"}, execute_a),
+                AgentHarnessTool("b", "b", {"type": "object"}, execute_b),
+            ),
+            tool_execution="sequential",
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    running = asyncio.create_task(lane.prompt("run in order", BACKGROUND_CONTEXT))
+
+    await first_started.wait()
+    await asyncio.sleep(0)
+    assert not second_started.is_set()
+    first_finish.set()
+    result = await running
+
+    assert result.ok is True
+    assert second_started.is_set()
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
 
 
 async def test_prompt_executes_active_tool_then_continues_model() -> None:
@@ -788,6 +871,114 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
         )
     ]
     assert len(models.contexts) == 1
+
+    await reopened.harness.close(BACKGROUND_CONTEXT)
+    await reopened_repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_reopen_places_staged_parallel_result_after_interrupted_prefix(
+    tmp_path,
+) -> None:
+    repo = SqliteSessionRepo(tmp_path, now=lambda: NOW)
+    stored_session = await repo.create(
+        SessionCreateOptions(id="session"), BACKGROUND_CONTEXT
+    )
+    session = PauseAfterToolStagingSession(stored_session)
+    first_started = asyncio.Event()
+
+    async def execute_a(
+        tool_call_id: str,
+        params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
+        invocation: AgentHarnessToolInvocation,
+        context: Context,
+    ) -> AgentToolResult:
+        del tool_call_id, params, on_update, invocation, context
+        first_started.set()
+        await asyncio.Future[None]()
+        raise AssertionError("unreachable")
+
+    async def execute_b(
+        tool_call_id: str,
+        params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
+        invocation: AgentHarnessToolInvocation,
+        context: Context,
+    ) -> AgentToolResult:
+        del tool_call_id, params, on_update, invocation, context
+        return AgentToolResult(content=[TextContent(text="b finished")])
+
+    first = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,  # type: ignore[arg-type]
+            models=TwoToolCallingModels(),
+            model=MODEL,
+            tools=(
+                AgentHarnessTool("a", "a", {"type": "object"}, execute_a),
+                AgentHarnessTool("b", "b", {"type": "object"}, execute_b),
+            ),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await first.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="run both", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+    observing = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await first_started.wait()
+    await session.staged.wait()
+    await first.harness.close(BACKGROUND_CONTEXT)
+    with pytest.raises(asyncio.CancelledError):
+        await observing
+    await repo.close(BACKGROUND_CONTEXT)
+
+    reopened_repo = SqliteSessionRepo(tmp_path, now=lambda: NOW + 1)
+    reopened_session = await reopened_repo.open(
+        stored_session.metadata, BACKGROUND_CONTEXT
+    )
+
+    async def must_not_execute(
+        tool_call_id: str,
+        params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
+        invocation: AgentHarnessToolInvocation,
+        context: Context,
+    ) -> AgentToolResult:
+        del tool_call_id, params, on_update, invocation, context
+        raise AssertionError("recovery must not execute either tool")
+
+    reopened = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=reopened_session,
+            models=FinishingModels(),
+            model=MODEL,
+            tools=(
+                AgentHarnessTool("a", "a", {"type": "object"}, must_not_execute),
+                AgentHarnessTool("b", "b", {"type": "object"}, must_not_execute),
+            ),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    reopened_lane = await reopened.harness.lane("main", BACKGROUND_CONTEXT)
+
+    resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
+
+    assert resumed.ok is True
+    history = await reopened_lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    tool_results = [
+        entry.message
+        for entry in history
+        if entry.type == "message" and isinstance(entry.message, ToolResultMessage)
+    ]
+    assert [message.tool_call_id for message in tool_results] == ["call-a", "call-b"]
+    assert tool_results[0].is_error is True
+    assert "external outcome is unknown" in tool_results[0].content[-1].text
+    assert tool_results[1].content == [TextContent(text="b finished")]
 
     await reopened.harness.close(BACKGROUND_CONTEXT)
     await reopened_repo.close(BACKGROUND_CONTEXT)
