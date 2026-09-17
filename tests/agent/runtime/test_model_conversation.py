@@ -701,9 +701,88 @@ async def test_request_abort_cancels_live_model_and_settles_shared_drive() -> No
     assert first_result.value.outcome.status == "aborted"
     assert interrupted.provider_cancelled.is_set()
     assert (await lane.inspect_execution(BACKGROUND_CONTEXT)).current is None
+    history = await lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assistant = history[-1].message
+    assert assistant.role == "assistant"
+    assert assistant.stop_reason == "aborted"
+    assert assistant.content[0].type == "toolCall"
+    assert "external outcome is unknown" in assistant.error_message
+    assert (await session.get_stats(BACKGROUND_CONTEXT)).usage.total_tokens == 0
 
     await created.harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_abort_seals_model_admission_before_durable_commit() -> None:
+    class BlockingCommitStorage(MemoryStorage):
+        block_next_commit = False
+
+        def __init__(self) -> None:
+            super().__init__(now=lambda: NOW)
+            self.commit_started = asyncio.Event()
+            self.release_commit = asyncio.Event()
+
+        async def commit(self, writes: list[Write], context: Context):
+            if self.block_next_commit:
+                self.block_next_commit = False
+                self.commit_started.set()
+                await self.release_commit.wait()
+            return await super().commit(writes, context)
+
+    class BlockingScanSession(StorageBackedSession):
+        def __init__(self, storage: MemoryStorage) -> None:
+            super().__init__(
+                SessionMetadata(id="session", created_at=NOW, storage_version=1),
+                storage,
+            )
+            self.scan_started = asyncio.Event()
+            self.release_scan = asyncio.Event()
+            self.block_scan = False
+
+        async def scan_branch(self, query, context):
+            if self.block_scan:
+                self.block_scan = False
+                self.scan_started.set()
+                await self.release_scan.wait()
+            return await super().scan_branch(query, context)
+
+    storage = BlockingCommitStorage()
+    session = BlockingScanSession(storage)
+    models = RecordingModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=models, model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="hello", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+    session.block_scan = True
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await session.scan_started.wait()
+
+    storage.block_next_commit = True
+    aborting = asyncio.create_task(lane.request_abort("run", BACKGROUND_CONTEXT))
+    await storage.commit_started.wait()
+    session.release_scan.set()
+    await asyncio.sleep(0)
+    assert models.stream_calls == 0
+
+    storage.release_commit.set()
+    requested = await aborting
+    driven = await driving
+    assert requested.ok is True
+    assert driven.ok is True
+    assert driven.value.kind == "settled"
+    assert driven.value.outcome.status == "aborted"
+    assert models.stream_calls == 0
+
+    await created.harness.close(BACKGROUND_CONTEXT)
 
 
 async def test_close_rejects_observation_but_preserves_open_operation() -> None:
@@ -780,5 +859,14 @@ async def test_storage_commit_failure_faults_harness_not_operation_result() -> N
     with pytest.raises(HarnessFault) as read_after_fault:
         await lane.get_result("missing", BACKGROUND_CONTEXT)
     assert read_after_fault.value is failed.value
+    for call in (
+        lane.get_tip_id(BACKGROUND_CONTEXT),
+        lane.get_active_tools(BACKGROUND_CONTEXT),
+        lane.set_active_tools((), BACKGROUND_CONTEXT),
+        lane.find_entries(None, BACKGROUND_CONTEXT),
+    ):
+        with pytest.raises(HarnessFault) as sealed:
+            await call
+        assert sealed.value is failed.value
 
     await created.harness.close(BACKGROUND_CONTEXT)

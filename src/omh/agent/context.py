@@ -56,66 +56,56 @@ def with_cancel(context: Context) -> CancelScope:
 
 
 async def await_with_context[T](awaitable: Awaitable[T], context: Context) -> T:
-    context.raise_if_cancelled()
-    if not context._cancellations:
-        return await awaitable
-
-    observation = asyncio.ensure_future(asyncio.shield(awaitable))
-    cancellation_waiters = [
-        asyncio.create_task(cancellation.event.wait())
-        for cancellation in context._cancellations
-    ]
-    try:
-        waiters = {
-            cast(asyncio.Future[object], observation),
-            *(cast(asyncio.Future[object], waiter) for waiter in cancellation_waiters),
-        }
-        done, _ = await asyncio.wait(
-            waiters,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if observation in done:
-            return observation.result()
-        context.raise_if_cancelled()
-        raise RuntimeError("Context cancellation completed without a reason")
-    finally:
-        for waiter in cancellation_waiters:
-            waiter.cancel()
-        if not observation.done():
-            observation.cancel()
-        await asyncio.gather(*cancellation_waiters, return_exceptions=True)
+    return await _race_with_context(awaitable, context, cancel_target=False)
 
 
 async def cancel_on_context[T](awaitable: Awaitable[T], context: Context) -> T:
+    return await _race_with_context(awaitable, context, cancel_target=True)
+
+
+async def _race_with_context[T](
+    awaitable: Awaitable[T], context: Context, *, cancel_target: bool
+) -> T:
     context.raise_if_cancelled()
     if not context._cancellations:
         return await awaitable
 
-    operation = asyncio.ensure_future(awaitable)
+    target = asyncio.ensure_future(
+        awaitable if cancel_target else asyncio.shield(awaitable)
+    )
     cancellation_waiters = [
         asyncio.create_task(cancellation.event.wait())
         for cancellation in context._cancellations
     ]
     waiters = {
-        cast(asyncio.Future[object], operation),
+        cast(asyncio.Future[object], target),
         *(cast(asyncio.Future[object], waiter) for waiter in cancellation_waiters),
     }
     try:
         done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
-        if operation in done:
-            return operation.result()
-        operation.cancel()
-        operation.add_done_callback(_observe_completion)
+        if target in done:
+            return target.result()
+        if cancel_target:
+            _cancel_and_observe(target)
         context.raise_if_cancelled()
         raise RuntimeError("Context cancellation completed without a reason")
     except asyncio.CancelledError:
-        operation.cancel()
-        operation.add_done_callback(_observe_completion)
+        if cancel_target:
+            _cancel_and_observe(target)
         raise
     finally:
         for waiter in cancellation_waiters:
             waiter.cancel()
+        if not cancel_target and not target.done():
+            target.cancel()
         await asyncio.gather(*cancellation_waiters, return_exceptions=True)
+
+
+def _cancel_and_observe[T](task: asyncio.Future[T]) -> None:
+    if task.done():
+        return
+    task.cancel()
+    task.add_done_callback(_observe_completion)
 
 
 def _observe_completion[T](task: asyncio.Future[T]) -> None:

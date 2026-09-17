@@ -70,23 +70,26 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
     thinking_level = intent.generation_context.configuration.thinking_level
     reasoning = None if thinking_level == "off" else thinking_level
     context.raise_if_cancelled()
-    stream = lane._options.models.stream_simple(
-        model,
-        LlmContext(
-            messages=provider_messages,
-            tools=(
-                [
-                    Tool(
-                        name=tool.name,
-                        description=tool.description,
-                        parameters=tool.parameters,
-                    )
-                    for tool in active_tools
-                ]
-                or None
+    stream = lane.admit_effect(
+        operation_id,
+        lambda: lane._options.models.stream_simple(
+            model,
+            LlmContext(
+                messages=provider_messages,
+                tools=(
+                    [
+                        Tool(
+                            name=tool.name,
+                            description=tool.description,
+                            parameters=tool.parameters,
+                        )
+                        for tool in active_tools
+                    ]
+                    or None
+                ),
             ),
+            SimpleStreamOptions(reasoning=reasoning),
         ),
-        SimpleStreamOptions(reasoning=reasoning),
     )
     encoder = AssistantMessageFrameEncoder()
     iterator = stream.__aiter__()

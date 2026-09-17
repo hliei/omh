@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from omh.agent.context import Context
 from omh.agent.runtime.codec import decode_assistant_frame, decode_operation_state
 from omh.agent.runtime.drive.response import settle_response
-from omh.agent.runtime.types import AssistantEffectPendingOperation
+from omh.agent.runtime.types import AssistantEffectPendingOperation, ModelIdentity
+from omh.agent.session.types import Session, SessionMutator
 from omh.agent.session.values import (
     ListCursor,
     ListReadOptions,
@@ -35,11 +36,29 @@ async def recover_assistant_generation(
     intent = decode_operation_state(stored.value)
     if not isinstance(intent, AssistantEffectPendingOperation):
         return
-    address = pending_assistant_frames(operation_id, intent.response_entry_id)
+    frames = await read_assistant_frames(
+        lane._options.session, operation_id, intent.response_entry_id, context
+    )
+    recovered = interrupted_assistant_message(
+        intent.generation_context.configuration.model,
+        reduce_assistant_message_frames(frames),
+        lane.now_ms(),
+        "error",
+    )
+    await settle_response(lane, operation_id, intent, recovered, context, recovery=True)
+
+
+async def read_assistant_frames(
+    reader: Session | SessionMutator,
+    operation_id: str,
+    response_entry_id: str,
+    context: Context,
+) -> list[AssistantMessageFrame]:
+    address = pending_assistant_frames(operation_id, response_entry_id)
     frames: list[AssistantMessageFrame] = []
     cursor: ListCursor | None = None
     while True:
-        page = await lane._options.session.read_list(
+        page = await reader.read_list(
             address,
             ListReadOptions(cursor=cursor, order="asc", limit=1_000),
             context,
@@ -48,27 +67,32 @@ async def recover_assistant_generation(
         if len(page) < 1_000:
             break
         cursor = ListCursor(seq=page[-1].seq)
-    partial = reduce_assistant_message_frames(frames)
+    return frames
+
+
+def interrupted_assistant_message(
+    identity: ModelIdentity,
+    partial: AssistantMessage | None,
+    timestamp: int,
+    stop_reason: Literal["error", "aborted"],
+) -> AssistantMessage:
     warning = (
         "Assistant request was interrupted. The preceding content is the latest committed partial; "
         "newer live output may be missing and the external outcome is unknown."
     )
-    identity = intent.generation_context.configuration.model
     if partial is None:
-        recovered = AssistantMessage(
+        return AssistantMessage(
             api="unknown",
             provider=identity.provider,
             model=identity.model_id,
             usage=empty_usage(),
-            stop_reason="error",
-            timestamp=lane.now_ms(),
+            stop_reason=stop_reason,
+            timestamp=timestamp,
             error_message=warning,
         )
-    else:
-        recovered = replace(
-            partial,
-            usage=empty_usage(),
-            stop_reason="error",
-            error_message=warning,
-        )
-    await settle_response(lane, operation_id, intent, recovered, context, recovery=True)
+    return replace(
+        partial,
+        usage=empty_usage(),
+        stop_reason=stop_reason,
+        error_message=warning,
+    )

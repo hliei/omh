@@ -407,8 +407,14 @@ async def _execute_tool(
 
     is_error = False
     try:
+        execution: asyncio.Future[AgentToolResult] = lane.admit_effect(
+            operation_id,
+            lambda: asyncio.ensure_future(
+                tool.execute(tool_call.id, arguments, on_update, invocation, context)
+            ),
+        )
         result = await cancel_on_context(
-            tool.execute(tool_call.id, arguments, on_update, invocation, context),
+            execution,
             context,
         )
     except asyncio.CancelledError:

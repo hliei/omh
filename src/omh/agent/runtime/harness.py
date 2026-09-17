@@ -42,7 +42,6 @@ class Harness(AgentHarness):
         validate_active_tool_names(self._active_tool_seed)
         self._lanes: dict[str, AgentLane] = {}
         self._lane_lock = Lock()
-        self._closed = False
         self._closed_error: HarnessClosed | None = None
         self._fault_error: HarnessFault | None = None
         self._close_task: Task[None] | None = None
@@ -106,7 +105,6 @@ class Harness(AgentHarness):
     async def close(self, context: Context) -> None:
         async with self._lane_lock:
             if self._close_task is None:
-                self._closed = True
                 self._closed_error = HarnessClosed()
                 self._close_task = create_task(
                     self._finish_close(self._closed_error, context)

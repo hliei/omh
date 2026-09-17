@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from asyncio import CancelledError, Lock, Task, create_task, shield
+from asyncio import (
+    CancelledError,
+    Future,
+    Lock,
+    Task,
+    create_task,
+    get_running_loop,
+    shield,
+)
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
@@ -100,6 +108,8 @@ class AgentLane:
         self._drive_task: Task[DriveResult] | None = None
         self._drive_operation_id: str | None = None
         self._drive_cancel_scope: CancelScope | None = None
+        self._effect_admission_closed_for: str | None = None
+        self._abort_settled: Future[None] | None = None
         self._closed = False
         self._closed_error: HarnessClosed | None = None
         self._fault_error: HarnessFault | None = None
@@ -208,6 +218,8 @@ class AgentLane:
                 self._drive_task = task
                 self._drive_operation_id = options.operation_id
                 self._drive_cancel_scope = cancel_scope
+                self._effect_admission_closed_for = None
+                self._abort_settled = None
                 task.add_done_callback(self._observe_drive_completion)
         try:
             return await await_with_context(shield(task), context)
@@ -237,7 +249,8 @@ class AgentLane:
                     )
                 )
             return ok(await drive_operation(self, options, context))
-        except _AbortRequested:
+        except _AbortRequested as abort:
+            await abort.settled
             return ok(await drive_operation(self, options, BACKGROUND_CONTEXT))
         except HarnessFault:
             raise
@@ -298,6 +311,12 @@ class AgentLane:
     ) -> AbortRequestResult:
         self._assert_open()
         requested_at = now_ms()
+        settled: Future[None] = get_running_loop().create_future()
+        settled.add_done_callback(self._observe_abort_settlement)
+        seals_active_drive = self._drive_operation_id == operation_id
+        if seals_active_drive:
+            self._effect_admission_closed_for = operation_id
+            self._abort_settled = settled
 
         async def request(
             mutator: SessionMutator, mutation_context: Context
@@ -343,12 +362,31 @@ class AgentLane:
         try:
             result = await self._options.session.mutate(request, context)
         except Exception as error:
-            raise self._on_fault(error) from error
-        if result.ok and self._drive_operation_id == operation_id:
+            fault = self._on_fault(error)
+            if not settled.done():
+                settled.set_exception(fault)
+            raise fault from error
+        if not settled.done():
+            settled.set_result(None)
+        if result.ok and seals_active_drive:
             scope = self._drive_cancel_scope
             if scope is not None:
-                scope.cancel(_AbortRequested())
+                scope.cancel(_AbortRequested(settled))
         return result
+
+    @staticmethod
+    def _observe_abort_settlement(settled: Future[None]) -> None:
+        if not settled.cancelled():
+            settled.exception()
+
+    def admit_effect[T](self, operation_id: str, invoke: Callable[[], T]) -> T:
+        self._assert_open()
+        if self._effect_admission_closed_for == operation_id:
+            settled = self._abort_settled
+            if settled is None:
+                raise RuntimeError("Closed effect admission is missing abort settlement")
+            raise _AbortRequested(settled)
+        return invoke()
 
     async def abort(self, context: Context) -> AbortResult:
         execution = await self.inspect_execution(context)
@@ -416,12 +454,14 @@ class AgentLane:
         )
 
     async def get_tip_id(self, context: Context) -> str | None:
+        self._assert_open()
         stored = await self._options.session.get_value(branch_tip(self.name), context)
         if stored is None:
             raise RuntimeError(f"Lane {self.name!r} is missing branch state")
         return stored.value
 
     async def get_active_tools(self, context: Context) -> tuple[str, ...]:
+        self._assert_open()
         stored = await self._options.session.get_value(lane_config(self.name), context)
         if stored is None:
             raise RuntimeError(f"Lane {self.name!r} is missing configuration")
@@ -432,6 +472,7 @@ class AgentLane:
     async def set_active_tools(
         self, names: tuple[str, ...], context: Context
     ) -> None:
+        self._assert_open()
         validate_active_tool_names(names)
 
         async def update(
@@ -467,6 +508,7 @@ class AgentLane:
     async def find_entries(
         self, query: BranchScan | None, context: Context
     ) -> list[Entry]:
+        self._assert_open()
         branch = await self._options.session.branch(self.name, context)
         if branch is None:
             raise RuntimeError(f"Lane {self.name!r} is missing branch state")
@@ -497,4 +539,6 @@ class AgentLane:
 
 
 class _AbortRequested(RuntimeError):
-    pass
+    def __init__(self, settled: Future[None]) -> None:
+        super().__init__("Abort requested")
+        self.settled = settled
