@@ -829,7 +829,10 @@ async def test_close_rejects_observation_but_preserves_open_operation() -> None:
     await repo.close(BACKGROUND_CONTEXT)
 
 
-async def test_storage_commit_failure_faults_harness_not_operation_result() -> None:
+@pytest.mark.parametrize("failing_call", ["accept", "set_active_tools"])
+async def test_storage_commit_failure_faults_harness_not_operation_result(
+    failing_call: str,
+) -> None:
     class FailingMemoryStorage(MemoryStorage):
         fail_next_commit = False
 
@@ -851,7 +854,10 @@ async def test_storage_commit_failure_faults_harness_not_operation_result() -> N
     storage.fail_next_commit = True
 
     with pytest.raises(HarnessFault) as failed:
-        await lane.accept(PromptRequest(prompt="hello"), BACKGROUND_CONTEXT)
+        if failing_call == "accept":
+            await lane.accept(PromptRequest(prompt="hello"), BACKGROUND_CONTEXT)
+        else:
+            await lane.set_active_tools((), BACKGROUND_CONTEXT)
     assert isinstance(failed.value.__cause__, OSError)
     with pytest.raises(HarnessFault) as later:
         await lane.inspect_execution(BACKGROUND_CONTEXT)

@@ -19,11 +19,15 @@ from omh.agent import (
     Context,
     DriveOptions,
     HarnessClosed,
+    HarnessFault,
     MemorySessionRepo,
+    MemoryStorage,
     PromptRequest,
     Session,
     SessionCreateOptions,
+    SessionMetadata,
     SessionMutator,
+    StorageBackedSession,
     ToolReplayPolicy,
     Value,
     Write,
@@ -177,6 +181,64 @@ class FinishingModels:
                 content=[TextContent(text="finished")],
             )
         )
+
+
+async def test_tool_memo_commit_failure_faults_harness() -> None:
+    class FailingMemoryStorage(MemoryStorage):
+        fail_next_commit = False
+
+        async def commit(self, writes: list[Write], context: Context):
+            if self.fail_next_commit:
+                self.fail_next_commit = False
+                raise OSError("disk unavailable")
+            return await super().commit(writes, context)
+
+    storage = FailingMemoryStorage(now=lambda: NOW)
+    session = StorageBackedSession(
+        SessionMetadata(id="session", created_at=NOW, storage_version=1), storage
+    )
+
+    async def fail_memo(
+        _tool_call_id: str,
+        _arguments: dict[str, object],
+        _on_update: AgentHarnessToolUpdateCallback,
+        invocation: AgentHarnessToolInvocation,
+        _context: Context,
+    ) -> AgentToolResult:
+        storage.fail_next_commit = True
+        await invocation.set_memo("request", {"id": "value"})
+        raise AssertionError("memo failure must stop the tool")
+
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=ToolCallingModels(),
+            model=MODEL,
+            tools=(
+                AgentHarnessTool(
+                    name="add",
+                    description="Add numbers",
+                    parameters={"type": "object"},
+                    execute=fail_memo,
+                ),
+            ),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="add", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+
+    with pytest.raises(HarnessFault) as failed:
+        await lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    assert isinstance(failed.value.__cause__, OSError)
+    with pytest.raises(HarnessFault) as sealed:
+        await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert sealed.value is failed.value
+
+    await created.harness.close(BACKGROUND_CONTEXT)
 
 
 class ParallelToolCallingModels(FinishingModels):

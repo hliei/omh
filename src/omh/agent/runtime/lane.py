@@ -66,7 +66,13 @@ from omh.agent.runtime.types import (
     StartingOperation,
 )
 from omh.agent.session.commit import insert_entry
-from omh.agent.session.types import BranchScan, Entry, NewMessageEntry, SessionMutator
+from omh.agent.session.types import (
+    BranchScan,
+    Entry,
+    NewMessageEntry,
+    SessionMutationCallback,
+    SessionMutator,
+)
 from omh.agent.session.values import (
     branch_tip,
     lane_config,
@@ -388,6 +394,16 @@ class AgentLane:
             raise _AbortRequested(settled)
         return invoke()
 
+    async def mutate[T](
+        self, mutation: SessionMutationCallback[T], context: Context
+    ) -> T:
+        try:
+            return await self._options.session.mutate(mutation, context)
+        except HarnessFault:
+            raise
+        except Exception as error:
+            raise self._on_fault(error) from error
+
     async def abort(self, context: Context) -> AbortResult:
         execution = await self.inspect_execution(context)
         if execution.current is None:
@@ -503,7 +519,7 @@ class AgentLane:
                 mutation_context,
             )
 
-        await self._options.session.mutate(update, context)
+        await self.mutate(update, context)
 
     async def find_entries(
         self, query: BranchScan | None, context: Context
