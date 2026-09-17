@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from omh.agent.agent_harness import DriveOptions, WaitingDriveOutcome
-from omh.agent.context import Context
+from omh.agent.context import Context, cancel_on_context
 from omh.agent.runtime.codec import decode_operation_state, encode_operation_state
 from omh.agent.runtime.retry import wait_until
 from omh.agent.runtime.state import read_operation
@@ -36,7 +36,7 @@ async def run_retry_wait(
             not_before=state.not_before,
         )
     if remaining_ms > 0:
-        await wait_until(state.not_before, lane.now_ms)
+        await cancel_on_context(wait_until(state.not_before, lane.now_ms), context)
 
     async def transition(mutator: SessionMutator, mutation_context: Context) -> None:
         snapshot = await read_operation(

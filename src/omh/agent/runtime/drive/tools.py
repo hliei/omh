@@ -13,7 +13,7 @@ from omh.agent.agent_harness import (
     ToolMemo,
     ToolMemoUnset,
 )
-from omh.agent.context import Context
+from omh.agent.context import Context, cancel_on_context
 from omh.agent.runtime.codec import (
     decode_agent_tool_result,
     encode_operation_state,
@@ -407,8 +407,9 @@ async def _execute_tool(
 
     is_error = False
     try:
-        result = await tool.execute(
-            tool_call.id, arguments, on_update, invocation, context
+        result = await cancel_on_context(
+            tool.execute(tool_call.id, arguments, on_update, invocation, context),
+            context,
         )
     except asyncio.CancelledError:
         raise

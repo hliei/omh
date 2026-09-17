@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from asyncio import Lock, Task, create_task, shield
+from asyncio import CancelledError, Lock, Task, create_task, shield
+from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import replace
 
 from omh.agent.agent_harness import (
+    AbortOutcome,
+    AbortRequest,
+    AbortRequestResult,
+    AbortResult,
     AgentHarnessOptions,
     CurrentOperationInfo,
     DriveOptions,
@@ -11,6 +17,7 @@ from omh.agent.agent_harness import (
     InvalidMessage,
     LaneBusy,
     LaneExecutionInfo,
+    NoActiveOperation,
     NothingToResume,
     OperationAdmission,
     OperationAdmissionResult,
@@ -21,8 +28,14 @@ from omh.agent.agent_harness import (
     RunResult,
     SettledDriveOutcome,
 )
-from omh.agent.context import BACKGROUND_CONTEXT, Context
-from omh.agent.result import err, ok
+from omh.agent.context import (
+    BACKGROUND_CONTEXT,
+    CancelScope,
+    Context,
+    await_with_context,
+    with_cancel,
+)
+from omh.agent.result import HarnessClosed, HarnessFault, err, ok
 from omh.agent.runtime.codec import (
     decode_lane_state,
     decode_operation_meta,
@@ -36,6 +49,7 @@ from omh.agent.runtime.drive import drive_operation
 from omh.agent.runtime.drive.terminal import now_ms
 from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
 from omh.agent.runtime.types import (
+    CancelRequestedControl,
     LaneConfiguration,
     LaneState,
     OperationMeta,
@@ -76,14 +90,19 @@ class AgentLane:
         name: str,
         options: AgentHarnessOptions,
         tool_registry: ToolRegistry,
+        on_fault: Callable[[BaseException], HarnessFault],
     ) -> None:
         self.name = name
         self._options = options
         self._tool_registry = tool_registry
+        self._on_fault = on_fault
         self._drive_lock = Lock()
         self._drive_task: Task[DriveResult] | None = None
         self._drive_operation_id: str | None = None
+        self._drive_cancel_scope: CancelScope | None = None
         self._closed = False
+        self._closed_error: HarnessClosed | None = None
+        self._fault_error: HarnessFault | None = None
 
     @staticmethod
     def now_ms() -> int:
@@ -92,6 +111,7 @@ class AgentLane:
     async def accept(
         self, request: PromptRequest, context: Context
     ) -> OperationAdmissionResult:
+        self._assert_open()
         messages = _normalize_prompt(request.prompt)
         if not messages:
             return err(InvalidMessage(reason="empty"))
@@ -161,10 +181,14 @@ class AgentLane:
                 )
             )
 
-        return await self._options.session.mutate(accept, context)
+        try:
+            return await self._options.session.mutate(accept, context)
+        except Exception as error:
+            raise self._on_fault(error) from error
 
     async def drive(self, options: DriveOptions, context: Context) -> DriveResult:
-        del context
+        self._assert_open()
+        context.raise_if_cancelled()
         async with self._drive_lock:
             if self._closed:
                 raise RuntimeError("AgentLane is closed")
@@ -179,31 +203,46 @@ class AgentLane:
                     )
                 task = active
             else:
-                task = create_task(self._drive_owned(options))
+                cancel_scope = with_cancel(BACKGROUND_CONTEXT)
+                task = create_task(self._drive_owned(options, cancel_scope.context))
                 self._drive_task = task
                 self._drive_operation_id = options.operation_id
+                self._drive_cancel_scope = cancel_scope
                 task.add_done_callback(self._observe_drive_completion)
-        return await shield(task)
+        try:
+            return await await_with_context(shield(task), context)
+        except CancelledError:
+            if self._closed_error is not None:
+                raise self._closed_error from None
+            raise
 
-    async def _drive_owned(self, options: DriveOptions) -> DriveResult:
-        context = BACKGROUND_CONTEXT
-        existing = await self.get_result(options.operation_id, context)
-        if existing is not None:
-            return ok(SettledDriveOutcome(outcome=existing))
-        execution = await self.inspect_execution(context)
-        if (
-            execution.current is None
-            or execution.current.operation_id != options.operation_id
-        ):
-            return err(
-                OperationMismatch(
-                    expected_operation_id=None
-                    if execution.current is None
-                    else execution.current.operation_id,
-                    operation_id=options.operation_id,
+    async def _drive_owned(
+        self, options: DriveOptions, context: Context
+    ) -> DriveResult:
+        try:
+            existing = await self.get_result(options.operation_id, context)
+            if existing is not None:
+                return ok(SettledDriveOutcome(outcome=existing))
+            execution = await self.inspect_execution(context)
+            if (
+                execution.current is None
+                or execution.current.operation_id != options.operation_id
+            ):
+                return err(
+                    OperationMismatch(
+                        expected_operation_id=None
+                        if execution.current is None
+                        else execution.current.operation_id,
+                        operation_id=options.operation_id,
+                    )
                 )
-            )
-        return ok(await drive_operation(self, options, context))
+            return ok(await drive_operation(self, options, context))
+        except _AbortRequested:
+            return ok(await drive_operation(self, options, BACKGROUND_CONTEXT))
+        except HarnessFault:
+            raise
+        except Exception as error:
+            raise self._on_fault(error) from error
 
     @staticmethod
     def _observe_drive_completion(task: Task[DriveResult]) -> None:
@@ -246,6 +285,7 @@ class AgentLane:
     async def get_result(
         self, operation_id: str, context: Context
     ) -> OperationResultRecord | None:
+        self._assert_open()
         stored = await self._options.session.get_value(
             operation_result(operation_id), context
         )
@@ -253,7 +293,96 @@ class AgentLane:
             return None
         return decode_operation_result(stored.value)
 
+    async def request_abort(
+        self, operation_id: str, context: Context
+    ) -> AbortRequestResult:
+        self._assert_open()
+        requested_at = now_ms()
+
+        async def request(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> AbortRequestResult:
+            stored_lane = await mutator.get_value(
+                lane_state(self.name), mutation_context
+            )
+            if stored_lane is None:
+                raise RuntimeError(f"Lane {self.name!r} is missing durable state")
+            durable_lane = decode_lane_state(stored_lane.value)
+            if durable_lane.current_operation_id != operation_id:
+                return err(
+                    OperationMismatch(
+                        expected_operation_id=durable_lane.current_operation_id,
+                        operation_id=operation_id,
+                    )
+                )
+            stored_state = await mutator.get_value(
+                operation_state(operation_id), mutation_context
+            )
+            if stored_state is None:
+                raise RuntimeError(f"Operation {operation_id!r} is missing state")
+            state = decode_operation_state(stored_state.value)
+            if isinstance(state.control, CancelRequestedControl):
+                return ok(
+                    AbortRequest(operation_id=operation_id, newly_requested=False)
+                )
+            cancelled = replace(
+                state,
+                control=CancelRequestedControl(requested_at=requested_at),
+            )
+            await mutator.commit(
+                [
+                    set_value(
+                        operation_state(operation_id),
+                        encode_operation_state(cancelled),
+                    )
+                ],
+                mutation_context,
+            )
+            return ok(AbortRequest(operation_id=operation_id, newly_requested=True))
+
+        try:
+            result = await self._options.session.mutate(request, context)
+        except Exception as error:
+            raise self._on_fault(error) from error
+        if result.ok and self._drive_operation_id == operation_id:
+            scope = self._drive_cancel_scope
+            if scope is not None:
+                scope.cancel(_AbortRequested())
+        return result
+
+    async def abort(self, context: Context) -> AbortResult:
+        execution = await self.inspect_execution(context)
+        if execution.current is None:
+            return err(NoActiveOperation())
+        operation_id = execution.current.operation_id
+        requested = await self.request_abort(operation_id, context)
+        if not requested.ok:
+            return err(requested.error)
+        driven = await self.drive(DriveOptions(operation_id=operation_id), context)
+        if not driven.ok:
+            return err(driven.error)
+        return ok(
+            AbortOutcome(
+                operation_id=operation_id,
+                steer=requested.value.steer,
+                follow_up=requested.value.follow_up,
+            )
+        )
+
+    async def is_abort_requested(
+        self, operation_id: str, context: Context
+    ) -> bool:
+        stored = await self._options.session.get_value(
+            operation_state(operation_id), context
+        )
+        if stored is None:
+            return False
+        return isinstance(
+            decode_operation_state(stored.value).control, CancelRequestedControl
+        )
+
     async def inspect_execution(self, context: Context) -> LaneExecutionInfo:
+        self._assert_open()
         stored_lane = await self._options.session.get_value(
             lane_state(self.name), context
         )
@@ -343,12 +472,29 @@ class AgentLane:
             raise RuntimeError(f"Lane {self.name!r} is missing branch state")
         return await branch.find_entries(query, context)
 
-    async def close(self) -> None:
+    async def close(self, error: HarnessClosed) -> None:
         async with self._drive_lock:
             self._closed = True
+            self._closed_error = error
             task = self._drive_task
             if task is not None and not task.done():
                 task.cancel()
         if task is not None:
             with suppress(BaseException):
                 await task
+
+    def seal_fault(self, error: HarnessFault) -> None:
+        self._fault_error = error
+        scope = self._drive_cancel_scope
+        if scope is not None:
+            scope.cancel(error)
+
+    def _assert_open(self) -> None:
+        if self._fault_error is not None:
+            raise self._fault_error
+        if self._closed_error is not None:
+            raise self._closed_error
+
+
+class _AbortRequested(RuntimeError):
+    pass

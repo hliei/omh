@@ -10,6 +10,7 @@ from omh.agent.agent_harness import (
     OpenOperation,
 )
 from omh.agent.context import Context
+from omh.agent.result import HarnessClosed, HarnessFault
 from omh.agent.runtime.codec import (
     decode_lane_configuration,
     decode_lane_state,
@@ -42,6 +43,8 @@ class Harness(AgentHarness):
         self._lanes: dict[str, AgentLane] = {}
         self._lane_lock = Lock()
         self._closed = False
+        self._closed_error: HarnessClosed | None = None
+        self._fault_error: HarnessFault | None = None
         self._close_task: Task[None] | None = None
 
     async def lane(self, name: str, context: Context) -> AgentLane:
@@ -91,9 +94,12 @@ class Harness(AgentHarness):
                 assert configuration is not None and state is not None
                 decode_lane_configuration(configuration.value)
                 decode_lane_state(state.value)
-            return AgentLane(name, self._options, self._tool_registry)
+            return AgentLane(name, self._options, self._tool_registry, self._fault)
 
-        acquired = await self._options.session.mutate(acquire, context)
+        try:
+            acquired = await self._options.session.mutate(acquire, context)
+        except Exception as error:
+            raise self._fault(error) from error
         published = self._lanes.setdefault(name, acquired)
         return published
 
@@ -101,7 +107,10 @@ class Harness(AgentHarness):
         async with self._lane_lock:
             if self._close_task is None:
                 self._closed = True
-                self._close_task = create_task(self._finish_close(context))
+                self._closed_error = HarnessClosed()
+                self._close_task = create_task(
+                    self._finish_close(self._closed_error, context)
+                )
             task = self._close_task
         await shield(task)
 
@@ -117,21 +126,32 @@ class Harness(AgentHarness):
         self._assert_open()
         await self._tool_registry.replace(tools)
 
-    async def _finish_close(self, context: Context) -> None:
+    async def _finish_close(self, error: HarnessClosed, context: Context) -> None:
         for lane in self._lanes.values():
-            await lane.close()
+            await lane.close(error)
         await self._options.session.close(context)
 
     def restore_lane(self, name: str) -> AgentLane:
         lane = self._lanes.get(name)
         if lane is None:
-            lane = AgentLane(name, self._options, self._tool_registry)
+            lane = AgentLane(name, self._options, self._tool_registry, self._fault)
             self._lanes[name] = lane
         return lane
 
+    def _fault(self, cause: BaseException) -> HarnessFault:
+        if self._fault_error is not None:
+            return self._fault_error
+        fault = cause if isinstance(cause, HarnessFault) else HarnessFault(cause)
+        self._fault_error = fault
+        for lane in self._lanes.values():
+            lane.seal_fault(fault)
+        return fault
+
     def _assert_open(self) -> None:
-        if self._closed:
-            raise RuntimeError("AgentHarness is closed")
+        if self._fault_error is not None:
+            raise self._fault_error
+        if self._closed_error is not None:
+            raise self._closed_error
 
 
 async def create_agent_harness(
@@ -139,7 +159,10 @@ async def create_agent_harness(
     context: Context,
 ) -> AgentHarnessCreateResult:
     harness = Harness(options)
-    restored = await restore_session(options.session, context)
+    try:
+        restored = await restore_session(options.session, context)
+    except Exception as error:
+        raise HarnessFault(error) from error
     if len(restored) > 1:
         raise ValueError("T04 AgentHarness supports a single lane")
     open_operations: list[OpenOperation] = []

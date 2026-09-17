@@ -1,5 +1,9 @@
 from omh.agent.agent_harness import (
     TOOL_MEMO_UNSET,
+    AbortOutcome,
+    AbortRequest,
+    AbortRequestResult,
+    AbortResult,
     AgentHarness,
     AgentHarnessCreateResult,
     AgentHarnessOptions,
@@ -16,6 +20,7 @@ from omh.agent.agent_harness import (
     InvalidMessage,
     LaneBusy,
     LaneExecutionInfo,
+    NoActiveOperation,
     NothingToResume,
     OpenOperation,
     OperationAdmission,
@@ -35,8 +40,8 @@ from omh.agent.agent_harness import (
     WaitingDriveOutcome,
     create_agent_harness,
 )
-from omh.agent.context import BACKGROUND_CONTEXT, Context
-from omh.agent.result import Err, Ok, Result, err, ok
+from omh.agent.context import BACKGROUND_CONTEXT, CancelScope, Context, with_cancel
+from omh.agent.result import Err, HarnessClosed, HarnessFault, Ok, Result, err, ok
 from omh.agent.session import (
     Branch,
     BranchScan,
@@ -101,6 +106,10 @@ from omh.agent.types import AgentMessage, ThinkingLevel
 
 __all__ = [
     "BACKGROUND_CONTEXT",
+    "AbortOutcome",
+    "AbortRequest",
+    "AbortRequestResult",
+    "AbortResult",
     "AgentHarness",
     "AgentHarnessCreateResult",
     "AgentHarnessOptions",
@@ -113,6 +122,7 @@ __all__ = [
     "AgentMessage",
     "Branch",
     "BranchScan",
+    "CancelScope",
     "CommitResult",
     "Context",
     "CurrentOperationInfo",
@@ -126,9 +136,12 @@ __all__ = [
     "EntryScan",
     "Err",
     "InvalidMessage",
+    "HarnessClosed",
+    "HarnessFault",
     "LaneBusy",
     "LaneExecutionInfo",
     "NothingToResume",
+    "NoActiveOperation",
     "ListCursor",
     "ListElement",
     "ListReadOptions",
@@ -202,4 +215,5 @@ __all__ = [
     "session_name",
     "set_value",
     "value",
+    "with_cancel",
 ]

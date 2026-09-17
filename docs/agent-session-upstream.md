@@ -79,3 +79,11 @@
 - Python 工具 callable 在参数之后接收同步 `AgentHarnessToolUpdateCallback`，随后是 invocation 与 harness `Context`；回调的 options 可省略，`on_update(partial_result)` 与 `on_update(partial_result, AgentHarnessToolUpdateOptions(...))` 均受类型支持。T10 的 application tool context 尚未加入。`checkpoint=True` 用 `omh.pending.tool_output` 替换当前 invocation 的 durable 全量快照；无 checkpoint 的 live update 暂无 application 事件消费者，事件与 watch 仍由 T10 提供。
 - checkpoint 写入按 invocation 调用顺序排队，并在 `(operation, turn, source index, invocation id, effect_pending)` 所有权上 fencing。工具结算会先 seal/drain 进度，再在 outcome staging 事务中删除 checkpoint 与 memo；结束后的 update 被忽略，结束后的 memo 访问被拒绝。
 - checkpoint 只表示最新 durable 进度，不表示工具完成。非双-safe 恢复把 checkpoint 的 content/details/usage 作为中断错误结果前缀，再追加 unknown-outcome 标记；双-safe 重放在新 effect 前删除旧 checkpoint，避免第二次中断误用旧进度。
+
+## T07 调用取消、operation abort、close 与故障
+
+- `context.py` 新增 `with_cancel`、`await_with_context` 和内部 effect 竞争辅助，对应上游 Chord Context 的 `withCancel`/`awaitWithContext`。Python 的 `CancelScope` 持有进程内 `asyncio.Event`；Context 仍不持久化。预先取消的 Context 不安装 drive，joiner 的 Context 取消只结束该 joiner 的观察，不取消 lane 持有的共享 task。
+- `AgentLane.request_abort` 对应 `requestAbort`：在 Session mutation 中以 expected operation id fencing，把完整当前 state 的 control 替换为 `cancel_requested`；重复请求幂等，旧 id 返回 `OperationMismatch`，无 live drive 时不隐式安装执行。`abort` 组合 inspect、request 与同 id drive；T08 才加入的 steer/follow-up 队列尚不存在，因此 T07 的 drain 结果固定为空。
+- 每个 live drive 持有独立 operation CancelScope。取消标记提交后才发信号；provider 迭代、工具 effect 与后续 retry wait 共用该 scope。operation reconciliation 清理当前切片的 assistant frames、tool args/memos/checkpoints/staged results，写 immutable `aborted` result，并保留 lane inbox。工具 invocation/progress 在取消时立即 seal；吞掉 asyncio 取消后晚到的工具结果只能结束其脱离的进程内 task，不能再提交。
+- `Harness.close` 对应 controlled crash：以 `HarnessClosed` 结束 active 观察并做本地 effect 清理，不写 `cancel_requested` 或 terminal result；重开仍从最近一次完整 durable state 恢复。提交或 durable invariant 失败则固定为一个 `HarnessFault`，停止当前 effect 并让后续 lane 调用拒绝；provider error response 与工具异常仍走原有 per-operation in-band 路径。
+- 上游 gate 将 effect admission 与取消原子化；Python 当前能力范围没有 hooks/deferred，使用 operation CancelScope 在模型调用前检查并竞争 provider/tool awaitable，覆盖当前公开 effect 边界。取消 reconciliation 只枚举当前已实现的 run leaves；后续新增 state leaf 时必须同时扩展该 total switch 与 cleanup。
