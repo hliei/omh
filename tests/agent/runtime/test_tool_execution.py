@@ -254,7 +254,7 @@ class PauseAfterToolStagingSession:
                 if any(
                     write.kind == "value"
                     and write.op == "set"
-                    and write.namespace == "pi.pending.entry"
+                    and write.namespace == "omh.pending.entry"
                     for write in writes
                 ):
                     owner.staged.set()
@@ -310,7 +310,7 @@ async def test_parallel_tools_stage_independently_and_enter_history_in_source_or
         async with asyncio.timeout(1):
             await asyncio.gather(*(event.wait() for event in started.values()))
         finish["b"].set()
-        pending_prefix: Value[dict[str, object]] = value("pi.pending.entry")
+        pending_prefix: Value[dict[str, object]] = value("omh.pending.entry")
         async with asyncio.timeout(1):
             while not (pending := await session.scan_values(
                 pending_prefix, BACKGROUND_CONTEXT
@@ -561,8 +561,8 @@ async def test_completed_tool_fences_late_memo_and_checkpoint_updates() -> None:
         AgentHarnessToolUpdateOptions(checkpoint=True),
     )
     await asyncio.sleep(0)
-    memo_prefix: Value[object] = value("pi.op.tool_memo")
-    progress_prefix: Value[object] = value("pi.pending.tool_output")
+    memo_prefix: Value[object] = value("omh.op.tool_memo")
+    progress_prefix: Value[object] = value("omh.pending.tool_output")
     assert not await session.scan_values(memo_prefix, BACKGROUND_CONTEXT)
     assert not await session.scan_values(progress_prefix, BACKGROUND_CONTEXT)
 
@@ -792,7 +792,7 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
         lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
     )
     await started.wait()
-    progress_prefix: Value[object] = value("pi.pending.tool_output")
+    progress_prefix: Value[object] = value("omh.pending.tool_output")
     async with asyncio.timeout(1):
         while not await session.scan_values(progress_prefix, BACKGROUND_CONTEXT):
             await asyncio.sleep(0)
@@ -1042,7 +1042,7 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
         lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
     )
     await started.wait()
-    progress_prefix: Value[dict[str, object]] = value("pi.pending.tool_output")
+    progress_prefix: Value[dict[str, object]] = value("omh.pending.tool_output")
     async with asyncio.timeout(1):
         while not await session.scan_values(progress_prefix, BACKGROUND_CONTEXT):
             await asyncio.sleep(0)

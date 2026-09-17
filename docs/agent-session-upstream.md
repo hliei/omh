@@ -53,12 +53,12 @@
 
 ## T04 单 lane 模型对话
 
-- `AgentHarness.create` 在一次 Session mutation 中盘点完整 lane 与 open operation，只恢复投影，不自动 drive。`lane.accept` 原子提交 prompt entries、branch tip、`pi.op.meta`、完整当前 `pi.op.state` 与 lane current id；同一 lane 有 current operation 时返回 `LaneBusy`。
+- `AgentHarness.create` 在一次 Session mutation 中盘点完整 lane 与 open operation，只恢复投影，不自动 drive。`lane.accept` 原子提交 prompt entries、branch tip、`omh.op.meta`、完整当前 `omh.op.state` 与 lane current id；同一 lane 有 current operation 时返回 `LaneBusy`。
 - T04 的 harness 只配置一个 lane；重复获取同名 lane 返回同一对象，第二个 lane 在入口拒绝。多 lane 配置、隔离与部分配置恢复由 T08 实现。
 - 本票实现 run 所需的 `starting`、`checkpoint`、`assistant.ready`、`assistant.effect_pending`、`assistant.retry_wait` 状态，`accept`/`drive`/`get_result`/`inspect_execution` 基础原语及 `prompt`/`resume` 便捷组合。compaction、navigation、队列、abort、hooks、events/watch 和工具执行由后续票提供，不公开空实现。
 - drive 由 lane 持有的 asyncio task 执行，调用者通过 shield 观察；取消某个调用只结束该观察，不取消共享执行或写入持久化 abort。harness close 会停止进程内 task，但保留最近完整 durable state，供重开后显式 resume。
-- 模型请求先提交带 response/usage 预留 id 的 durable intent；流事件用 llm 层 `AssistantMessageFrameEncoder` 编码到 `pi.pending.assistant_frame`。Python 当前逐帧等待 Session mutation，而上游在进程内排队后继续消费 provider 流；两者的 durable 顺序与恢复内容相同，本实现暂时接受额外流背压，不声称相同吞吐。
-- 完整 response、usage、branch tip、frame-list 删除及后继状态在一个事务中结算。成功 run 的终结事务删除 operation meta/state，写 immutable `pi.result` 并清空 lane current id；模型身份在实际 effect 前解析，不可用时以无伪造 response/usage 的 failed result 终结。
+- 模型请求先提交带 response/usage 预留 id 的 durable intent；流事件用 llm 层 `AssistantMessageFrameEncoder` 编码到 `omh.pending.assistant_frame`。Python 当前逐帧等待 Session mutation，而上游在进程内排队后继续消费 provider 流；两者的 durable 顺序与恢复内容相同，本实现暂时接受额外流背压，不声称相同吞吐。
+- 完整 response、usage、branch tip、frame-list 删除及后继状态在一个事务中结算。成功 run 的终结事务删除 operation meta/state，写 immutable `omh.result` 并清空 lane current id；模型身份在实际 effect 前解析，不可用时以无伪造 response/usage 的 failed result 终结。
 - 普通可重试错误进入带 `not_before` 的 durable wait；`wait_for_retry=False` 返回等待，`prompt`/`resume` 选择等待后继续。恢复 orphaned assistant effect 时不续接旧流：归并已提交帧、以 zero usage 写入明确 unknown-outcome 错误，再按原 retry policy 使用新 intent 重试。
 - Retry policy 在入口按 pi 的非负 safe-integer 范围校验；指数退避和 `not_before` 在 `Number.MAX_SAFE_INTEGER` 对应上限饱和，长等待分段调度，避免产生不可互操作的 durable 数值。
 - 本票不公开 deferred。工具执行也未公开；live 完整 tool-call response 以 unsupported assistant response 终结。恢复帧中的部分 tool call 只保留在 error assistant 历史中，error assistant 不进入下一次模型上下文，因此不会执行或回放。
@@ -67,7 +67,7 @@
 ## T05 自定义工具与未知结果恢复
 
 - `AgentHarnessOptions.tools` 注册进程内实现；lane 的 `active_tool_names` 独立持久化，缺省为首次创建 lane 时的已注册工具名。Harness registry 的替换不改写 lane 配置，重开也不会用新 seed 覆盖已有配置。模型请求只收到 captured active tools。
-- 完整 `toolUse` response 与 usage 先结算，再进入 `tools` 状态。T05 保留上游 `ToolBatch` 和 `planned → effect_pending → outcome_ready → completed` 子状态、source index、预留 result entry id，以及 `pi.op.tool_args`、`pi.op.tool_memo`、`pi.pending.entry` 地址；执行仍限定为源顺序串行，T06 再加入并行结果 staging、进度 checkpoint 与相关 fencing。
+- 完整 `toolUse` response 与 usage 先结算，再进入 `tools` 状态。T05 保留上游 `ToolBatch` 和 `planned → effect_pending → outcome_ready → completed` 子状态、source index、预留 result entry id，以及 `omh.op.tool_args`、`omh.op.tool_memo`、`omh.pending.entry` 地址；执行仍限定为源顺序串行，T06 再加入并行结果 staging、进度 checkpoint 与相关 fencing。
 - 参数在 effect intent 前按工具的 JSON Schema 基本结构（`type`、`enum`、object `properties`/`required`/`additionalProperties`、array `items`）校验。未知/inactive 工具、参数错误和工具异常都形成 `is_error` tool-result message；不伪造 `details`，随后按普通模型回合继续。
 - 工具 effect 之前原子持久化有效参数和声明的 replay policy。invocation id 等于预留的 result entry id，并在 safe replay 中保持；invocation memo 按该 id 持久化，在结果 staging 时清理。Python 以 `TOOL_MEMO_UNSET` 对应 JavaScript `undefined`，从而让 JSON `null`（Python `None`）仍可持久化。T05 的工具 callable 暂不暴露 T06 的 progress callback 或 T10 的 application tool context。
 - effect 结果先以完整 pending entry 与 `outcome_ready` 原子 staging，随后才写入不可变对话树；因此重开可直接物化而不重跑。`effect_pending` 恢复只有 stored 与 current declaration 均为 `safe` 时才使用持久化参数和 memo 重放，否则 staging 明确的 unknown-outcome error。工具结果入树时保留 `terminate` 标记并删除本批参数；终结模型回合沿用 T04 清理。
@@ -76,6 +76,6 @@
 
 - `AgentHarnessOptions.tool_execution` 在接纳 operation 时捕获到 durable settings；缺省 `parallel` 时，一个工具批次中的 planned/effect-pending 调用以独立 asyncio task 并行推进，显式 `sequential` 则保留逐个源顺序执行。每个 effect 仍先原子提交 intent，再允许执行；完成顺序只决定各自何时 staging 为 `outcome_ready`，不会改变来源顺序。
 - `tool_placement.py` 每次只物化从首个未完成调用开始的连续 ready 前缀。后序调用可以先完成并持久化，但在前序调用 ready 前不会越过它写入对话树；前缀一旦齐备即可入树，无需等待整个批次完成。
-- Python 工具 callable 在参数之后接收同步 `AgentHarnessToolUpdateCallback`，随后是 invocation 与 harness `Context`；回调的 options 可省略，`on_update(partial_result)` 与 `on_update(partial_result, AgentHarnessToolUpdateOptions(...))` 均受类型支持。T10 的 application tool context 尚未加入。`checkpoint=True` 用 `pi.pending.tool_output` 替换当前 invocation 的 durable 全量快照；无 checkpoint 的 live update 暂无 application 事件消费者，事件与 watch 仍由 T10 提供。
+- Python 工具 callable 在参数之后接收同步 `AgentHarnessToolUpdateCallback`，随后是 invocation 与 harness `Context`；回调的 options 可省略，`on_update(partial_result)` 与 `on_update(partial_result, AgentHarnessToolUpdateOptions(...))` 均受类型支持。T10 的 application tool context 尚未加入。`checkpoint=True` 用 `omh.pending.tool_output` 替换当前 invocation 的 durable 全量快照；无 checkpoint 的 live update 暂无 application 事件消费者，事件与 watch 仍由 T10 提供。
 - checkpoint 写入按 invocation 调用顺序排队，并在 `(operation, turn, source index, invocation id, effect_pending)` 所有权上 fencing。工具结算会先 seal/drain 进度，再在 outcome staging 事务中删除 checkpoint 与 memo；结束后的 update 被忽略，结束后的 memo 访问被拒绝。
 - checkpoint 只表示最新 durable 进度，不表示工具完成。非双-safe 恢复把 checkpoint 的 content/details/usage 作为中断错误结果前缀，再追加 unknown-outcome 标记；双-safe 重放在新 effect 前删除旧 checkpoint，避免第二次中断误用旧进度。
