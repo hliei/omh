@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 
 import pytest
 
@@ -11,6 +12,8 @@ from omh.agent import (
     AgentHarnessOptions,
     AgentHarnessTool,
     AgentHarnessToolInvocation,
+    AgentHarnessToolUpdateCallback,
+    AgentHarnessToolUpdateOptions,
     AgentToolResult,
     BranchScan,
     Context,
@@ -21,7 +24,9 @@ from omh.agent import (
     SessionCreateOptions,
     SessionMutator,
     ToolReplayPolicy,
+    Value,
     Write,
+    value,
 )
 from omh.llm import (
     AssistantMessage,
@@ -173,6 +178,32 @@ class FinishingModels:
         )
 
 
+class ParallelToolCallingModels(FinishingModels):
+    def stream_simple(
+        self, model: Model, context: LlmContext, options: object
+    ) -> AssistantMessageEventStream:
+        if self.contexts:
+            return super().stream_simple(model, context, options)
+        del options
+        assert model is MODEL
+        self.contexts.append(context)
+        return _stream(
+            AssistantMessage(
+                api=MODEL.api,
+                provider=MODEL.provider,
+                model=MODEL.id,
+                usage=USAGE,
+                stop_reason="toolUse",
+                timestamp=NOW + 1,
+                content=[
+                    ToolCall(id="call-a", name="a", arguments={}),
+                    ToolCall(id="call-b", name="b", arguments={}),
+                    ToolCall(id="call-c", name="c", arguments={}),
+                ],
+            )
+        )
+
+
 class PauseAfterToolStagingSession:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -211,6 +242,104 @@ class PauseAfterToolStagingSession:
         return await self._session.mutate(wrapped, context)
 
 
+async def test_parallel_tools_stage_independently_and_enter_history_in_source_order(
+) -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    started = {name: asyncio.Event() for name in ("a", "b", "c")}
+    finish = {name: asyncio.Event() for name in ("a", "b", "c")}
+
+    def tool(name: str) -> AgentHarnessTool:
+        async def execute(
+            tool_call_id: str,
+            params: dict[str, object],
+            on_update: AgentHarnessToolUpdateCallback,
+            invocation: AgentHarnessToolInvocation,
+            context: Context,
+        ) -> AgentToolResult:
+            del tool_call_id, params, on_update, invocation, context
+            started[name].set()
+            await finish[name].wait()
+            return AgentToolResult(content=[TextContent(text=name)])
+
+        return AgentHarnessTool(
+            name=name,
+            description=name,
+            parameters={"type": "object"},
+            execute=execute,
+        )
+
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=ParallelToolCallingModels(),
+            model=MODEL,
+            tools=(tool("a"), tool("b"), tool("c")),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    running = asyncio.create_task(lane.prompt("run both", BACKGROUND_CONTEXT))
+
+    try:
+        async with asyncio.timeout(1):
+            await asyncio.gather(*(event.wait() for event in started.values()))
+        finish["b"].set()
+        pending_prefix: Value[dict[str, object]] = value("pi.pending.entry")
+        async with asyncio.timeout(1):
+            while not (pending := await session.scan_values(
+                pending_prefix, BACKGROUND_CONTEXT
+            )):
+                await asyncio.sleep(0)
+        payload = pending[0].value["payload"]
+        assert isinstance(payload, dict)
+        assert payload["toolCallId"] == "call-b"
+        history = await lane.find_entries(
+            BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+        )
+        assert not any(
+            entry.type == "message" and isinstance(entry.message, ToolResultMessage)
+            for entry in history
+        )
+
+        finish["a"].set()
+        async with asyncio.timeout(1):
+            while True:
+                history = await lane.find_entries(
+                    BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+                )
+                placed = [
+                    entry.message.tool_call_id
+                    for entry in history
+                    if entry.type == "message"
+                    and isinstance(entry.message, ToolResultMessage)
+                ]
+                if placed == ["call-a", "call-b"]:
+                    break
+                await asyncio.sleep(0)
+        assert not running.done()
+
+        finish["c"].set()
+        result = await running
+
+        assert result.ok is True
+        history = await lane.find_entries(
+            BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+        )
+        assert [
+            entry.message.tool_call_id
+            for entry in history
+            if entry.type == "message" and isinstance(entry.message, ToolResultMessage)
+        ] == ["call-a", "call-b", "call-c"]
+    finally:
+        await created.harness.close(BACKGROUND_CONTEXT)
+        if not running.done():
+            running.cancel()
+        with suppress(asyncio.CancelledError):
+            await running
+        await repo.close(BACKGROUND_CONTEXT)
+
+
 async def test_prompt_executes_active_tool_then_continues_model() -> None:
     repo = MemorySessionRepo(now=lambda: NOW)
     session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
@@ -220,9 +349,11 @@ async def test_prompt_executes_active_tool_then_continues_model() -> None:
     async def execute_add(
         tool_call_id: str,
         params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
+        del on_update
         calls.append(
             (
                 tool_call_id,
@@ -293,6 +424,69 @@ async def test_prompt_executes_active_tool_then_continues_model() -> None:
     await repo.close(BACKGROUND_CONTEXT)
 
 
+async def test_completed_tool_fences_late_memo_and_checkpoint_updates() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    late_update: AgentHarnessToolUpdateCallback | None = None
+    late_invocation: AgentHarnessToolInvocation | None = None
+
+    async def execute_add(
+        tool_call_id: str,
+        params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
+        invocation: AgentHarnessToolInvocation,
+        context: Context,
+    ) -> AgentToolResult:
+        del tool_call_id, params, context
+        nonlocal late_update, late_invocation
+        late_update = on_update
+        late_invocation = invocation
+        await invocation.set_memo("request", {"id": "temporary"})
+        on_update(
+            AgentToolResult(content=[TextContent(text="working")]),
+            AgentHarnessToolUpdateOptions(checkpoint=True),
+        )
+        return AgentToolResult(content=[TextContent(text="5")])
+
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=ToolCallingModels(),
+            model=MODEL,
+            tools=(
+                AgentHarnessTool(
+                    name="add",
+                    description="Add two integers",
+                    parameters={"type": "object"},
+                    execute=execute_add,
+                ),
+            ),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+
+    result = await lane.prompt("what is 2 + 3?", BACKGROUND_CONTEXT)
+
+    assert result.ok is True
+    assert late_update is not None
+    assert late_invocation is not None
+    with pytest.raises(RuntimeError, match="no longer active"):
+        await late_invocation.set_memo("late", True)
+    late_update(
+        AgentToolResult(content=[TextContent(text="too late")]),
+        AgentHarnessToolUpdateOptions(checkpoint=True),
+    )
+    await asyncio.sleep(0)
+    memo_prefix: Value[object] = value("pi.op.tool_memo")
+    progress_prefix: Value[object] = value("pi.pending.tool_output")
+    assert not await session.scan_values(memo_prefix, BACKGROUND_CONTEXT)
+    assert not await session.scan_values(progress_prefix, BACKGROUND_CONTEXT)
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
 @pytest.mark.parametrize(
     ("arguments", "parameters", "expected_error"),
     [
@@ -333,10 +527,11 @@ async def test_invalid_tool_arguments_become_error_result_without_execution(
     async def execute_add(
         tool_call_id: str,
         params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
-        del tool_call_id, params, invocation, context
+        del tool_call_id, params, on_update, invocation, context
         nonlocal calls
         calls += 1
         return AgentToolResult(content=[TextContent(text="unreachable")])
@@ -389,10 +584,11 @@ async def test_terminating_tool_result_is_durable_and_skips_another_model_reques
     async def execute_add(
         tool_call_id: str,
         params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
-        del tool_call_id, params, invocation, context
+        del tool_call_id, params, on_update, invocation, context
         return AgentToolResult(
             content=[TextContent(text="5")],
             terminate=True,
@@ -462,6 +658,7 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
     async def interrupt_after_memo(
         tool_call_id: str,
         params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -474,6 +671,10 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
         )
         await invocation.set_memo("request", {"id": "durable-request"})
         await invocation.set_memo("nullable", None)
+        on_update(
+            AgentToolResult(content=[TextContent(text="old progress")]),
+            AgentHarnessToolUpdateOptions(checkpoint=True),
+        )
         started.set()
         try:
             await asyncio.Future[None]()
@@ -508,6 +709,10 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
         lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
     )
     await started.wait()
+    progress_prefix: Value[object] = value("pi.pending.tool_output")
+    async with asyncio.timeout(1):
+        while not await session.scan_values(progress_prefix, BACKGROUND_CONTEXT):
+            await asyncio.sleep(0)
     observing.cancel()
     with pytest.raises(asyncio.CancelledError):
         await observing
@@ -525,10 +730,14 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
     async def finish_replay(
         tool_call_id: str,
         params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
-        del tool_call_id, context
+        del tool_call_id, on_update, context
+        assert not await reopened_session.scan_values(
+            progress_prefix, BACKGROUND_CONTEXT
+        )
         replayed.append(
             (
                 invocation.invocation_id,
@@ -600,10 +809,18 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
     async def interrupted_tool(
         tool_call_id: str,
         params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
         del tool_call_id, params, invocation, context
+        on_update(
+            AgentToolResult(
+                content=[TextContent(text="durable partial")],
+                details={"progress": "kept"},
+            ),
+            AgentHarnessToolUpdateOptions(checkpoint=True),
+        )
         started.set()
         await asyncio.Future[None]()
         raise AssertionError("unreachable")
@@ -634,6 +851,10 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
         lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
     )
     await started.wait()
+    progress_prefix: Value[dict[str, object]] = value("pi.pending.tool_output")
+    async with asyncio.timeout(1):
+        while not await session.scan_values(progress_prefix, BACKGROUND_CONTEXT):
+            await asyncio.sleep(0)
     await created.harness.close(BACKGROUND_CONTEXT)
     with pytest.raises(asyncio.CancelledError):
         await observing
@@ -646,10 +867,11 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
     async def must_not_replay(
         tool_call_id: str,
         params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
-        del tool_call_id, params, invocation, context
+        del tool_call_id, params, on_update, invocation, context
         nonlocal replay_calls
         replay_calls += 1
         return AgentToolResult(content=[TextContent(text="unexpected")])
@@ -687,8 +909,12 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
         if entry.type == "message" and isinstance(entry.message, ToolResultMessage)
     )
     assert tool_result.is_error is True
-    assert tool_result.details is None
-    assert "external outcome is unknown" in tool_result.content[0].text
+    assert tool_result.details == {"progress": "kept"}
+    assert tool_result.content[0] == TextContent(text="durable partial")
+    assert "external outcome is unknown" in tool_result.content[-1].text
+    assert not await reopened_session.scan_values(
+        progress_prefix, BACKGROUND_CONTEXT
+    )
 
     await reopened.harness.close(BACKGROUND_CONTEXT)
     await reopened_repo.close(BACKGROUND_CONTEXT)
@@ -707,10 +933,11 @@ async def test_reopen_materializes_staged_tool_result_without_rerunning_tool(
     async def execute_once(
         tool_call_id: str,
         params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
-        del tool_call_id, params, invocation, context
+        del tool_call_id, params, on_update, invocation, context
         nonlocal executions
         executions += 1
         return AgentToolResult(content=[TextContent(text="5")])
@@ -756,10 +983,11 @@ async def test_reopen_materializes_staged_tool_result_without_rerunning_tool(
     async def must_not_execute(
         tool_call_id: str,
         params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
-        del tool_call_id, params, invocation, context
+        del tool_call_id, params, on_update, invocation, context
         nonlocal replay_calls
         replay_calls += 1
         return AgentToolResult(content=[TextContent(text="unexpected")])

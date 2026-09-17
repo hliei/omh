@@ -200,3 +200,13 @@ def operation_tool_memo_prefix(
 
 def pending_entry(entry_id: str) -> Value[JsonObject]:
     return value("pi.pending.entry", entry_id)
+
+
+def pending_tool_output(
+    operation_id: str, invocation_id: str
+) -> Value[JsonObject]:
+    return value("pi.pending.tool_output", f"{operation_id}:{invocation_id}")
+
+
+def pending_tool_output_prefix(operation_id: str) -> Value[JsonObject]:
+    return value("pi.pending.tool_output", f"{operation_id}:")

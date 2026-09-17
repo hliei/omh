@@ -42,8 +42,22 @@ class AgentHarnessToolInvocation(Protocol):
     async def set_memo(self, name: str, value: ToolMemo) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AgentHarnessToolUpdateOptions:
+    checkpoint: bool = False
+
+
+type AgentHarnessToolUpdateCallback = Callable[
+    [AgentToolResult, AgentHarnessToolUpdateOptions | None], None
+]
 type AgentHarnessToolExecute = Callable[
-    [str, dict[str, object], AgentHarnessToolInvocation, Context],
+    [
+        str,
+        dict[str, object],
+        AgentHarnessToolUpdateCallback,
+        AgentHarnessToolInvocation,
+        Context,
+    ],
     Awaitable[AgentToolResult],
 ]
 type ToolReplayPolicy = Literal["never", "safe"]
