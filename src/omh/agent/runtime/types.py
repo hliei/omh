@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from omh.agent.agent_harness import OperationResultRecord
+from omh.agent.agent_harness import OperationResultRecord, ToolReplayPolicy
 from omh.agent.types import ThinkingLevel
 from omh.llm.types import JsonValue
 
@@ -148,12 +148,69 @@ class AssistantRetryWaitOperation:
     at: Literal["assistant.retry_wait"] = "assistant.retry_wait"
 
 
+@dataclass(frozen=True, slots=True)
+class PlannedToolCall:
+    source_index: int
+    result_entry_id: str
+    status: Literal["planned"] = "planned"
+
+
+@dataclass(frozen=True, slots=True)
+class EffectPendingToolCall:
+    source_index: int
+    result_entry_id: str
+    replay: ToolReplayPolicy
+    status: Literal["effect_pending"] = "effect_pending"
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeReadyToolCall:
+    source_index: int
+    result_entry_id: str
+    terminate: bool
+    status: Literal["outcome_ready"] = "outcome_ready"
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedToolCall:
+    source_index: int
+    result_entry_id: str
+    terminate: bool
+    status: Literal["completed"] = "completed"
+
+
+type ToolCallState = (
+    PlannedToolCall
+    | EffectPendingToolCall
+    | OutcomeReadyToolCall
+    | CompletedToolCall
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolBatch:
+    assistant_entry_id: str
+    configuration: LaneConfiguration
+    turn_id: str
+    calls: tuple[ToolCallState, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolsOperation:
+    latest_assistant_entry_id: str | None
+    batch: ToolBatch
+    control: RunControl
+    settings: RunSettings
+    at: Literal["tools"] = "tools"
+
+
 type OperationState = (
     StartingOperation
     | CheckpointOperation
     | AssistantReadyOperation
     | AssistantEffectPendingOperation
     | AssistantRetryWaitOperation
+    | ToolsOperation
 )
 
 

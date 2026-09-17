@@ -29,6 +29,9 @@
 | `packages/agent/src/harness/runtime/drive/response.ts` | `src/omh/agent/runtime/drive/response.py` |
 | `packages/agent/src/harness/runtime/drive/retry.ts` | `src/omh/agent/runtime/drive/retry.py` 与 `src/omh/agent/runtime/retry.py` |
 | `packages/agent/src/harness/runtime/drive/terminal.ts` | `src/omh/agent/runtime/drive/terminal.py` |
+| `packages/agent/src/harness/types.ts` 的 T05 工具声明 | `src/omh/agent/agent_harness.py` |
+| `packages/agent/src/harness/config.ts` 的工具名校验与进程内 registry | `src/omh/agent/runtime/tool_registry.py` |
+| `packages/agent/src/harness/runtime/drive/tools.ts` 的 T05 串行阶段 | `src/omh/agent/runtime/drive/tools.py` |
 | `packages/agent/src/harness/runtime/restore.ts` | `src/omh/agent/runtime/restore.py` |
 | durable runtime state 与 assistant frame 的 SQLite JSON 形状（上游对象可直接 JSON 化） | `src/omh/agent/runtime/codec.py`（新增） |
 
@@ -57,3 +60,11 @@
 - Retry policy 在入口按 pi 的非负 safe-integer 范围校验；指数退避和 `not_before` 在 `Number.MAX_SAFE_INTEGER` 对应上限饱和，长等待分段调度，避免产生不可互操作的 durable 数值。
 - 本票不公开 deferred。工具执行也未公开；live 完整 tool-call response 以 unsupported assistant response 终结。恢复帧中的部分 tool call 只保留在 error assistant 历史中，error assistant 不进入下一次模型上下文，因此不会执行或回放。
 - 离线公共行为测试覆盖：接纳不执行与单 operation 排斥；完整 response/usage/终结清理；`prompt` 组合；durable retry wait；模型不可用；SQLite 中断、重开盘点、部分 tool-call unknown-outcome 恢复及显式 `resume`。
+
+## T05 自定义工具与未知结果恢复
+
+- `AgentHarnessOptions.tools` 注册进程内实现；lane 的 `active_tool_names` 独立持久化，缺省为首次创建 lane 时的已注册工具名。Harness registry 的替换不改写 lane 配置，重开也不会用新 seed 覆盖已有配置。模型请求只收到 captured active tools。
+- 完整 `toolUse` response 与 usage 先结算，再进入 `tools` 状态。T05 保留上游 `ToolBatch` 和 `planned → effect_pending → outcome_ready → completed` 子状态、source index、预留 result entry id，以及 `pi.op.tool_args`、`pi.op.tool_memo`、`pi.pending.entry` 地址；执行仍限定为源顺序串行，T06 再加入并行结果 staging、进度 checkpoint 与相关 fencing。
+- 参数在 effect intent 前按工具的 JSON Schema 基本结构（`type`、`enum`、object `properties`/`required`/`additionalProperties`、array `items`）校验。未知/inactive 工具、参数错误和工具异常都形成 `is_error` tool-result message；不伪造 `details`，随后按普通模型回合继续。
+- 工具 effect 之前原子持久化有效参数和声明的 replay policy。invocation id 等于预留的 result entry id，并在 safe replay 中保持；invocation memo 按该 id 持久化，在结果 staging 时清理。Python 以 `TOOL_MEMO_UNSET` 对应 JavaScript `undefined`，从而让 JSON `null`（Python `None`）仍可持久化。T05 的工具 callable 暂不暴露 T06 的 progress callback 或 T10 的 application tool context。
+- effect 结果先以完整 pending entry 与 `outcome_ready` 原子 staging，随后才写入不可变对话树；因此重开可直接物化而不重跑。`effect_pending` 恢复只有 stored 与 current declaration 均为 `safe` 时才使用持久化参数和 memo 重放，否则 staging 明确的 unknown-outcome error。工具结果入树时保留 `terminate` 标记并删除本批参数；终结模型回合沿用 T04 清理。

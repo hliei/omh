@@ -6,6 +6,7 @@ from omh.agent.agent_harness import (
     AgentHarness,
     AgentHarnessCreateResult,
     AgentHarnessOptions,
+    AgentHarnessTool,
     OpenOperation,
 )
 from omh.agent.context import Context
@@ -17,6 +18,7 @@ from omh.agent.runtime.codec import (
 )
 from omh.agent.runtime.lane import AgentLane
 from omh.agent.runtime.restore import restore_session
+from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
 from omh.agent.runtime.types import LaneConfiguration, LaneState, ModelIdentity
 from omh.agent.session.types import SessionMutator
 from omh.agent.session.values import (
@@ -30,6 +32,13 @@ from omh.agent.session.values import (
 class Harness(AgentHarness):
     def __init__(self, options: AgentHarnessOptions) -> None:
         self._options = options
+        self._tool_registry = ToolRegistry(options.tools)
+        self._active_tool_seed = (
+            options.active_tool_names
+            if options.active_tool_names is not None
+            else tuple(tool.name for tool in options.tools)
+        )
+        validate_active_tool_names(self._active_tool_seed)
         self._lanes: dict[str, AgentLane] = {}
         self._lane_lock = Lock()
         self._closed = False
@@ -64,6 +73,7 @@ class Harness(AgentHarness):
                             model_id=self._options.model.id,
                         ),
                         thinking_level=self._options.thinking_level,
+                        active_tool_names=self._active_tool_seed,
                     )
                 )
                 state_value = encode_lane_state(LaneState())
@@ -81,7 +91,7 @@ class Harness(AgentHarness):
                 assert configuration is not None and state is not None
                 decode_lane_configuration(configuration.value)
                 decode_lane_state(state.value)
-            return AgentLane(name, self._options)
+            return AgentLane(name, self._options, self._tool_registry)
 
         acquired = await self._options.session.mutate(acquire, context)
         published = self._lanes.setdefault(name, acquired)
@@ -95,6 +105,18 @@ class Harness(AgentHarness):
             task = self._close_task
         await shield(task)
 
+    async def get_tools(self, context: Context) -> tuple[AgentHarnessTool, ...]:
+        del context
+        self._assert_open()
+        return await self._tool_registry.get()
+
+    async def set_tools(
+        self, tools: tuple[AgentHarnessTool, ...], context: Context
+    ) -> None:
+        del context
+        self._assert_open()
+        await self._tool_registry.replace(tools)
+
     async def _finish_close(self, context: Context) -> None:
         for lane in self._lanes.values():
             await lane.close()
@@ -103,7 +125,7 @@ class Harness(AgentHarness):
     def restore_lane(self, name: str) -> AgentLane:
         lane = self._lanes.get(name)
         if lane is None:
-            lane = AgentLane(name, self._options)
+            lane = AgentLane(name, self._options, self._tool_registry)
             self._lanes[name] = lane
         return lane
 

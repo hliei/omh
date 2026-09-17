@@ -23,6 +23,7 @@ class NewMessageEntry:
     id: str
     parent_id: str | None
     message: AgentMessage
+    terminate: bool = False
     type: Literal["message"] = "message"
 
 
@@ -45,6 +46,7 @@ class MessageEntry:
     seq: int
     timestamp: int
     message: AgentMessage
+    terminate: bool = False
     type: Literal["message"] = "message"
     custom_type: None = field(default=None, init=False)
 

@@ -14,6 +14,9 @@ from omh.agent.runtime.types import (
     CheckpointOperation,
     LaneState,
     MayFinish,
+    PlannedToolCall,
+    ToolBatch,
+    ToolsOperation,
 )
 from omh.agent.session.commit import insert_entry, insert_usage
 from omh.agent.session.types import NewMessageEntry, SessionMutator, UsageRow, Write
@@ -52,7 +55,12 @@ async def settle_response(
         stored_tip = await mutator.get_value(branch_tip(lane.name), mutation_context)
         if stored_tip is None:
             raise RuntimeError(f"Lane {lane.name!r} is missing branch state")
-        next_state: CheckpointOperation | AssistantRetryWaitOperation | None = None
+        next_state: (
+            CheckpointOperation
+            | AssistantRetryWaitOperation
+            | ToolsOperation
+            | None
+        ) = None
         failure: OperationError | None = None
         if response.stop_reason == "error":
             policy = state.generation_context.retry_policy
@@ -77,6 +85,32 @@ async def settle_response(
                 failure = OperationError(
                     code="assistant_error",
                     message=response.error_message or "Assistant request failed",
+                )
+        elif response.stop_reason == "toolUse":
+            calls = tuple(
+                PlannedToolCall(
+                    source_index=index,
+                    result_entry_id=lane._options.session.id_generator.next(),
+                )
+                for index, content in enumerate(response.content)
+                if isinstance(content, ToolCall)
+            )
+            if calls:
+                next_state = ToolsOperation(
+                    latest_assistant_entry_id=state.response_entry_id,
+                    batch=ToolBatch(
+                        assistant_entry_id=state.response_entry_id,
+                        configuration=state.generation_context.configuration,
+                        turn_id=state.generation_context.step_id,
+                        calls=calls,
+                    ),
+                    control=state.control,
+                    settings=state.settings,
+                )
+            else:
+                failure = OperationError(
+                    code="invalid_tool_response",
+                    message="Assistant returned toolUse without a tool call",
                 )
         elif response.stop_reason in {"stop", "length"} and not any(
             isinstance(content, ToolCall) for content in response.content

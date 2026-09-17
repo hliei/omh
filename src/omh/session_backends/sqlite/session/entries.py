@@ -19,7 +19,10 @@ _INSERT_ENTRY_SQL = (
 
 def _entry_payload(entry: Entry) -> dict[str, JsonValue]:
     if isinstance(entry, MessageEntry):
-        return {"message": encode_message(entry.message)}
+        payload: dict[str, JsonValue] = {"message": encode_message(entry.message)}
+        if entry.terminate:
+            payload["terminate"] = True
+        return payload
     return {} if entry.data is None else {"data": entry.data}
 
 
@@ -62,12 +65,16 @@ def decode_entry_row(row: SqliteRow) -> Entry:
         payload = _parse_payload(row)
         if "message" not in payload:
             raise ValueError(f"Message entry {entry_id} is missing its message payload")
+        terminate = payload.get("terminate", False)
+        if not isinstance(terminate, bool):
+            raise ValueError(f"Message entry {entry_id} terminate must be a boolean")
         return MessageEntry(
             id=entry_id,
             parent_id=parent_id,
             seq=seq,
             timestamp=timestamp,
             message=decode_message(payload["message"]),
+            terminate=terminate,
         )
     if entry_type == "custom":
         custom_type = row["custom_type"]

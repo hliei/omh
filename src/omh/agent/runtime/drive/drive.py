@@ -8,6 +8,7 @@ from omh.agent.runtime.drive.checkpoint import run_checkpoint, start_run
 from omh.agent.runtime.drive.generation import run_generation
 from omh.agent.runtime.drive.recovery import recover_assistant_generation
 from omh.agent.runtime.drive.retry import run_retry_wait
+from omh.agent.runtime.drive.tools import run_tools
 
 if TYPE_CHECKING:
     from omh.agent.runtime.lane import AgentLane
@@ -40,5 +41,7 @@ async def drive_operation(
                     return waiting
             case "assistant.effect_pending":
                 await recover_assistant_generation(lane, options.operation_id, context)
+            case "tools":
+                await run_tools(lane, options.operation_id, context)
             case other:
                 raise RuntimeError(f"Unsupported operation state: {other}")
