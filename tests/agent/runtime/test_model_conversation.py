@@ -11,12 +11,19 @@ from omh.agent import (
     BranchScan,
     Context,
     DriveOptions,
+    HarnessClosed,
+    HarnessFault,
     LaneBusy,
     MemorySessionRepo,
+    MemoryStorage,
     PromptRequest,
     RetryPolicy,
     SessionCreateOptions,
+    SessionMetadata,
     SessionMutator,
+    StorageBackedSession,
+    Write,
+    with_cancel,
 )
 from omh.llm import (
     AssistantMessage,
@@ -36,6 +43,7 @@ from omh.llm import (
     UsageCost,
 )
 from omh.session_backends.sqlite import SqliteSessionRepo
+from tests.agent.runtime.support import FailingCommitMemoryStorage
 
 NOW = 1_700_000_000_000
 MAX_SAFE_INTEGER = (1 << 53) - 1
@@ -537,3 +545,326 @@ async def test_reopen_is_inert_and_resume_recovers_unknown_partial_tool_call(
 
     await reopened.harness.close(BACKGROUND_CONTEXT)
     await reopened_repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_context_cancellation_stops_only_that_drive_observer() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    interrupted = InterruptedModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=interrupted, model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="hello", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+
+    owner = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await interrupted.frames_yielded.wait()
+    caller = with_cancel(BACKGROUND_CONTEXT)
+    observer = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), caller.context)
+    )
+    reason = RuntimeError("observer cancelled")
+    caller.cancel(reason)
+
+    with pytest.raises(RuntimeError, match="observer cancelled") as cancelled:
+        await observer
+    assert cancelled.value is reason
+    execution = await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.operation_id == "run"
+    assert not interrupted.provider_cancelled.is_set()
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await asyncio.gather(owner, return_exceptions=True)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_pre_cancelled_context_does_not_install_drive() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    models = RecordingModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=models, model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="hello", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+    caller = with_cancel(BACKGROUND_CONTEXT)
+    reason = RuntimeError("already cancelled")
+    caller.cancel(reason)
+
+    with pytest.raises(RuntimeError, match="already cancelled") as cancelled:
+        await lane.drive(DriveOptions(operation_id="run"), caller.context)
+    assert cancelled.value is reason
+    await asyncio.sleep(0)
+    assert models.stream_calls == 0
+    execution = await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "starting"
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_request_abort_is_durable_idempotent_and_operation_id_fenced() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    models = RecordingModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=models, model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="first", operation_id="first"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+
+    stale = await lane.request_abort("stale", BACKGROUND_CONTEXT)
+    assert stale.ok is False
+    assert stale.error.operation_id == "stale"
+    assert stale.error.expected_operation_id == "first"
+    requested = await lane.request_abort("first", BACKGROUND_CONTEXT)
+    repeated = await lane.request_abort("first", BACKGROUND_CONTEXT)
+
+    assert requested.ok is True
+    assert requested.value.operation_id == "first"
+    assert requested.value.newly_requested is True
+    assert repeated.ok is True
+    assert repeated.value.newly_requested is False
+    driven = await lane.drive(DriveOptions(operation_id="first"), BACKGROUND_CONTEXT)
+    assert driven.ok is True
+    assert driven.value.kind == "settled"
+    assert driven.value.outcome.status == "aborted"
+    assert models.stream_calls == 0
+
+    second = await lane.accept(
+        PromptRequest(prompt="second", operation_id="second"), BACKGROUND_CONTEXT
+    )
+    assert second.ok is True
+    old = await lane.request_abort("first", BACKGROUND_CONTEXT)
+    assert old.ok is False
+    execution = await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.operation_id == "second"
+    completed = await lane.drive(
+        DriveOptions(operation_id="second"), BACKGROUND_CONTEXT
+    )
+    assert completed.ok is True
+    assert completed.value.kind == "settled"
+    assert completed.value.outcome.status == "completed"
+
+    idle_abort = await lane.abort(BACKGROUND_CONTEXT)
+    assert idle_abort.ok is False
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_request_abort_cancels_live_model_and_settles_shared_drive() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    interrupted = InterruptedModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=interrupted, model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="hello", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+    first = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await interrupted.frames_yielded.wait()
+    second = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+
+    requested = await lane.request_abort("run", BACKGROUND_CONTEXT)
+    assert requested.ok is True
+    async with asyncio.timeout(1):
+        first_result, second_result = await asyncio.gather(first, second)
+
+    assert first_result == second_result
+    assert first_result.ok is True
+    assert first_result.value.kind == "settled"
+    assert first_result.value.outcome.status == "aborted"
+    assert interrupted.provider_cancelled.is_set()
+    assert (await lane.inspect_execution(BACKGROUND_CONTEXT)).current is None
+    history = await lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assistant = history[-1].message
+    assert assistant.role == "assistant"
+    assert assistant.stop_reason == "aborted"
+    assert assistant.content[0].type == "toolCall"
+    assert "external outcome is unknown" in assistant.error_message
+    assert (await session.get_stats(BACKGROUND_CONTEXT)).usage.total_tokens == 0
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_abort_seals_model_admission_before_durable_commit() -> None:
+    class BlockingCommitStorage(MemoryStorage):
+        block_next_commit = False
+
+        def __init__(self) -> None:
+            super().__init__(now=lambda: NOW)
+            self.commit_started = asyncio.Event()
+            self.release_commit = asyncio.Event()
+
+        async def commit(self, writes: list[Write], context: Context):
+            if self.block_next_commit:
+                self.block_next_commit = False
+                self.commit_started.set()
+                await self.release_commit.wait()
+            return await super().commit(writes, context)
+
+    class BlockingScanSession(StorageBackedSession):
+        def __init__(self, storage: MemoryStorage) -> None:
+            super().__init__(
+                SessionMetadata(id="session", created_at=NOW, storage_version=1),
+                storage,
+            )
+            self.scan_started = asyncio.Event()
+            self.release_scan = asyncio.Event()
+            self.block_scan = False
+
+        async def scan_branch(self, query, context):
+            if self.block_scan:
+                self.block_scan = False
+                self.scan_started.set()
+                await self.release_scan.wait()
+            return await super().scan_branch(query, context)
+
+    storage = BlockingCommitStorage()
+    session = BlockingScanSession(storage)
+    models = RecordingModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=models, model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="hello", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+    session.block_scan = True
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await session.scan_started.wait()
+
+    storage.block_next_commit = True
+    aborting = asyncio.create_task(lane.request_abort("run", BACKGROUND_CONTEXT))
+    await storage.commit_started.wait()
+    session.release_scan.set()
+    await asyncio.sleep(0)
+    assert models.stream_calls == 0
+
+    storage.release_commit.set()
+    requested = await aborting
+    driven = await driving
+    assert requested.ok is True
+    assert driven.ok is True
+    assert driven.value.kind == "settled"
+    assert driven.value.outcome.status == "aborted"
+    assert models.stream_calls == 0
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+
+
+async def test_close_rejects_observation_but_preserves_open_operation() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    interrupted = InterruptedModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=interrupted, model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="hello", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+    observation = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await interrupted.frames_yielded.wait()
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    with pytest.raises(HarnessClosed):
+        await observation
+    assert interrupted.provider_cancelled.is_set()
+
+    reopened_session = await repo.open(session.metadata, BACKGROUND_CONTEXT)
+    reopened = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=reopened_session,
+            models=RecordingModels(),
+            model=MODEL,
+            retry=RetryPolicy(max_retries=0),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    assert [(item.lane, item.operation_id) for item in reopened.open] == [
+        ("main", "run")
+    ]
+    assert await (
+        await reopened.harness.lane("main", BACKGROUND_CONTEXT)
+    ).get_result("run", BACKGROUND_CONTEXT) is None
+
+    await reopened.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+@pytest.mark.parametrize("failing_call", ["accept", "set_active_tools"])
+async def test_storage_commit_failure_faults_harness_not_operation_result(
+    failing_call: str,
+) -> None:
+    storage = FailingCommitMemoryStorage(now=lambda: NOW)
+    session = StorageBackedSession(
+        SessionMetadata(id="session", created_at=NOW, storage_version=1), storage
+    )
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=RecordingModels(), model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    storage.fail_next_commit = True
+
+    with pytest.raises(HarnessFault) as failed:
+        if failing_call == "accept":
+            await lane.accept(PromptRequest(prompt="hello"), BACKGROUND_CONTEXT)
+        else:
+            await lane.set_active_tools((), BACKGROUND_CONTEXT)
+    assert isinstance(failed.value.__cause__, OSError)
+    with pytest.raises(HarnessFault) as later:
+        await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert later.value is failed.value
+    with pytest.raises(HarnessFault) as read_after_fault:
+        await lane.get_result("missing", BACKGROUND_CONTEXT)
+    assert read_after_fault.value is failed.value
+    for call in (
+        lane.get_tip_id(BACKGROUND_CONTEXT),
+        lane.get_active_tools(BACKGROUND_CONTEXT),
+        lane.set_active_tools((), BACKGROUND_CONTEXT),
+        lane.find_entries(None, BACKGROUND_CONTEXT),
+    ):
+        with pytest.raises(HarnessFault) as sealed:
+            await call
+        assert sealed.value is failed.value
+
+    await created.harness.close(BACKGROUND_CONTEXT)

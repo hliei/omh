@@ -11,6 +11,7 @@ from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
     AssistantReadyOperation,
     AssistantRetryWaitOperation,
+    CancelRequestedControl,
     CheckpointOperation,
     CompactionSettings,
     CompletedToolCall,
@@ -29,6 +30,7 @@ from omh.agent.runtime.types import (
     RunContinuation,
     RunControl,
     RunIntent,
+    RunningControl,
     RunSettings,
     StartingOperation,
     ToolBatch,
@@ -407,14 +409,20 @@ def decode_operation_meta(value: object) -> OperationMeta:
 
 
 def _encode_control(control: RunControl) -> dict[str, JsonValue]:
+    if isinstance(control, CancelRequestedControl):
+        return {"status": control.status, "requestedAt": control.requested_at}
     return {"status": control.status}
 
 
 def _decode_control(value: object) -> RunControl:
     record = _record(value, "operation state.control")
-    if record.get("status") != "running":
-        raise ValueError("operation state.control.status is invalid")
-    return RunControl()
+    if record.get("status") == "running":
+        return RunningControl()
+    if record.get("status") == "cancel_requested":
+        return CancelRequestedControl(
+            requested_at=_integer(record, "requestedAt", "operation state.control")
+        )
+    raise ValueError("operation state.control.status is invalid")
 
 
 def _encode_settings(settings: RunSettings) -> dict[str, JsonValue]:

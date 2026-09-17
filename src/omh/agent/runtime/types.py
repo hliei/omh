@@ -44,8 +44,17 @@ class OperationMeta:
 
 
 @dataclass(frozen=True, slots=True)
-class RunControl:
+class RunningControl:
     status: Literal["running"] = "running"
+
+
+@dataclass(frozen=True, slots=True)
+class CancelRequestedControl:
+    requested_at: int
+    status: Literal["cancel_requested"] = "cancel_requested"
+
+
+type RunControl = RunningControl | CancelRequestedControl
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +106,7 @@ class GenerationContext:
 @dataclass(frozen=True, slots=True)
 class StartingOperation:
     latest_assistant_entry_id: str | None
-    control: RunControl = field(default_factory=RunControl)
+    control: RunControl = field(default_factory=RunningControl)
     settings: RunSettings = field(default_factory=RunSettings)
     at: Literal["starting"] = "starting"
 

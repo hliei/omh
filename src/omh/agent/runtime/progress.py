@@ -60,7 +60,7 @@ class ToolProgress:
                     mutation_context,
                 )
 
-            await self._lane._options.session.mutate(write, self._context)
+            await self._lane.mutate(write, self._context)
 
         task = asyncio.create_task(persist())
         task.add_done_callback(self._observe_completion)

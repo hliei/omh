@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from omh.agent.agent_harness import AgentHarnessTool, OperationError
-from omh.agent.context import Context
+from omh.agent.context import Context, cancel_on_context
 from omh.agent.runtime.codec import encode_assistant_frame, encode_operation_state
 from omh.agent.runtime.drive.response import settle_response
 from omh.agent.runtime.drive.terminal import result_record, terminal_writes
@@ -69,32 +69,41 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
     ]
     thinking_level = intent.generation_context.configuration.thinking_level
     reasoning = None if thinking_level == "off" else thinking_level
-    stream = lane._options.models.stream_simple(
-        model,
-        LlmContext(
-            messages=provider_messages,
-            tools=(
-                [
-                    Tool(
-                        name=tool.name,
-                        description=tool.description,
-                        parameters=tool.parameters,
-                    )
-                    for tool in active_tools
-                ]
-                or None
+    context.raise_if_cancelled()
+    stream = lane.admit_effect(
+        operation_id,
+        lambda: lane._options.models.stream_simple(
+            model,
+            LlmContext(
+                messages=provider_messages,
+                tools=(
+                    [
+                        Tool(
+                            name=tool.name,
+                            description=tool.description,
+                            parameters=tool.parameters,
+                        )
+                        for tool in active_tools
+                    ]
+                    or None
+                ),
             ),
+            SimpleStreamOptions(reasoning=reasoning),
         ),
-        SimpleStreamOptions(reasoning=reasoning),
     )
     encoder = AssistantMessageFrameEncoder()
-    async for event in stream:
+    iterator = stream.__aiter__()
+    while True:
+        try:
+            event = await cancel_on_context(anext(iterator), context)
+        except StopAsyncIteration:
+            break
         frame = encoder.encode(event)
         if frame is not None:
             await _append_frame(
                 lane, operation_id, intent.response_entry_id, frame, context
             )
-    response = await stream.result()
+    response = await cancel_on_context(stream.result(), context)
     await settle_response(lane, operation_id, intent, response, context)
 
 

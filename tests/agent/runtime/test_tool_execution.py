@@ -18,11 +18,15 @@ from omh.agent import (
     BranchScan,
     Context,
     DriveOptions,
+    HarnessClosed,
+    HarnessFault,
     MemorySessionRepo,
     PromptRequest,
     Session,
     SessionCreateOptions,
+    SessionMetadata,
     SessionMutator,
+    StorageBackedSession,
     ToolReplayPolicy,
     Value,
     Write,
@@ -44,6 +48,7 @@ from omh.llm import (
     Context as LlmContext,
 )
 from omh.session_backends.sqlite import SqliteSessionRepo
+from tests.agent.runtime.support import FailingCommitMemoryStorage
 
 NOW = 1_700_000_000_000
 MODEL = Model(
@@ -176,6 +181,55 @@ class FinishingModels:
                 content=[TextContent(text="finished")],
             )
         )
+
+
+async def test_tool_memo_commit_failure_faults_harness() -> None:
+    storage = FailingCommitMemoryStorage(now=lambda: NOW)
+    session = StorageBackedSession(
+        SessionMetadata(id="session", created_at=NOW, storage_version=1), storage
+    )
+
+    async def fail_memo(
+        _tool_call_id: str,
+        _arguments: dict[str, object],
+        _on_update: AgentHarnessToolUpdateCallback,
+        invocation: AgentHarnessToolInvocation,
+        _context: Context,
+    ) -> AgentToolResult:
+        storage.fail_next_commit = True
+        await invocation.set_memo("request", {"id": "value"})
+        raise AssertionError("memo failure must stop the tool")
+
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=ToolCallingModels(),
+            model=MODEL,
+            tools=(
+                AgentHarnessTool(
+                    name="add",
+                    description="Add numbers",
+                    parameters={"type": "object"},
+                    execute=fail_memo,
+                ),
+            ),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="add", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok is True
+
+    with pytest.raises(HarnessFault) as failed:
+        await lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    assert isinstance(failed.value.__cause__, OSError)
+    with pytest.raises(HarnessFault) as sealed:
+        await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert sealed.value is failed.value
+
+    await created.harness.close(BACKGROUND_CONTEXT)
 
 
 class ParallelToolCallingModels(FinishingModels):
@@ -446,7 +500,7 @@ async def test_prompt_executes_active_tool_then_continues_model() -> None:
                 invocation.turn_id,
             )
         )
-        assert context is BACKGROUND_CONTEXT
+        context.raise_if_cancelled()
         return AgentToolResult(content=[TextContent(text="5")], details={"sum": 5})
 
     tool = AgentHarnessTool(
@@ -876,6 +930,95 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
     await reopened_repo.close(BACKGROUND_CONTEXT)
 
 
+async def test_request_abort_cancels_tool_and_fences_its_late_result() -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release_late_result = asyncio.Event()
+    late_finished = asyncio.Event()
+
+    async def execute_late(
+        tool_call_id: str,
+        params: dict[str, object],
+        on_update: AgentHarnessToolUpdateCallback,
+        invocation: AgentHarnessToolInvocation,
+        context: Context,
+    ) -> AgentToolResult:
+        del tool_call_id, params, on_update, invocation, context
+        started.set()
+        try:
+            await asyncio.Future[None]()
+        except asyncio.CancelledError:
+            cancelled.set()
+        await release_late_result.wait()
+        late_finished.set()
+        return AgentToolResult(content=[TextContent(text="late result")])
+
+    models = ToolCallingModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=models,
+            model=MODEL,
+            tools=(
+                AgentHarnessTool(
+                    name="add",
+                    description="Add two integers",
+                    parameters={"type": "object"},
+                    execute=execute_late,
+                ),
+            ),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="what is 2 + 3?", operation_id="first"),
+        BACKGROUND_CONTEXT,
+    )
+    assert admitted.ok is True
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="first"), BACKGROUND_CONTEXT)
+    )
+    await started.wait()
+
+    requested = await lane.request_abort("first", BACKGROUND_CONTEXT)
+    assert requested.ok is True
+    async with asyncio.timeout(1):
+        result = await driving
+    assert result.ok is True
+    assert result.value.kind == "settled"
+    assert result.value.outcome.status == "aborted"
+    assert cancelled.is_set()
+
+    second = await lane.accept(
+        PromptRequest(prompt="continue", operation_id="second"), BACKGROUND_CONTEXT
+    )
+    assert second.ok is True
+    release_late_result.set()
+    await late_finished.wait()
+    await asyncio.sleep(0)
+    completed = await lane.drive(
+        DriveOptions(operation_id="second"), BACKGROUND_CONTEXT
+    )
+    assert completed.ok is True
+    assert completed.value.kind == "settled"
+    assert completed.value.outcome.status == "completed"
+    history = await lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assert not any(
+        entry.type == "message"
+        and isinstance(entry.message, ToolResultMessage)
+        and entry.message.content == [TextContent(text="late result")]
+        for entry in history
+    )
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
 async def test_reopen_places_staged_parallel_result_after_interrupted_prefix(
     tmp_path,
 ) -> None:
@@ -931,7 +1074,7 @@ async def test_reopen_places_staged_parallel_result_after_interrupted_prefix(
     await first_started.wait()
     await session.staged.wait()
     await first.harness.close(BACKGROUND_CONTEXT)
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(HarnessClosed):
         await observing
     await repo.close(BACKGROUND_CONTEXT)
 
@@ -1047,7 +1190,7 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
         while not await session.scan_values(progress_prefix, BACKGROUND_CONTEXT):
             await asyncio.sleep(0)
     await created.harness.close(BACKGROUND_CONTEXT)
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(HarnessClosed):
         await observing
     await repo.close(BACKGROUND_CONTEXT)
 
@@ -1161,7 +1304,7 @@ async def test_reopen_materializes_staged_tool_result_without_rerunning_tool(
     await session.staged.wait()
     assert executions == 1
     await created.harness.close(BACKGROUND_CONTEXT)
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(HarnessClosed):
         await observing
     await repo.close(BACKGROUND_CONTEXT)
 

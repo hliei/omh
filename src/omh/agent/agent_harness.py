@@ -194,6 +194,32 @@ type DriveResult = Result[DriveOutcome, OperationMismatch]
 
 
 @dataclass(frozen=True, slots=True)
+class AbortRequest:
+    operation_id: str
+    newly_requested: bool
+    steer: tuple[AgentMessage, ...] = ()
+    follow_up: tuple[AgentMessage, ...] = ()
+
+
+type AbortRequestResult = Result[AbortRequest, OperationMismatch]
+
+
+@dataclass(frozen=True, slots=True)
+class NoActiveOperation:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class AbortOutcome:
+    operation_id: str
+    steer: tuple[AgentMessage, ...] = ()
+    follow_up: tuple[AgentMessage, ...] = ()
+
+
+type AbortResult = Result[AbortOutcome, NoActiveOperation | OperationMismatch]
+
+
+@dataclass(frozen=True, slots=True)
 class NothingToResume:
     pass
 

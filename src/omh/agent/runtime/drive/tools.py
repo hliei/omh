@@ -13,7 +13,8 @@ from omh.agent.agent_harness import (
     ToolMemo,
     ToolMemoUnset,
 )
-from omh.agent.context import Context
+from omh.agent.context import Context, cancel_on_context
+from omh.agent.result import HarnessFault
 from omh.agent.runtime.codec import (
     decode_agent_tool_result,
     encode_operation_state,
@@ -72,10 +73,13 @@ class ToolInvocation(AgentHarnessToolInvocation):
     async def get_memo(self, name: str) -> ToolMemo:
         self._validate_name(name)
         self._assert_active()
-        stored = await self._lane._options.session.get_value(
-            operation_tool_memo(self.operation_id, self.invocation_id, name),
-            self._context,
-        )
+        try:
+            stored = await self._lane._options.session.get_value(
+                operation_tool_memo(self.operation_id, self.invocation_id, name),
+                self._context,
+            )
+        except Exception as error:
+            raise self._lane._on_fault(error) from error
         self._assert_active()
         return TOOL_MEMO_UNSET if stored is None else stored.value
 
@@ -103,7 +107,7 @@ class ToolInvocation(AgentHarnessToolInvocation):
                 mutation_context,
             )
 
-        await self._lane._options.session.mutate(write, self._context)
+        await self._lane.mutate(write, self._context)
         self._assert_active()
 
     def close(self) -> None:
@@ -407,10 +411,19 @@ async def _execute_tool(
 
     is_error = False
     try:
-        result = await tool.execute(
-            tool_call.id, arguments, on_update, invocation, context
+        execution: asyncio.Future[AgentToolResult] = lane.admit_effect(
+            operation_id,
+            lambda: asyncio.ensure_future(
+                tool.execute(tool_call.id, arguments, on_update, invocation, context)
+            ),
+        )
+        result = await cancel_on_context(
+            execution,
+            context,
         )
     except asyncio.CancelledError:
+        raise
+    except HarnessFault:
         raise
     except Exception as error:
         is_error = True

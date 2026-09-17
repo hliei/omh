@@ -19,6 +19,17 @@ class Err[E]:
 type Result[T, E] = Ok[T] | Err[E]
 
 
+class HarnessClosed(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("AgentHarness was closed while the operation was active")
+
+
+class HarnessFault(RuntimeError):
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__("AgentHarness storage or invariant fault")
+        self.__cause__ = cause
+
+
 def ok[T](value: T) -> Ok[T]:
     return Ok(value)
 
