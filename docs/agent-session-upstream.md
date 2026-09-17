@@ -31,7 +31,10 @@
 | `packages/agent/src/harness/runtime/drive/terminal.ts` | `src/omh/agent/runtime/drive/terminal.py` |
 | `packages/agent/src/harness/types.ts` 的 T05 工具声明 | `src/omh/agent/agent_harness.py` |
 | `packages/agent/src/harness/config.ts` 的工具名校验与进程内 registry | `src/omh/agent/runtime/tool_registry.py` |
-| `packages/agent/src/harness/runtime/drive/tools.ts` 的 T05 串行阶段 | `src/omh/agent/runtime/drive/tools.py` |
+| `packages/agent/src/harness/runtime/drive/tools.ts` 的工具 intent、effect 与 outcome staging | `src/omh/agent/runtime/drive/tools.py` |
+| `packages/agent/src/harness/runtime/progress.ts` 的工具 checkpoint 通道 | `src/omh/agent/runtime/progress.py` |
+| `tools.ts` 与 `progress.ts` 共用的 effect 所有权条件 | `src/omh/agent/runtime/tool_effect.py`（Python 内部辅助类型） |
+| `packages/agent/src/harness/runtime/drive/tool-placement.ts` 的 ready 前缀入树 | `src/omh/agent/runtime/drive/tool_placement.py` |
 | `packages/agent/src/harness/runtime/restore.ts` | `src/omh/agent/runtime/restore.py` |
 | durable runtime state 与 assistant frame 的 SQLite JSON 形状（上游对象可直接 JSON 化） | `src/omh/agent/runtime/codec.py`（新增） |
 
@@ -68,3 +71,11 @@
 - 参数在 effect intent 前按工具的 JSON Schema 基本结构（`type`、`enum`、object `properties`/`required`/`additionalProperties`、array `items`）校验。未知/inactive 工具、参数错误和工具异常都形成 `is_error` tool-result message；不伪造 `details`，随后按普通模型回合继续。
 - 工具 effect 之前原子持久化有效参数和声明的 replay policy。invocation id 等于预留的 result entry id，并在 safe replay 中保持；invocation memo 按该 id 持久化，在结果 staging 时清理。Python 以 `TOOL_MEMO_UNSET` 对应 JavaScript `undefined`，从而让 JSON `null`（Python `None`）仍可持久化。T05 的工具 callable 暂不暴露 T06 的 progress callback 或 T10 的 application tool context。
 - effect 结果先以完整 pending entry 与 `outcome_ready` 原子 staging，随后才写入不可变对话树；因此重开可直接物化而不重跑。`effect_pending` 恢复只有 stored 与 current declaration 均为 `safe` 时才使用持久化参数和 memo 重放，否则 staging 明确的 unknown-outcome error。工具结果入树时保留 `terminate` 标记并删除本批参数；终结模型回合沿用 T04 清理。
+
+## T06 并行工具、进度与有序入树
+
+- `AgentHarnessOptions.tool_execution` 在接纳 operation 时捕获到 durable settings；缺省 `parallel` 时，一个工具批次中的 planned/effect-pending 调用以独立 asyncio task 并行推进，显式 `sequential` 则保留逐个源顺序执行。每个 effect 仍先原子提交 intent，再允许执行；完成顺序只决定各自何时 staging 为 `outcome_ready`，不会改变来源顺序。
+- `tool_placement.py` 每次只物化从首个未完成调用开始的连续 ready 前缀。后序调用可以先完成并持久化，但在前序调用 ready 前不会越过它写入对话树；前缀一旦齐备即可入树，无需等待整个批次完成。
+- Python 工具 callable 在参数之后接收同步 `AgentHarnessToolUpdateCallback`，随后是 invocation 与 harness `Context`；回调的 options 可省略，`on_update(partial_result)` 与 `on_update(partial_result, AgentHarnessToolUpdateOptions(...))` 均受类型支持。T10 的 application tool context 尚未加入。`checkpoint=True` 用 `pi.pending.tool_output` 替换当前 invocation 的 durable 全量快照；无 checkpoint 的 live update 暂无 application 事件消费者，事件与 watch 仍由 T10 提供。
+- checkpoint 写入按 invocation 调用顺序排队，并在 `(operation, turn, source index, invocation id, effect_pending)` 所有权上 fencing。工具结算会先 seal/drain 进度，再在 outcome staging 事务中删除 checkpoint 与 memo；结束后的 update 被忽略，结束后的 memo 访问被拒绝。
+- checkpoint 只表示最新 durable 进度，不表示工具完成。非双-safe 恢复把 checkpoint 的 content/details/usage 作为中断错误结果前缀，再追加 unknown-outcome 标记；双-safe 重放在新 effect 前删除旧 checkpoint，避免第二次中断误用旧进度。

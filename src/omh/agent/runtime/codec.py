@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Literal, cast
 
-from omh.agent.agent_harness import OperationError, OperationResultRecord
+from omh.agent.agent_harness import (
+    AgentToolResult,
+    OperationError,
+    OperationResultRecord,
+)
 from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
     AssistantReadyOperation,
@@ -31,7 +35,14 @@ from omh.agent.runtime.types import (
     ToolCallState,
     ToolsOperation,
 )
-from omh.agent.session.codec import decode_message, encode_message
+from omh.agent.session.codec import (
+    decode_message,
+    decode_tool_result_content,
+    decode_usage,
+    encode_message,
+    encode_tool_result_content,
+    encode_usage,
+)
 from omh.llm.types import (
     AssistantMessage,
     JsonValue,
@@ -53,6 +64,34 @@ from omh.llm.utils.assistant_message_frame import (
     ToolCallEndFrame,
     ToolCallStartFrame,
 )
+
+
+def encode_agent_tool_result(result: AgentToolResult) -> dict[str, JsonValue]:
+    encoded: dict[str, JsonValue] = {
+        "content": encode_tool_result_content(result.content),
+        "terminate": result.terminate,
+    }
+    if result.details is not None:
+        encoded["details"] = result.details
+    if result.usage is not None:
+        encoded["usage"] = encode_usage(result.usage)
+    return encoded
+
+
+def decode_agent_tool_result(value: object) -> AgentToolResult:
+    record = _record(value, "tool progress")
+    terminate = record.get("terminate", False)
+    if not isinstance(terminate, bool):
+        raise ValueError("tool progress.terminate must be a boolean")
+    usage = record.get("usage")
+    return AgentToolResult(
+        content=decode_tool_result_content(
+            record.get("content"), "tool progress.content"
+        ),
+        details=cast(JsonValue, record.get("details")),
+        usage=None if usage is None else decode_usage(cast(JsonValue, usage)),
+        terminate=terminate,
+    )
 
 
 def _optional(record: dict[str, JsonValue], key: str, value: JsonValue | None) -> None:
@@ -396,10 +435,11 @@ def _decode_settings(value: object) -> RunSettings:
     compaction = _record(
         record.get("compaction"), "operation state.settings.compaction"
     )
+    tool_execution = record.get("toolExecution")
     if (
         record.get("steeringMode") != "all"
         or record.get("followUpMode") != "all"
-        or record.get("toolExecution") != "parallel"
+        or tool_execution not in {"sequential", "parallel"}
     ):
         raise ValueError("operation state.settings contains unsupported values")
     return RunSettings(
@@ -413,7 +453,8 @@ def _decode_settings(value: object) -> RunSettings:
             keep_recent_tokens=_integer(
                 compaction, "keepRecentTokens", "operation state.settings.compaction"
             ),
-        )
+        ),
+        tool_execution=tool_execution,
     )
 
 

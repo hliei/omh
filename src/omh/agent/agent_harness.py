@@ -42,8 +42,27 @@ class AgentHarnessToolInvocation(Protocol):
     async def set_memo(self, name: str, value: ToolMemo) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AgentHarnessToolUpdateOptions:
+    checkpoint: bool = False
+
+
+class AgentHarnessToolUpdateCallback(Protocol):
+    def __call__(
+        self,
+        partial_result: AgentToolResult,
+        options: AgentHarnessToolUpdateOptions | None = None,
+    ) -> None: ...
+
+
 type AgentHarnessToolExecute = Callable[
-    [str, dict[str, object], AgentHarnessToolInvocation, Context],
+    [
+        str,
+        dict[str, object],
+        AgentHarnessToolUpdateCallback,
+        AgentHarnessToolInvocation,
+        Context,
+    ],
     Awaitable[AgentToolResult],
 ]
 type ToolReplayPolicy = Literal["never", "safe"]
@@ -93,6 +112,7 @@ class AgentHarnessOptions:
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     tools: tuple[AgentHarnessTool, ...] = ()
     active_tool_names: tuple[str, ...] | None = None
+    tool_execution: Literal["sequential", "parallel"] = "parallel"
 
 
 @dataclass(frozen=True, slots=True)

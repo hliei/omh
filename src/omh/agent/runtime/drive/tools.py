@@ -8,37 +8,38 @@ from omh.agent.agent_harness import (
     TOOL_MEMO_UNSET,
     AgentHarnessTool,
     AgentHarnessToolInvocation,
+    AgentHarnessToolUpdateOptions,
     AgentToolResult,
     ToolMemo,
     ToolMemoUnset,
 )
 from omh.agent.context import Context
-from omh.agent.runtime.codec import encode_operation_state
+from omh.agent.runtime.codec import (
+    decode_agent_tool_result,
+    encode_operation_state,
+)
+from omh.agent.runtime.drive.tool_placement import materialize_ready_prefix
+from omh.agent.runtime.progress import ToolProgress
 from omh.agent.runtime.state import read_operation
+from omh.agent.runtime.tool_effect import ToolEffect
 from omh.agent.runtime.types import (
-    CheckpointOperation,
     CompletedToolCall,
     EffectPendingToolCall,
-    MayFinish,
-    NeedAssistant,
-    OperationState,
     OutcomeReadyToolCall,
     PlannedToolCall,
     ToolCallState,
     ToolsOperation,
 )
-from omh.agent.session.codec import decode_message, encode_message
-from omh.agent.session.commit import insert_entry, insert_usage
-from omh.agent.session.types import NewMessageEntry, SessionMutator, UsageRow, Write
+from omh.agent.session.codec import encode_message
+from omh.agent.session.types import SessionMutator, Write
 from omh.agent.session.values import (
-    branch_tip,
     delete_value,
     operation_state,
     operation_tool_args,
-    operation_tool_args_prefix,
     operation_tool_memo,
     operation_tool_memo_prefix,
     pending_entry,
+    pending_tool_output,
     set_value,
 )
 from omh.llm.types import (
@@ -57,15 +58,14 @@ class ToolInvocation(AgentHarnessToolInvocation):
     def __init__(
         self,
         lane: AgentLane,
-        operation_id: str,
-        turn_id: str,
-        invocation_id: str,
+        effect: ToolEffect,
         context: Context,
     ) -> None:
-        self.invocation_id = invocation_id
-        self.operation_id = operation_id
-        self.turn_id = turn_id
+        self.invocation_id = effect.invocation_id
+        self.operation_id = effect.operation_id
+        self.turn_id = effect.turn_id
         self._lane = lane
+        self._effect = effect
         self._context = context
         self._active = True
 
@@ -89,12 +89,7 @@ class ToolInvocation(AgentHarnessToolInvocation):
             snapshot = await read_operation(
                 mutator, self._lane.name, self.operation_id, mutation_context
             )
-            state = snapshot.state
-            if not isinstance(state, ToolsOperation) or not any(
-                isinstance(call, EffectPendingToolCall)
-                and call.result_entry_id == self.invocation_id
-                for call in state.batch.calls
-            ):
+            if not self._effect.owns(snapshot.state):
                 raise RuntimeError("Tool invocation is no longer active")
             address = operation_tool_memo(
                 self.operation_id, self.invocation_id, name
@@ -127,22 +122,46 @@ class ToolInvocation(AgentHarnessToolInvocation):
 async def run_tools(
     lane: AgentLane, operation_id: str, context: Context
 ) -> None:
-    state = await _read_tools_state(lane, operation_id, context)
-    call = next(
-        (item for item in state.batch.calls if not isinstance(item, CompletedToolCall)),
-        None,
+    await materialize_ready_prefix(lane, operation_id, context)
+    stored = await lane._options.session.get_value(
+        operation_state(operation_id), context
     )
-    if call is None:
+    if stored is None:
+        raise RuntimeError(f"Operation {operation_id!r} is missing state")
+    from omh.agent.runtime.codec import decode_operation_state
+
+    decoded = decode_operation_state(stored.value)
+    if not isinstance(decoded, ToolsOperation):
+        return
+    state = decoded
+    calls = tuple(
+        call
+        for call in state.batch.calls
+        if not isinstance(call, CompletedToolCall | OutcomeReadyToolCall)
+    )
+    if not calls:
         raise RuntimeError("Tool batch has no unfinished call")
-    tool_call = await _read_tool_call(lane, state, call.source_index, context)
-    if isinstance(call, PlannedToolCall):
-        await _start_planned_call(lane, operation_id, state, call, tool_call, context)
-    elif isinstance(call, EffectPendingToolCall):
-        await _recover_pending_call(lane, operation_id, state, call, tool_call, context)
-    elif isinstance(call, OutcomeReadyToolCall):
-        await _materialize_outcome(lane, operation_id, call, context)
-    else:
-        raise RuntimeError(f"Unsupported tool call state: {call.status}")
+    materialization_lock = asyncio.Lock()
+
+    async def run_call(call: PlannedToolCall | EffectPendingToolCall) -> None:
+        tool_call = await _read_tool_call(lane, state, call.source_index, context)
+        if isinstance(call, PlannedToolCall):
+            await _start_planned_call(
+                lane, operation_id, state, call, tool_call, context
+            )
+        else:
+            await _recover_pending_call(
+                lane, operation_id, state, call, tool_call, context
+            )
+        async with materialization_lock:
+            await materialize_ready_prefix(lane, operation_id, context)
+
+    if state.settings.tool_execution == "sequential":
+        await run_call(calls[0])
+        return
+    await asyncio.gather(*(run_call(call) for call in calls))
+    async with materialization_lock:
+        await materialize_ready_prefix(lane, operation_id, context)
 
 
 async def _read_tools_state(
@@ -241,6 +260,16 @@ async def _recover_pending_call(
     if stored_args is None:
         raise RuntimeError("Pending tool call is missing durable arguments")
     if tool is not None and call.replay == "safe" and tool.replay == "safe":
+        await _clear_replay_checkpoint(
+            lane,
+            ToolEffect(
+                operation_id,
+                state.batch.turn_id,
+                call.source_index,
+                call.result_entry_id,
+            ),
+            context,
+        )
         await _execute_tool(
             lane,
             operation_id,
@@ -252,14 +281,55 @@ async def _recover_pending_call(
             context,
         )
         return
-    await _stage_error(
+    checkpoint = await lane._options.session.get_value(
+        pending_tool_output(operation_id, call.result_entry_id), context
+    )
+    partial = (
+        None if checkpoint is None else decode_agent_tool_result(checkpoint.value)
+    )
+    await _stage_result(
         lane,
         operation_id,
         call,
         tool_call,
-        "Tool execution was interrupted. Newer live output may be missing and the external outcome is unknown.",
+        AgentToolResult(
+            content=[
+                *(partial.content if partial is not None else []),
+                TextContent(
+                    text="Tool execution was interrupted. The preceding output is the latest durable progress snapshot; newer live output may be missing, and the external outcome is unknown."
+                ),
+            ],
+            details=None if partial is None else partial.details,
+            usage=None if partial is None else partial.usage,
+        ),
+        True,
         context,
     )
+
+
+async def _clear_replay_checkpoint(
+    lane: AgentLane,
+    effect: ToolEffect,
+    context: Context,
+) -> None:
+    async def clear(
+        mutator: SessionMutator, mutation_context: Context
+    ) -> None:
+        snapshot = await read_operation(
+            mutator, lane.name, effect.operation_id, mutation_context
+        )
+        if not effect.owns(snapshot.state):
+            raise RuntimeError("Tool invocation no longer owns its durable effect")
+        await mutator.commit(
+            [
+                delete_value(
+                    pending_tool_output(effect.operation_id, effect.invocation_id)
+                )
+            ],
+            mutation_context,
+        )
+
+    await lane._options.session.mutate(clear, context)
 
 
 async def _resolve_tool(
@@ -319,12 +389,27 @@ async def _execute_tool(
     arguments: dict[str, object],
     context: Context,
 ) -> None:
-    invocation = ToolInvocation(
-        lane, operation_id, state.batch.turn_id, call.result_entry_id, context
+    effect = ToolEffect(
+        operation_id,
+        state.batch.turn_id,
+        call.source_index,
+        call.result_entry_id,
     )
+    invocation = ToolInvocation(lane, effect, context)
+    progress = ToolProgress(lane, effect, context)
+
+    def on_update(
+        partial_result: AgentToolResult,
+        options: AgentHarnessToolUpdateOptions | None = None,
+    ) -> None:
+        if options is not None and options.checkpoint:
+            progress.write(partial_result)
+
     is_error = False
     try:
-        result = await tool.execute(tool_call.id, arguments, invocation, context)
+        result = await tool.execute(
+            tool_call.id, arguments, on_update, invocation, context
+        )
     except asyncio.CancelledError:
         raise
     except Exception as error:
@@ -334,6 +419,8 @@ async def _execute_tool(
         )
     finally:
         invocation.close()
+        progress.seal()
+        await progress.drain()
     await _stage_result(
         lane, operation_id, call, tool_call, result, is_error, context
     )
@@ -400,6 +487,9 @@ async def _stage_result(
                 {"type": "message", "payload": encode_message(message)},
             ),
             *(delete_value(item.address) for item in memos),
+            delete_value(
+                pending_tool_output(operation_id, expected.result_entry_id)
+            ),
             set_value(
                 operation_state(operation_id), encode_operation_state(next_state)
             ),
@@ -407,102 +497,6 @@ async def _stage_result(
         await mutator.commit(writes, mutation_context)
 
     await lane._options.session.mutate(stage, context)
-
-
-async def _materialize_outcome(
-    lane: AgentLane,
-    operation_id: str,
-    expected_call: OutcomeReadyToolCall,
-    context: Context,
-) -> None:
-    async def materialize(
-        mutator: SessionMutator, mutation_context: Context
-    ) -> None:
-        snapshot = await read_operation(
-            mutator, lane.name, operation_id, mutation_context
-        )
-        state = snapshot.state
-        if not isinstance(state, ToolsOperation):
-            raise RuntimeError("Operation is no longer executing tools")
-        call = next(
-            (
-                item
-                for item in state.batch.calls
-                if item.result_entry_id == expected_call.result_entry_id
-            ),
-            None,
-        )
-        if not isinstance(call, OutcomeReadyToolCall):
-            raise RuntimeError("Tool outcome is no longer ready")
-        pending = await mutator.get_value(pending_entry(call.result_entry_id), mutation_context)
-        tip = await mutator.get_value(branch_tip(lane.name), mutation_context)
-        if pending is None or tip is None:
-            raise RuntimeError("Tool outcome is missing durable content or branch state")
-        record = pending.value
-        if record.get("type") != "message":
-            raise RuntimeError("Pending tool outcome is not a message")
-        message = decode_message(record.get("payload"))
-        if not isinstance(message, ToolResultMessage):
-            raise RuntimeError("Pending tool outcome is not a tool result")
-        completed = CompletedToolCall(
-            source_index=call.source_index,
-            result_entry_id=call.result_entry_id,
-            terminate=call.terminate,
-        )
-        next_tools = _replace_call(state, call, completed)
-        all_completed = all(
-            isinstance(item, CompletedToolCall) for item in next_tools.batch.calls
-        )
-        next_state: OperationState = next_tools
-        if all_completed:
-            completed_calls = cast(tuple[CompletedToolCall, ...], next_tools.batch.calls)
-            continuation = (
-                MayFinish(include_final_assistant=False)
-                if all(item.terminate for item in completed_calls)
-                else NeedAssistant()
-            )
-            next_state = CheckpointOperation(
-                latest_assistant_entry_id=state.latest_assistant_entry_id,
-                continuation=continuation,
-                trigger_entry_id=call.result_entry_id,
-                control=state.control,
-                settings=state.settings,
-            )
-        writes: list[Write] = [
-            insert_entry(
-                NewMessageEntry(
-                    id=call.result_entry_id,
-                    parent_id=tip.value,
-                    message=message,
-                    terminate=call.terminate,
-                )
-            ),
-            delete_value(pending_entry(call.result_entry_id)),
-            set_value(branch_tip(lane.name), call.result_entry_id),
-        ]
-        if message.usage is not None:
-            writes.append(
-                insert_usage(
-                    UsageRow(
-                        id=lane._options.session.id_generator.next(),
-                        usage=message.usage,
-                        adjustment=False,
-                        entry_id=call.result_entry_id,
-                    )
-                )
-            )
-        if all_completed:
-            arguments = await mutator.scan_values(
-                operation_tool_args_prefix(operation_id, state.batch.turn_id),
-                mutation_context,
-            )
-            writes.extend(delete_value(item.address) for item in arguments)
-        writes.append(
-            set_value(operation_state(operation_id), encode_operation_state(next_state))
-        )
-        await mutator.commit(writes, mutation_context)
-
-    await lane._options.session.mutate(materialize, context)
 
 
 def _replace_call(

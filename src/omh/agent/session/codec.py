@@ -189,6 +189,24 @@ def _decode_content_block(value: JsonValue, where: str) -> TextContent | Thinkin
     raise ValueError(f"{where}.type is not a known content type")
 
 
+def encode_tool_result_content(
+    content: list[ToolResultContent],
+) -> list[JsonValue]:
+    return [_encode_content_block(block) for block in content]
+
+
+def decode_tool_result_content(
+    value: object, where: str
+) -> list[ToolResultContent]:
+    decoded: list[ToolResultContent] = []
+    for index, block in enumerate(_record_list(cast(JsonValue, value), where)):
+        item = _decode_content_block(block, f"{where}[{index}]")
+        if isinstance(item, ThinkingContent | ToolCall):
+            raise ValueError(f"{where}[{index}] is not tool result content")
+        decoded.append(item)
+    return decoded
+
+
 def encode_message(message: AgentMessage) -> dict[str, JsonValue]:
     if isinstance(message, UserMessage):
         content: JsonValue = (

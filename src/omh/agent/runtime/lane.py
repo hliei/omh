@@ -40,6 +40,7 @@ from omh.agent.runtime.types import (
     LaneState,
     OperationMeta,
     RunIntent,
+    RunSettings,
     StartingOperation,
 )
 from omh.agent.session.commit import insert_entry
@@ -129,7 +130,12 @@ class AgentLane:
                 started_at=started_at,
                 intent=RunIntent(prompt_entry_ids=tuple(entry_ids)),
             )
-            state = StartingOperation(latest_assistant_entry_id=None)
+            state = StartingOperation(
+                latest_assistant_entry_id=None,
+                settings=RunSettings(
+                    tool_execution=self._options.tool_execution
+                ),
+            )
             next_lane = LaneState(
                 current_operation_id=operation_id,
                 last_operation_id=durable_lane.last_operation_id,
