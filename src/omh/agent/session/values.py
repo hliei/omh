@@ -130,45 +130,45 @@ def resolve_list_read_options(
 
 
 def branch_tip(branch: str) -> Value[str | None]:
-    return value("pi.branch.tip", branch)
+    return value("omh.branch.tip", branch)
 
 
 def branch_tip_inventory_prefix() -> Value[str | None]:
-    return value("pi.branch.tip")
+    return value("omh.branch.tip")
 
 
-session_name: Value[str] = value("pi.session.name")
+session_name: Value[str] = value("omh.session.name")
 
 
 def entry_label(entry_id: str) -> Value[str]:
-    return value("pi.entry.label", entry_id)
+    return value("omh.entry.label", entry_id)
 
 
 def lane_config(lane: str) -> Value[JsonObject]:
-    return value("pi.lane.config", lane)
+    return value("omh.lane.config", lane)
 
 
 def lane_state(lane: str) -> Value[JsonObject]:
-    return value("pi.lane.state", lane)
+    return value("omh.lane.state", lane)
 
 
 def operation_result(operation_id: str) -> Value[JsonObject]:
-    return value("pi.result", operation_id)
+    return value("omh.result", operation_id)
 
 
 def operation_meta(operation_id: str) -> Value[JsonObject]:
-    return value("pi.op.meta", operation_id)
+    return value("omh.op.meta", operation_id)
 
 
 def operation_state(operation_id: str) -> Value[JsonObject]:
-    return value("pi.op.state", operation_id)
+    return value("omh.op.state", operation_id)
 
 
 def pending_assistant_frames(
     operation_id: str, response_entry_id: str
 ) -> ValueList[JsonObject]:
     return list_value(
-        "pi.pending.assistant_frame", f"{operation_id}:{response_entry_id}"
+        "omh.pending.assistant_frame", f"{operation_id}:{response_entry_id}"
     )
 
 
@@ -176,37 +176,37 @@ def operation_tool_args(
     operation_id: str, step_id: str, source_index: int
 ) -> Value[JsonObject]:
     return value(
-        "pi.op.tool_args", f"{operation_id}:{step_id}:{source_index}"
+        "omh.op.tool_args", f"{operation_id}:{step_id}:{source_index}"
     )
 
 
 def operation_tool_args_prefix(operation_id: str, step_id: str = "") -> Value[JsonObject]:
     suffix = f":{step_id}:" if step_id else ":"
-    return value("pi.op.tool_args", f"{operation_id}{suffix}")
+    return value("omh.op.tool_args", f"{operation_id}{suffix}")
 
 
 def operation_tool_memo(
     operation_id: str, invocation_id: str, name: str
 ) -> Value[JsonValue]:
-    return value("pi.op.tool_memo", f"{operation_id}:{invocation_id}:{name}")
+    return value("omh.op.tool_memo", f"{operation_id}:{invocation_id}:{name}")
 
 
 def operation_tool_memo_prefix(
     operation_id: str, invocation_id: str = ""
 ) -> Value[JsonValue]:
     suffix = f":{invocation_id}:" if invocation_id else ":"
-    return value("pi.op.tool_memo", f"{operation_id}{suffix}")
+    return value("omh.op.tool_memo", f"{operation_id}{suffix}")
 
 
 def pending_entry(entry_id: str) -> Value[JsonObject]:
-    return value("pi.pending.entry", entry_id)
+    return value("omh.pending.entry", entry_id)
 
 
 def pending_tool_output(
     operation_id: str, invocation_id: str
 ) -> Value[JsonObject]:
-    return value("pi.pending.tool_output", f"{operation_id}:{invocation_id}")
+    return value("omh.pending.tool_output", f"{operation_id}:{invocation_id}")
 
 
 def pending_tool_output_prefix(operation_id: str) -> Value[JsonObject]:
-    return value("pi.pending.tool_output", f"{operation_id}:")
+    return value("omh.pending.tool_output", f"{operation_id}:")

@@ -27,7 +27,7 @@
 
 ## 明确差异
 
-- **显式持久化编解码。** 上游的 TypeScript 对象本身可 JSON 化，消息与 usage 直接落盘；Python 存的是 dataclass，因此新增 `omh/agent/session/codec.py`（`encode_message`/`decode_message`/`encode_usage`/`decode_usage`），runtime codec 另处理 durable tool progress 的 `AgentToolResult`。落盘键名沿用上游 camelCase、可选字段缺失即省略，便于与格式 4 对照；读取时校验 payload 形状，坏数据抛 `ValueError` 而不是静默构造半成品消息。T05 起，message entry 的 `terminate: true` 与 message 一起存入现有 `payload`；T06 的 `pi.pending.tool_output` 使用既有 scalar values，均无需改变 SQLite schema。
+- **显式持久化编解码。** 上游的 TypeScript 对象本身可 JSON 化，消息与 usage 直接落盘；Python 存的是 dataclass，因此新增 `omh/agent/session/codec.py`（`encode_message`/`decode_message`/`encode_usage`/`decode_usage`），runtime codec 另处理 durable tool progress 的 `AgentToolResult`。落盘键名沿用上游 camelCase、可选字段缺失即省略，便于与格式 4 对照；读取时校验 payload 形状，坏数据抛 `ValueError` 而不是静默构造半成品消息。T05 起，message entry 的 `terminate: true` 与 message 一起存入现有 `payload`；T06 的 `omh.pending.tool_output` 使用既有 scalar values，均无需改变 SQLite schema。
 - **`session.ts` 与 `session/` 同名冲突。** Python 不能同时存在同名模块与包，`SqliteOpenSession` 放在 `session/__init__.py` 薄入口（与文件对应表处理 `runtime/drive.ts` 的方式相同）。
 - **共用 open-session facade。** 上游在 `memory.ts` 与 `sqlite/session.ts` 各有一份等价实现；Python 版把「关闭时停止接纳、排空已接纳操作、只执行一次后端关闭动作」抽到 `omh/agent/session/facade.py`，`MemorySession` 与 `SqliteOpenSession` 都是它的别名，避免复制同一并发规则。
 - **仓库关闭与异步打开。** `repo.close()` 的所有调用者等待同一个关闭任务；取消某个调用者的等待不会中断后台排空。关闭不等待尚未返回的自定义异步 database factory；进行中的 `create/open` 在 factory 返回后检查仓库状态，若已关闭则关闭连接、释放 id，并拒绝返回 Session。失败的创建还会移除其预留文件，已有会话的数据保持不变。
