@@ -43,6 +43,7 @@ from omh.llm import (
     UsageCost,
 )
 from omh.session_backends.sqlite import SqliteSessionRepo
+from tests.agent.runtime.support import FailingCommitMemoryStorage
 
 NOW = 1_700_000_000_000
 MAX_SAFE_INTEGER = (1 << 53) - 1
@@ -833,16 +834,7 @@ async def test_close_rejects_observation_but_preserves_open_operation() -> None:
 async def test_storage_commit_failure_faults_harness_not_operation_result(
     failing_call: str,
 ) -> None:
-    class FailingMemoryStorage(MemoryStorage):
-        fail_next_commit = False
-
-        async def commit(self, writes: list[Write], context: Context):
-            if self.fail_next_commit:
-                self.fail_next_commit = False
-                raise OSError("disk unavailable")
-            return await super().commit(writes, context)
-
-    storage = FailingMemoryStorage(now=lambda: NOW)
+    storage = FailingCommitMemoryStorage(now=lambda: NOW)
     session = StorageBackedSession(
         SessionMetadata(id="session", created_at=NOW, storage_version=1), storage
     )

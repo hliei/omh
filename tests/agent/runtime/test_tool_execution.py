@@ -21,7 +21,6 @@ from omh.agent import (
     HarnessClosed,
     HarnessFault,
     MemorySessionRepo,
-    MemoryStorage,
     PromptRequest,
     Session,
     SessionCreateOptions,
@@ -49,6 +48,7 @@ from omh.llm import (
     Context as LlmContext,
 )
 from omh.session_backends.sqlite import SqliteSessionRepo
+from tests.agent.runtime.support import FailingCommitMemoryStorage
 
 NOW = 1_700_000_000_000
 MODEL = Model(
@@ -184,16 +184,7 @@ class FinishingModels:
 
 
 async def test_tool_memo_commit_failure_faults_harness() -> None:
-    class FailingMemoryStorage(MemoryStorage):
-        fail_next_commit = False
-
-        async def commit(self, writes: list[Write], context: Context):
-            if self.fail_next_commit:
-                self.fail_next_commit = False
-                raise OSError("disk unavailable")
-            return await super().commit(writes, context)
-
-    storage = FailingMemoryStorage(now=lambda: NOW)
+    storage = FailingCommitMemoryStorage(now=lambda: NOW)
     session = StorageBackedSession(
         SessionMetadata(id="session", created_at=NOW, storage_version=1), storage
     )

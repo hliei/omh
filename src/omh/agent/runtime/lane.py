@@ -197,10 +197,7 @@ class AgentLane:
                 )
             )
 
-        try:
-            return await self._options.session.mutate(accept, context)
-        except Exception as error:
-            raise self._on_fault(error) from error
+        return await self.mutate(accept, context)
 
     async def drive(self, options: DriveOptions, context: Context) -> DriveResult:
         self._assert_open()
