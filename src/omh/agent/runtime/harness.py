@@ -3,14 +3,16 @@ from __future__ import annotations
 from asyncio import Lock, Task, create_task, shield
 
 from omh.agent.agent_harness import (
+    AcquireLaneOptions,
     AgentHarness,
     AgentHarnessCreateResult,
     AgentHarnessOptions,
     AgentHarnessTool,
+    LaneInfo,
     OpenOperation,
 )
 from omh.agent.context import Context
-from omh.agent.result import HarnessClosed, HarnessFault
+from omh.agent.result import HarnessClosed, HarnessFault, InvalidLane, UnknownTarget
 from omh.agent.runtime.codec import (
     decode_lane_configuration,
     decode_lane_state,
@@ -18,10 +20,11 @@ from omh.agent.runtime.codec import (
     encode_lane_state,
 )
 from omh.agent.runtime.lane import AgentLane
-from omh.agent.runtime.restore import restore_session
+from omh.agent.runtime.restore import attachment_tip, read_lane_storage, restore_session
 from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
 from omh.agent.runtime.types import LaneConfiguration, LaneState, ModelIdentity
-from omh.agent.session.types import SessionMutator
+from omh.agent.session.session import SessionInvariantError
+from omh.agent.session.types import SessionMutator, Write
 from omh.agent.session.values import (
     branch_tip,
     lane_config,
@@ -46,57 +49,101 @@ class Harness(AgentHarness):
         self._fault_error: HarnessFault | None = None
         self._close_task: Task[None] | None = None
 
-    async def lane(self, name: str, context: Context) -> AgentLane:
+    async def lane(
+        self,
+        name: str,
+        context: Context,
+        options: AcquireLaneOptions | None = None,
+    ) -> AgentLane:
         async with self._lane_lock:
-            return await self._lane(name, context)
+            return await self._lane(name, context, options)
 
-    async def _lane(self, name: str, context: Context) -> AgentLane:
+    async def lanes(self, context: Context) -> list[LaneInfo]:
         self._assert_open()
+        lanes = sorted(self._lanes.items())
+
+        async def snapshot(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> list[LaneInfo]:
+            self._assert_open()
+            infos: list[LaneInfo] = []
+            for name, lane in lanes:
+                execution = await lane.read_execution(mutator, mutation_context)
+                infos.append(
+                    LaneInfo(
+                        name=name,
+                        tip_id=execution.tip_id,
+                        operation=execution.current,
+                    )
+                )
+            return infos
+
+        return await self._options.session.mutate(snapshot, context)
+
+    async def _lane(
+        self,
+        name: str,
+        context: Context,
+        options: AcquireLaneOptions | None = None,
+    ) -> AgentLane:
+        self._assert_open()
+        if not name or "\0" in name:
+            reason = (
+                "lane name must not be empty"
+                if not name
+                else "lane name must not contain \\u0000"
+            )
+            raise InvalidLane(name, reason)
         existing = self._lanes.get(name)
         if existing is not None:
             return existing
-        if self._lanes:
-            raise ValueError("T04 AgentHarness supports a single lane")
-        if not name or "\0" in name:
-            raise ValueError(f"Invalid lane name: {name!r}")
 
         async def acquire(
             mutator: SessionMutator, mutation_context: Context
         ) -> AgentLane:
-            tip = await mutator.get_value(branch_tip(name), mutation_context)
-            configuration = await mutator.get_value(lane_config(name), mutation_context)
-            state = await mutator.get_value(lane_state(name), mutation_context)
-            present = (tip is not None, configuration is not None, state is not None)
-            if present == (False, False, False):
-                configuration_value = encode_lane_configuration(
-                    LaneConfiguration(
-                        model=ModelIdentity(
-                            provider=self._options.model.provider,
-                            model_id=self._options.model.id,
-                        ),
-                        thinking_level=self._options.thinking_level,
-                        active_tool_names=self._active_tool_seed,
-                    )
+            stored = await read_lane_storage(mutator, name, mutation_context)
+            if stored.kind == "lane":
+                try:
+                    decode_lane_configuration(stored.configuration.value)
+                    decode_lane_state(stored.lane_state.value)
+                except ValueError as error:
+                    raise SessionInvariantError(
+                        f"Lane {name!r} has invalid durable state"
+                    ) from error
+                return AgentLane(
+                    name, self._options, self._tool_registry, self._fault
                 )
-                state_value = encode_lane_state(LaneState())
-                await mutator.commit(
-                    [
-                        set_value(branch_tip(name), None),
-                        set_value(lane_config(name), configuration_value),
-                        set_value(lane_state(name), state_value),
-                    ],
-                    mutation_context,
+            tip_id = attachment_tip(
+                stored, None if options is None else options.create_at
+            )
+            if stored.kind == "absent" and tip_id is not None:
+                entries = await mutator.get_entries([tip_id], mutation_context)
+                if tip_id not in entries:
+                    raise UnknownTarget(tip_id)
+            configuration_value = encode_lane_configuration(
+                LaneConfiguration(
+                    model=ModelIdentity(
+                        provider=self._options.model.provider,
+                        model_id=self._options.model.id,
+                    ),
+                    thinking_level=self._options.thinking_level,
+                    active_tool_names=self._active_tool_seed,
                 )
-            elif present != (True, True, True):
-                raise RuntimeError(f"Lane {name!r} has incomplete durable state")
-            else:
-                assert configuration is not None and state is not None
-                decode_lane_configuration(configuration.value)
-                decode_lane_state(state.value)
+            )
+            state_value = encode_lane_state(LaneState())
+            writes: list[Write] = [
+                set_value(lane_config(name), configuration_value),
+                set_value(lane_state(name), state_value),
+            ]
+            if stored.kind == "absent":
+                writes.insert(0, set_value(branch_tip(name), tip_id))
+            await mutator.commit(writes, mutation_context)
             return AgentLane(name, self._options, self._tool_registry, self._fault)
 
         try:
             acquired = await self._options.session.mutate(acquire, context)
+        except UnknownTarget:
+            raise
         except Exception as error:
             raise self._fault(error) from error
         published = self._lanes.setdefault(name, acquired)
@@ -161,8 +208,6 @@ async def create_agent_harness(
         restored = await restore_session(options.session, context)
     except Exception as error:
         raise HarnessFault(error) from error
-    if len(restored) > 1:
-        raise ValueError("T04 AgentHarness supports a single lane")
     open_operations: list[OpenOperation] = []
     for name, current in restored.items():
         harness.restore_lane(name)

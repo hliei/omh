@@ -217,7 +217,7 @@ async def test_create_rejects_invalid_retry_policy(
     await repo.close(BACKGROUND_CONTEXT)
 
 
-async def test_t04_harness_rejects_a_second_lane() -> None:
+async def test_harness_returns_the_same_lane_for_a_repeated_name() -> None:
     repo = MemorySessionRepo(now=lambda: NOW)
     session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
     created = await AgentHarness.create(
@@ -227,14 +227,15 @@ async def test_t04_harness_rejects_a_second_lane() -> None:
     lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
 
     assert await created.harness.lane("main", BACKGROUND_CONTEXT) is lane
-    with pytest.raises(ValueError, match="single lane"):
-        await created.harness.lane("other", BACKGROUND_CONTEXT)
+    other = await created.harness.lane("other", BACKGROUND_CONTEXT)
+    assert other is not lane
+    assert other.name == "other"
 
     await created.harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)
 
 
-async def test_t04_harness_rejects_a_concurrent_second_lane() -> None:
+async def test_harness_publishes_one_lane_under_concurrent_same_name() -> None:
     repo = MemorySessionRepo(now=lambda: NOW)
     session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
     created = await AgentHarness.create(
@@ -243,13 +244,14 @@ async def test_t04_harness_rejects_a_concurrent_second_lane() -> None:
     )
 
     results = await asyncio.gather(
-        created.harness.lane("first", BACKGROUND_CONTEXT),
-        created.harness.lane("second", BACKGROUND_CONTEXT),
-        return_exceptions=True,
+        created.harness.lane("main", BACKGROUND_CONTEXT),
+        created.harness.lane("main", BACKGROUND_CONTEXT),
+        created.harness.lane("review", BACKGROUND_CONTEXT),
     )
 
-    assert sum(isinstance(result, ValueError) for result in results) == 1
-    assert sum(not isinstance(result, BaseException) for result in results) == 1
+    assert results[0] is results[1]
+    assert results[2] is not results[0]
+    assert {lane.name for lane in results} == {"main", "review"}
 
     await created.harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)

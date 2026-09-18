@@ -45,10 +45,12 @@ from omh.agent.context import (
 )
 from omh.agent.result import HarnessClosed, HarnessFault, err, ok
 from omh.agent.runtime.codec import (
+    decode_lane_configuration,
     decode_lane_state,
     decode_operation_meta,
     decode_operation_result,
     decode_operation_state,
+    encode_lane_configuration,
     encode_lane_state,
     encode_operation_meta,
     encode_operation_state,
@@ -60,6 +62,7 @@ from omh.agent.runtime.types import (
     CancelRequestedControl,
     LaneConfiguration,
     LaneState,
+    ModelIdentity,
     OperationMeta,
     RunIntent,
     RunSettings,
@@ -82,8 +85,8 @@ from omh.agent.session.values import (
     operation_state,
     set_value,
 )
-from omh.agent.types import AgentMessage
-from omh.llm.types import TextContent, UserMessage
+from omh.agent.types import AgentMessage, ThinkingLevel
+from omh.llm.types import Model, TextContent, UserMessage
 
 
 def _normalize_prompt(
@@ -434,21 +437,30 @@ class AgentLane:
 
     async def inspect_execution(self, context: Context) -> LaneExecutionInfo:
         self._assert_open()
-        stored_lane = await self._options.session.get_value(
-            lane_state(self.name), context
-        )
+
+        async def read(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> LaneExecutionInfo:
+            self._assert_open()
+            return await self.read_execution(mutator, mutation_context)
+
+        return await self._options.session.mutate(read, context)
+
+    async def read_execution(
+        self, reader: SessionMutator, context: Context
+    ) -> LaneExecutionInfo:
+        stored_lane = await reader.get_value(lane_state(self.name), context)
+        stored_tip = await reader.get_value(branch_tip(self.name), context)
         if stored_lane is None:
             raise RuntimeError(f"Lane {self.name!r} is missing durable state")
+        if stored_tip is None:
+            raise RuntimeError(f"Lane {self.name!r} is missing branch state")
         durable_lane = decode_lane_state(stored_lane.value)
         operation_id = durable_lane.current_operation_id
         current: CurrentOperationInfo | None = None
         if operation_id is not None:
-            meta = await self._options.session.get_value(
-                operation_meta(operation_id), context
-            )
-            state = await self._options.session.get_value(
-                operation_state(operation_id), context
-            )
+            meta = await reader.get_value(operation_meta(operation_id), context)
+            state = await reader.get_value(operation_state(operation_id), context)
             if meta is None or state is None:
                 raise RuntimeError(
                     f"Operation {operation_id!r} has incomplete durable state"
@@ -464,6 +476,7 @@ class AgentLane:
         return LaneExecutionInfo(
             current=current,
             last_operation_id=durable_lane.last_operation_id,
+            tip_id=stored_tip.value,
         )
 
     async def get_tip_id(self, context: Context) -> str | None:
@@ -473,50 +486,77 @@ class AgentLane:
             raise RuntimeError(f"Lane {self.name!r} is missing branch state")
         return stored.value
 
-    async def get_active_tools(self, context: Context) -> tuple[str, ...]:
-        self._assert_open()
-        stored = await self._options.session.get_value(lane_config(self.name), context)
-        if stored is None:
-            raise RuntimeError(f"Lane {self.name!r} is missing configuration")
-        from omh.agent.runtime.codec import decode_lane_configuration
+    async def get_model(self, context: Context) -> Model | None:
+        configuration = await self._read_configuration(context)
+        identity = configuration.model
+        return self._options.models.get_model(identity.provider, identity.model_id)
 
-        return decode_lane_configuration(stored.value).active_tool_names
+    async def set_model(self, model: ModelIdentity, context: Context) -> None:
+        await self._update_configuration(
+            lambda current: replace(
+                current,
+                model=ModelIdentity(
+                    provider=model.provider, model_id=model.model_id
+                ),
+            ),
+            context,
+        )
+
+    async def get_thinking_level(self, context: Context) -> ThinkingLevel:
+        return (await self._read_configuration(context)).thinking_level
+
+    async def set_thinking_level(
+        self, level: ThinkingLevel, context: Context
+    ) -> None:
+        await self._update_configuration(
+            lambda current: replace(current, thinking_level=level),
+            context,
+        )
+
+    async def get_active_tools(self, context: Context) -> tuple[str, ...]:
+        return (await self._read_configuration(context)).active_tool_names
 
     async def set_active_tools(
         self, names: tuple[str, ...], context: Context
     ) -> None:
-        self._assert_open()
         validate_active_tool_names(names)
+        await self._update_configuration(
+            lambda current: replace(current, active_tool_names=names),
+            context,
+        )
 
-        async def update(
+    async def _read_configuration(self, context: Context) -> LaneConfiguration:
+        self._assert_open()
+        stored = await self._options.session.get_value(lane_config(self.name), context)
+        if stored is None:
+            raise RuntimeError(f"Lane {self.name!r} is missing configuration")
+        return decode_lane_configuration(stored.value)
+
+    async def _update_configuration(
+        self,
+        update: Callable[[LaneConfiguration], LaneConfiguration],
+        context: Context,
+    ) -> None:
+        self._assert_open()
+
+        async def write(
             mutator: SessionMutator, mutation_context: Context
         ) -> None:
             stored = await mutator.get_value(lane_config(self.name), mutation_context)
             if stored is None:
                 raise RuntimeError(f"Lane {self.name!r} is missing configuration")
-            from omh.agent.runtime.codec import (
-                decode_lane_configuration,
-                encode_lane_configuration,
-            )
-
             current = decode_lane_configuration(stored.value)
             await mutator.commit(
                 [
                     set_value(
                         lane_config(self.name),
-                        encode_lane_configuration(
-                            LaneConfiguration(
-                                model=current.model,
-                                thinking_level=current.thinking_level,
-                                active_tool_names=names,
-                            )
-                        ),
+                        encode_lane_configuration(update(current)),
                     )
                 ],
                 mutation_context,
             )
 
-        await self.mutate(update, context)
+        await self.mutate(write, context)
 
     async def find_entries(
         self, query: BranchScan | None, context: Context
