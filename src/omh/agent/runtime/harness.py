@@ -20,9 +20,10 @@ from omh.agent.runtime.codec import (
     encode_lane_state,
 )
 from omh.agent.runtime.lane import AgentLane
-from omh.agent.runtime.restore import read_lane_storage, restore_session
+from omh.agent.runtime.restore import attachment_tip, read_lane_storage, restore_session
 from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
 from omh.agent.runtime.types import LaneConfiguration, LaneState, ModelIdentity
+from omh.agent.session.session import SessionInvariantError
 from omh.agent.session.types import SessionMutator, Write
 from omh.agent.session.values import (
     branch_tip,
@@ -59,17 +60,25 @@ class Harness(AgentHarness):
 
     async def lanes(self, context: Context) -> list[LaneInfo]:
         self._assert_open()
-        infos: list[LaneInfo] = []
-        for name, lane in sorted(self._lanes.items()):
-            execution = await lane.inspect_execution(context)
-            infos.append(
-                LaneInfo(
-                    name=name,
-                    tip_id=execution.tip_id,
-                    operation=execution.current,
+        lanes = sorted(self._lanes.items())
+
+        async def snapshot(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> list[LaneInfo]:
+            self._assert_open()
+            infos: list[LaneInfo] = []
+            for name, lane in lanes:
+                execution = await lane.read_execution(mutator, mutation_context)
+                infos.append(
+                    LaneInfo(
+                        name=name,
+                        tip_id=execution.tip_id,
+                        operation=execution.current,
+                    )
                 )
-            )
-        return infos
+            return infos
+
+        return await self._options.session.mutate(snapshot, context)
 
     async def _lane(
         self,
@@ -93,38 +102,42 @@ class Harness(AgentHarness):
             mutator: SessionMutator, mutation_context: Context
         ) -> AgentLane:
             stored = await read_lane_storage(mutator, name, mutation_context)
-            if stored.kind != "lane":
-                if stored.kind == "branch":
-                    tip_id = stored.tip.value
-                elif options is None:
-                    tip_id = None
-                else:
-                    tip_id = options.create_at
-                if stored.kind == "absent" and tip_id is not None:
-                    entries = await mutator.get_entries([tip_id], mutation_context)
-                    if tip_id not in entries:
-                        raise UnknownTarget(tip_id)
-                configuration_value = encode_lane_configuration(
-                    LaneConfiguration(
-                        model=ModelIdentity(
-                            provider=self._options.model.provider,
-                            model_id=self._options.model.id,
-                        ),
-                        thinking_level=self._options.thinking_level,
-                        active_tool_names=self._active_tool_seed,
-                    )
+            if stored.kind == "lane":
+                try:
+                    decode_lane_configuration(stored.configuration.value)
+                    decode_lane_state(stored.lane_state.value)
+                except ValueError as error:
+                    raise SessionInvariantError(
+                        f"Lane {name!r} has invalid durable state"
+                    ) from error
+                return AgentLane(
+                    name, self._options, self._tool_registry, self._fault
                 )
-                state_value = encode_lane_state(LaneState())
-                writes: list[Write] = [
-                    set_value(lane_config(name), configuration_value),
-                    set_value(lane_state(name), state_value),
-                ]
-                if stored.kind == "absent":
-                    writes.insert(0, set_value(branch_tip(name), tip_id))
-                await mutator.commit(writes, mutation_context)
-            else:
-                decode_lane_configuration(stored.configuration.value)
-                decode_lane_state(stored.lane_state.value)
+            tip_id = attachment_tip(
+                stored, None if options is None else options.create_at
+            )
+            if stored.kind == "absent" and tip_id is not None:
+                entries = await mutator.get_entries([tip_id], mutation_context)
+                if tip_id not in entries:
+                    raise UnknownTarget(tip_id)
+            configuration_value = encode_lane_configuration(
+                LaneConfiguration(
+                    model=ModelIdentity(
+                        provider=self._options.model.provider,
+                        model_id=self._options.model.id,
+                    ),
+                    thinking_level=self._options.thinking_level,
+                    active_tool_names=self._active_tool_seed,
+                )
+            )
+            state_value = encode_lane_state(LaneState())
+            writes: list[Write] = [
+                set_value(lane_config(name), configuration_value),
+                set_value(lane_state(name), state_value),
+            ]
+            if stored.kind == "absent":
+                writes.insert(0, set_value(branch_tip(name), tip_id))
+            await mutator.commit(writes, mutation_context)
             return AgentLane(name, self._options, self._tool_registry, self._fault)
 
         try:

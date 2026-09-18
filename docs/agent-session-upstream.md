@@ -91,7 +91,7 @@
 ## T08 同一 Session 的多 Branch 与 AgentLane
 
 - `AgentHarness.create` 仍只恢复完整配置的 AgentLane 投影，不自动 drive。只有 `omh.branch.tip`、没有 `omh.lane.config`/`omh.lane.state` 的名字是数据 Branch，盘点时跳过；缺其中一部分则按上游 `classifyLaneStorage` 视为 invariant，包装为 `HarnessFault`。
-- `harness.lane(name, context, options=None)` 按显式名字 get-or-create。空名字或含 `\\u0000` 抛出 `InvalidLane`。缺省不创建 `main`。已发布同名对象复用；不同名字各自持有 tip、配置和至多一个 current operation。`lanes()` 按名字顺序列出已恢复或已获取的 lane（上游按 Map 插入顺序）。`inspect_execution` 增加 `tip_id`，供 `lanes()` 一次读取，避免再单独 `get_tip_id`。
+- `harness.lane(name, context, options=None)` 按显式名字 get-or-create。空名字或含 `\\u0000` 抛出 `InvalidLane`。缺省不创建 `main`。已发布同名对象复用；不同名字各自持有 tip、配置和至多一个 current operation。`lanes()` 按名字顺序列出已恢复或已获取的 lane（上游按 Map 插入顺序），并在一次 Session mutation 中读取每条 lane 的 tip 与 current。`inspect_execution` 同样走 Session line，返回 `tip_id`。
 - `AcquireLaneOptions.create_at` 只在该名字完全缺席时写入新 tip，并校验目标 entry 存在，否则抛出 `UnknownTarget`。已有数据 Branch 只补配置与 lane state，不移动 tip；已有完整 lane 忽略 `create_at`。新 lane 从 harness 选项复制 seed 配置，已持久化配置不会被重开时的 seed 覆盖。
 - 两个 lane 可以通过 `create_at` 指向同一祖先，之后各自 prompt/accept 独立推进 tip 与 execution。同一 Session 的 mutation 仍串行；跨 Session fork 仍不实现。
 - Python 把 `options` 放在 `context` 之后，以保持现有 `lane(name, context)` 调用；上游是 `lane(name, options, context)` 重载。本票不公开 `lane_created` 事件、steer/follow-up 队列或跨 Session fork。

@@ -82,6 +82,15 @@ async def read_lane_storage(
     )
 
 
+def attachment_tip(
+    stored: AbsentLaneStorage | BranchLaneStorage,
+    create_at: str | None,
+) -> str | None:
+    if stored.kind == "branch":
+        return stored.tip.value
+    return create_at
+
+
 async def restore_session(
     session: Session,
     context: Context,

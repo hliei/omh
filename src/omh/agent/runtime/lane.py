@@ -437,12 +437,20 @@ class AgentLane:
 
     async def inspect_execution(self, context: Context) -> LaneExecutionInfo:
         self._assert_open()
-        stored_lane = await self._options.session.get_value(
-            lane_state(self.name), context
-        )
-        stored_tip = await self._options.session.get_value(
-            branch_tip(self.name), context
-        )
+
+        async def read(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> LaneExecutionInfo:
+            self._assert_open()
+            return await self.read_execution(mutator, mutation_context)
+
+        return await self._options.session.mutate(read, context)
+
+    async def read_execution(
+        self, reader: SessionMutator, context: Context
+    ) -> LaneExecutionInfo:
+        stored_lane = await reader.get_value(lane_state(self.name), context)
+        stored_tip = await reader.get_value(branch_tip(self.name), context)
         if stored_lane is None:
             raise RuntimeError(f"Lane {self.name!r} is missing durable state")
         if stored_tip is None:
@@ -451,12 +459,8 @@ class AgentLane:
         operation_id = durable_lane.current_operation_id
         current: CurrentOperationInfo | None = None
         if operation_id is not None:
-            meta = await self._options.session.get_value(
-                operation_meta(operation_id), context
-            )
-            state = await self._options.session.get_value(
-                operation_state(operation_id), context
-            )
+            meta = await reader.get_value(operation_meta(operation_id), context)
+            state = await reader.get_value(operation_state(operation_id), context)
             if meta is None or state is None:
                 raise RuntimeError(
                     f"Operation {operation_id!r} has incomplete durable state"

@@ -442,7 +442,17 @@ async def test_lanes_share_an_ancestor_while_isolating_tips_and_operations() -> 
     execution = await main.inspect_execution(BACKGROUND_CONTEXT)
     assert execution.current is not None
     assert execution.current.operation_id == "busy"
+    assert execution.tip_id == await main.get_tip_id(BACKGROUND_CONTEXT)
     assert (await review.inspect_execution(BACKGROUND_CONTEXT)).current is None
+    infos = {
+        info.name: info
+        for info in await created.harness.lanes(BACKGROUND_CONTEXT)
+    }
+    assert infos["main"].operation is not None
+    assert infos["main"].operation.operation_id == "busy"
+    assert infos["main"].tip_id == execution.tip_id
+    assert infos["review"].operation is None
+    assert infos["review"].tip_id == await review.get_tip_id(BACKGROUND_CONTEXT)
 
     main_history = [
         entry.id
