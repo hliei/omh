@@ -18,7 +18,7 @@
 | `packages/agent/src/harness/session/memory.ts` | `src/omh/agent/session/memory.py` |
 | `memory.ts` 的 `MemorySessionFacade` 与 `sqlite-node/src/sqlite/session.ts` 的 `SqliteOpenSession`（同一接纳/排空规则） | `src/omh/agent/session/facade.py`（两后端共用） |
 | 消息与 usage 的落盘 JSON 形状（上游依赖普通对象可直接 JSON 化） | `src/omh/agent/session/codec.py`（新增） |
-| `packages/agent/src/harness/agent-harness.ts` 的 T04 公开类型 | `src/omh/agent/agent_harness.py` |
+| `packages/agent/src/harness/agent-harness.ts` 的 T04/T08 公开类型 | `src/omh/agent/agent_harness.py` |
 | `packages/agent/src/harness/runtime/harness.ts` | `src/omh/agent/runtime/harness.py` |
 | `packages/agent/src/harness/runtime/lane.ts` | `src/omh/agent/runtime/lane.py` |
 | `packages/agent/src/harness/runtime/types.ts` 的 T04 状态类型 | `src/omh/agent/runtime/types.py` |
@@ -54,7 +54,7 @@
 ## T04 单 lane 模型对话
 
 - `AgentHarness.create` 在一次 Session mutation 中盘点完整 lane 与 open operation，只恢复投影，不自动 drive。`lane.accept` 原子提交 prompt entries、branch tip、`omh.op.meta`、完整当前 `omh.op.state` 与 lane current id；同一 lane 有 current operation 时返回 `LaneBusy`。
-- T04 的 harness 只配置一个 lane；重复获取同名 lane 返回同一对象，第二个 lane 在入口拒绝。多 lane 配置、隔离与部分配置恢复由 T08 实现。
+- T04 只交付单 lane 运行时；重复获取同名 lane 返回同一对象。多 lane 配置、数据 Branch 与 AgentLane 区分、隔离与部分配置恢复见 T08。
 - 本票实现 run 所需的 `starting`、`checkpoint`、`assistant.ready`、`assistant.effect_pending`、`assistant.retry_wait` 状态，`accept`/`drive`/`get_result`/`inspect_execution` 基础原语及 `prompt`/`resume` 便捷组合。compaction、navigation、队列、abort、hooks、events/watch 和工具执行由后续票提供，不公开空实现。
 - drive 由 lane 持有的 asyncio task 执行，调用者通过 shield 观察；取消某个调用只结束该观察，不取消共享执行或写入持久化 abort。harness close 会停止进程内 task，但保留最近完整 durable state，供重开后显式 resume。
 - 模型请求先提交带 response/usage 预留 id 的 durable intent；流事件用 llm 层 `AssistantMessageFrameEncoder` 编码到 `omh.pending.assistant_frame`。Python 当前逐帧等待 Session mutation，而上游在进程内排队后继续消费 provider 流；两者的 durable 顺序与恢复内容相同，本实现暂时接受额外流背压，不声称相同吞吐。
@@ -83,7 +83,16 @@
 ## T07 调用取消、operation abort、close 与故障
 
 - `context.py` 新增 `with_cancel`、`await_with_context` 和内部 effect 竞争辅助，对应上游 Chord Context 的 `withCancel`/`awaitWithContext`。Python 的 `CancelScope` 持有进程内 `asyncio.Event`；Context 仍不持久化。预先取消的 Context 不安装 drive，joiner 的 Context 取消只结束该 joiner 的观察，不取消 lane 持有的共享 task。
-- `AgentLane.request_abort` 对应 `requestAbort`：在 Session mutation 中以 expected operation id fencing，把完整当前 state 的 control 替换为 `cancel_requested`；重复请求幂等，旧 id 返回 `OperationMismatch`，无 live drive 时不隐式安装执行。`abort` 组合 inspect、request 与同 id drive；T08 才加入的 steer/follow-up 队列尚不存在，因此 T07 的 drain 结果固定为空。
+- `AgentLane.request_abort` 对应 `requestAbort`：在 Session mutation 中以 expected operation id fencing，把完整当前 state 的 control 替换为 `cancel_requested`；重复请求幂等，旧 id 返回 `OperationMismatch`，无 live drive 时不隐式安装执行。`abort` 组合 inspect、request 与同 id drive；T09 才加入的 steer/follow-up 队列尚不存在，因此 T07 的 drain 结果固定为空。
 - 每个 live drive 持有独立 operation CancelScope 和同步 effect admission gate。abort mutation 开始前先关闭新 provider/tool admission，取消标记提交后才向已 admission 的 effect 发信号；provider 迭代、工具 effect 与后续 retry wait 共用该 scope。assistant effect reconciliation 用预留 entry/usage id 固化已提交 frame 前缀为 `aborted` 消息（未知 usage 记零）再终结 operation；其余 reconciliation 清理当前切片的 tool args/memos/checkpoints/staged results，写 immutable `aborted` result，并保留 lane inbox。工具 invocation/progress 在取消时立即 seal；吞掉 asyncio 取消后晚到的工具结果只能结束其脱离的进程内 task，不能再提交。
 - `Harness.close` 对应 controlled crash：以 `HarnessClosed` 结束 active 观察并做本地 effect 清理，不写 `cancel_requested` 或 terminal result；重开仍从最近一次完整 durable state 恢复。提交或 durable invariant 失败则固定为一个 `HarnessFault`，停止当前 effect 并让后续 lane 调用拒绝；provider error response 与工具异常仍走原有 per-operation in-band 路径。
 - 上游 gate 将 effect admission 与取消原子化；Python 当前能力范围没有 hooks/deferred，使用 operation CancelScope 在模型调用前检查并竞争 provider/tool awaitable，覆盖当前公开 effect 边界。取消 reconciliation 只枚举当前已实现的 run leaves；后续新增 state leaf 时必须同时扩展该 total switch 与 cleanup。
+
+## T08 同一 Session 的多 Branch 与 AgentLane
+
+- `AgentHarness.create` 仍只恢复完整配置的 AgentLane 投影，不自动 drive。只有 `omh.branch.tip`、没有 `omh.lane.config`/`omh.lane.state` 的名字是数据 Branch，盘点时跳过；缺其中一部分则按上游 `classifyLaneStorage` 视为 invariant，包装为 `HarnessFault`。
+- `harness.lane(name, context, options=None)` 按显式名字 get-or-create。空名字或含 `\\u0000` 抛出 `InvalidLane`。缺省不创建 `main`。已发布同名对象复用；不同名字各自持有 tip、配置和至多一个 current operation。`lanes()` 按名字顺序列出已恢复或已获取的 lane（上游按 Map 插入顺序）。`inspect_execution` 增加 `tip_id`，供 `lanes()` 一次读取，避免再单独 `get_tip_id`。
+- `AcquireLaneOptions.create_at` 只在该名字完全缺席时写入新 tip，并校验目标 entry 存在，否则抛出 `UnknownTarget`。已有数据 Branch 只补配置与 lane state，不移动 tip；已有完整 lane 忽略 `create_at`。新 lane 从 harness 选项复制 seed 配置，已持久化配置不会被重开时的 seed 覆盖。
+- 两个 lane 可以通过 `create_at` 指向同一祖先，之后各自 prompt/accept 独立推进 tip 与 execution。同一 Session 的 mutation 仍串行；跨 Session fork 仍不实现。
+- Python 把 `options` 放在 `context` 之后，以保持现有 `lane(name, context)` 调用；上游是 `lane(name, options, context)` 重载。本票不公开 `lane_created` 事件、steer/follow-up 队列或跨 Session fork。
+- 离线公共行为测试覆盖：零 lane 附着、显式命名、数据 Branch 与 AgentLane 区分、`create_at` 与部分配置、重开只列出 open operation 不调度、共享祖先下的 tip/execution 隔离。

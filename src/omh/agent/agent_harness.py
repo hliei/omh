@@ -116,6 +116,11 @@ class AgentHarnessOptions:
 
 
 @dataclass(frozen=True, slots=True)
+class AcquireLaneOptions:
+    create_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PromptRequest:
     prompt: str | AgentMessage | list[AgentMessage]
     operation_id: str | None = None
@@ -242,6 +247,7 @@ class CurrentOperationInfo:
 class LaneExecutionInfo:
     current: CurrentOperationInfo | None
     last_operation_id: str | None
+    tip_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +256,13 @@ class OpenOperation:
     operation_id: str
     kind: Literal["run"]
     started_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class LaneInfo:
+    name: str
+    tip_id: str | None
+    operation: CurrentOperationInfo | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,7 +280,14 @@ class AgentHarness(Protocol):
 
         return await create_agent_harness(options, context)
 
-    async def lane(self, name: str, context: Context) -> AgentLane: ...
+    async def lane(
+        self,
+        name: str,
+        context: Context,
+        options: AcquireLaneOptions | None = None,
+    ) -> AgentLane: ...
+
+    async def lanes(self, context: Context) -> list[LaneInfo]: ...
 
     async def get_tools(self, context: Context) -> tuple[AgentHarnessTool, ...]: ...
 

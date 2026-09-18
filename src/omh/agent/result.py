@@ -30,6 +30,19 @@ class HarnessFault(RuntimeError):
         self.__cause__ = cause
 
 
+class InvalidLane(ValueError):
+    def __init__(self, lane: str, reason: str) -> None:
+        super().__init__(f"Invalid lane {lane!r}: {reason}")
+        self.lane = lane
+        self.reason = reason
+
+
+class UnknownTarget(ValueError):
+    def __init__(self, target_id: str) -> None:
+        super().__init__(f"Unknown target: {target_id}")
+        self.target_id = target_id
+
+
 def ok[T](value: T) -> Ok[T]:
     return Ok(value)
 
