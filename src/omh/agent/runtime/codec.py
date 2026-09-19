@@ -18,6 +18,7 @@ from omh.agent.runtime.types import (
     EffectPendingToolCall,
     GenerationContext,
     GenerationRetryPolicy,
+    InboxItem,
     LaneConfiguration,
     LaneState,
     MayFinish,
@@ -360,7 +361,9 @@ def encode_lane_state(state: LaneState) -> dict[str, JsonValue]:
     return {
         "currentOperationId": state.current_operation_id,
         "lastOperationId": state.last_operation_id,
-        "inbox": list(state.inbox),
+        "inbox": [
+            {"entryId": item.entry_id, "kind": item.kind} for item in state.inbox
+        ],
     }
 
 
@@ -369,10 +372,22 @@ def decode_lane_state(value: object) -> LaneState:
     inbox = record.get("inbox")
     if not isinstance(inbox, list):
         raise ValueError("lane state.inbox must be a list")
+    decoded_inbox: list[InboxItem] = []
+    for index, item in enumerate(inbox):
+        queued = _record(item, f"lane state.inbox[{index}]")
+        kind = queued.get("kind")
+        if kind not in {"steer", "followUp", "nextRun", "write"}:
+            raise ValueError(f"lane state.inbox[{index}].kind is invalid")
+        decoded_inbox.append(
+            InboxItem(
+                entry_id=_text(queued, "entryId", f"lane state.inbox[{index}]"),
+                kind=kind,
+            )
+        )
     return LaneState(
         current_operation_id=_nullable_text(record, "currentOperationId", "lane state"),
         last_operation_id=_nullable_text(record, "lastOperationId", "lane state"),
-        inbox=tuple(cast(list[JsonValue], inbox)),
+        inbox=tuple(decoded_inbox),
     )
 
 
@@ -443,10 +458,12 @@ def _decode_settings(value: object) -> RunSettings:
     compaction = _record(
         record.get("compaction"), "operation state.settings.compaction"
     )
+    steering_mode = record.get("steeringMode")
+    follow_up_mode = record.get("followUpMode")
     tool_execution = record.get("toolExecution")
     if (
-        record.get("steeringMode") != "all"
-        or record.get("followUpMode") != "all"
+        steering_mode not in {"all", "one-at-a-time"}
+        or follow_up_mode not in {"all", "one-at-a-time"}
         or tool_execution not in {"sequential", "parallel"}
     ):
         raise ValueError("operation state.settings contains unsupported values")
@@ -462,6 +479,8 @@ def _decode_settings(value: object) -> RunSettings:
                 compaction, "keepRecentTokens", "operation state.settings.compaction"
             ),
         ),
+        steering_mode=steering_mode,
+        follow_up_mode=follow_up_mode,
         tool_execution=tool_execution,
     )
 

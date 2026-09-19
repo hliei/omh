@@ -24,6 +24,7 @@
 | `packages/agent/src/harness/runtime/types.ts` 的 T04 状态类型 | `src/omh/agent/runtime/types.py` |
 | `packages/agent/src/harness/runtime/drive.ts` | `src/omh/agent/runtime/drive/drive.py` |
 | `packages/agent/src/harness/runtime/drive/checkpoint.ts` | `src/omh/agent/runtime/drive/checkpoint.py` |
+| `packages/agent/src/harness/runtime/drive/boundary.ts` | `src/omh/agent/runtime/drive/boundary.py` |
 | `packages/agent/src/harness/runtime/drive/generation.ts` | `src/omh/agent/runtime/drive/generation.py` |
 | `packages/agent/src/harness/runtime/drive/recovery.ts` | `src/omh/agent/runtime/drive/recovery.py` |
 | `packages/agent/src/harness/runtime/drive/response.ts` | `src/omh/agent/runtime/drive/response.py` |
@@ -96,3 +97,12 @@
 - 两个 lane 可以通过 `create_at` 指向同一祖先，之后各自 prompt/accept 独立推进 tip 与 execution。同一 Session 的 mutation 仍串行；跨 Session fork 仍不实现。
 - Python 把 `options` 放在 `context` 之后，以保持现有 `lane(name, context)` 调用；上游是 `lane(name, options, context)` 重载。本票不公开 `lane_created` 事件、steer/follow-up 队列或跨 Session fork。
 - 离线公共行为测试覆盖：零 lane 附着、显式命名、数据 Branch 与 AgentLane 区分、`create_at` 与部分配置、重开只列出 open operation 不调度、共享祖先下的 tip/execution 隔离。
+
+## T09 lane 输入队列
+
+- `AgentLane.steer`、`follow_up`、`next_run` 在 Session mutation 中一次提交完整 `omh.pending.entry/<id>` 消息和追加后的 lane inbox，并返回稳定的 entry id。`cancel_queued` 在同一 mutation 中以该 id 竞争消费：仍在 inbox 时删除 payload 并返回 `cancelled`，已经入树返回 `already_consumed`，两处都不存在返回 `not_found`。
+- idle run acceptance 按 inbox 全局提交顺序把选中的消息放在请求消息之前；`next_run` 全部消费，steer/follow-up 分别按接纳时的 `steering_mode`/`follow_up_mode` 选择全部或最旧一项。运行中的 checkpoint 先消费 steer；只有本可终结且没有 steer 时才消费 follow-up。入树、删除 pending payload、移动 branch tip、替换 operation/lane state 属于同一次原子提交。
+- queue mode 通过 `AgentHarnessOptions` 配置，并在 operation 接纳时捕获到 durable `RunSettings`；当前切片没有 T10 的配置更新事件或运行中 setter。Python 方法直接接受字符串或 `AgentMessage`，尚未加入上游单独的 `images` 参数；图片仍可由调用者放入 `UserMessage`。
+- `request_abort` 首次提交取消标记时同时排空并返回全部 steer/follow-up 消息，保留 `next_run`；重复请求返回空 drain。取消标记之后新入队的内容以及 terminal cleanup 都保留在 lane-owned inbox，close/reopen 也不消费或调度队列。
+- `InboxItem` 保留上游共用的 `write` tag 以维持 durable lane-state 形状，但本票只公开三种消息输入；运行中 Branch/custom deferred write 仍未实现，因此受支持的 API 不会产生 `write` 项，消费者也不会把手工注入的该项冒充已支持能力。
+- 离线公共行为测试覆盖：pending payload 到 entry 的独占转换、空 prompt 接纳 next-run、one-at-a-time 边界顺序、abort drain、SQLite 重开、terminal 保留、cancel/consume 竞争及多 lane 隔离。

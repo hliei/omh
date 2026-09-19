@@ -5,7 +5,6 @@ from typing import Literal
 
 from omh.agent.agent_harness import OperationResultRecord, ToolReplayPolicy
 from omh.agent.types import ThinkingLevel
-from omh.llm.types import JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,10 +21,16 @@ class LaneConfiguration:
 
 
 @dataclass(frozen=True, slots=True)
+class InboxItem:
+    entry_id: str
+    kind: Literal["steer", "followUp", "nextRun", "write"]
+
+
+@dataclass(frozen=True, slots=True)
 class LaneState:
     current_operation_id: str | None = None
     last_operation_id: str | None = None
-    inbox: tuple[JsonValue, ...] = ()
+    inbox: tuple[InboxItem, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +72,8 @@ class CompactionSettings:
 @dataclass(frozen=True, slots=True)
 class RunSettings:
     compaction: CompactionSettings = field(default_factory=CompactionSettings)
-    steering_mode: Literal["all"] = "all"
-    follow_up_mode: Literal["all"] = "all"
+    steering_mode: Literal["all", "one-at-a-time"] = "all"
+    follow_up_mode: Literal["all", "one-at-a-time"] = "all"
     tool_execution: Literal["sequential", "parallel"] = "parallel"
 
 

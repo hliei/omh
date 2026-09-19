@@ -39,4 +39,5 @@
 - **分支索引与 O(history)。** 分段缓存结构、`base_branch_id/base_seq` 链与「取新前缀段中最新 compaction 为复制边界」的算法按上游保留；当前 Entry 类型还没有 compaction 条目，因此任何分叉都复制整段前缀，这正是 ADR-0005 接受的 O(history) 限制。查询计划（上游用 `EXPLAIN QUERY PLAN` 断言 `ix_be_seq`/CROSS JOIN）未移植：那是 schema 级约定，本票以公开读行为验证「无遗漏、无重复」。
 - **未实现且不暴露 stub：** 跨 Session fork 与 fork 快照（`snapshot`/`createForkSnapshot`）、共享容器 `databasePath` 及其按行删除、`scan_branch_structure`、`SqliteStatement.iterate`（上游供流式 fork 使用）、迁移机制（只保留幂等的 `001_initial`）。上游 `sessions.metadata` 列按 schema 保留（始终写 NULL，上游同样不读它）；`wr_lease` 类历史结构未引入。
 - **T07 无 schema 变更。** `cancel_requested` 继续存入完整 `omh.op.state` JSON；abort 终结、close 后重开与 commit failure 恢复都使用既有原子事务和值地址。SQLite commit 异常由 harness 提升为 `HarnessFault`，不会改写成普通 operation error，也不会新增后端专用错误记录。
+- **T09 无 schema 变更。** lane inbox 继续存入 `omh.lane.state`，排队消息使用既有 `omh.pending.entry` scalar value；入队、消费、撤销和 abort drain 都复用普通原子 transaction。SQLite 重开测试验证未消费项与 open operation 一起恢复，attachment 仍不主动读取 payload 或调度工作。
 - **本票未验证：** wheel/安装产物（SQL 迁移文件的打包声明已加入 `pyproject.toml`，但未构建产物核对）；共享容器与跨进程并发；真实并发写竞争下的 `busy_timeout` 行为。
