@@ -64,7 +64,11 @@ from omh.agent.runtime.codec import (
 from omh.agent.runtime.drive import drive_operation
 from omh.agent.runtime.drive.terminal import now_ms
 from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
-from omh.agent.runtime.transcript import pending_message, read_pending_messages
+from omh.agent.runtime.transcript import (
+    pending_message,
+    plan_pending_message_placement,
+    read_pending_messages,
+)
 from omh.agent.runtime.types import (
     CancelRequestedControl,
     InboxItem,
@@ -199,21 +203,14 @@ class AgentLane:
                 self._options.steering_mode,
                 self._options.follow_up_mode,
             )
-            captured = await read_pending_messages(
-                mutator, selected, mutation_context
+            placement = await plan_pending_message_placement(
+                mutator, selected, stored_tip.value, mutation_context
             )
-            if not messages and not captured:
+            if not messages and placement.trigger_entry_id is None:
                 return err(InvalidMessage(reason="empty"))
 
-            parent_id = stored_tip.value
+            parent_id = placement.tip_id
             entries: list[NewMessageEntry] = []
-            for item, message in captured:
-                entries.append(
-                    NewMessageEntry(
-                        id=item.entry_id, parent_id=parent_id, message=message
-                    )
-                )
-                parent_id = item.entry_id
             for entry_id, message in zip(entry_ids, messages, strict=True):
                 entries.append(
                     NewMessageEntry(id=entry_id, parent_id=parent_id, message=message)
@@ -241,8 +238,9 @@ class AgentLane:
             )
             await mutator.commit(
                 [
+                    *placement.entry_writes,
                     *(insert_entry(entry) for entry in entries),
-                    *(delete_value(pending_entry(item.entry_id)) for item in selected),
+                    *placement.delete_writes,
                     set_value(branch_tip(self.name), parent_id),
                     set_value(
                         operation_meta(operation_id), encode_operation_meta(meta)
