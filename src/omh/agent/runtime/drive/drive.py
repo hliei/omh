@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from omh.agent.agent_harness import DriveOptions, DriveOutcome, SettledDriveOutcome
 from omh.agent.context import Context
+from omh.agent.hooks import BeforeDriveHook
 from omh.agent.runtime.drive.checkpoint import run_checkpoint, start_run
 from omh.agent.runtime.drive.generation import run_generation
 from omh.agent.runtime.drive.reconcile import reconcile_abort
@@ -18,6 +19,11 @@ if TYPE_CHECKING:
 async def drive_operation(
     lane: AgentLane, options: DriveOptions, context: Context
 ) -> DriveOutcome:
+    await lane.hooks.run(
+        "before_drive",
+        BeforeDriveHook(lane=lane.name, run_id=options.operation_id),
+        context,
+    )
     while True:
         if await lane.is_abort_requested(options.operation_id, context):
             return SettledDriveOutcome(

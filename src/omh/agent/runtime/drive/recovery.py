@@ -4,6 +4,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
 from omh.agent.context import Context
+from omh.agent.events import MessageStartEvent
 from omh.agent.runtime.codec import decode_assistant_frame, decode_operation_state
 from omh.agent.runtime.drive.response import settle_response
 from omh.agent.runtime.types import AssistantEffectPendingOperation, ModelIdentity
@@ -44,6 +45,15 @@ async def recover_assistant_generation(
         reduce_assistant_message_frames(frames),
         lane.now_ms(),
         "error",
+    )
+    await lane.emit_event(
+        MessageStartEvent(
+            lane=lane.name,
+            run_id=operation_id,
+            message=recovered,
+            recovery=True,
+        ),
+        context,
     )
     await settle_response(lane, operation_id, intent, recovered, context, recovery=True)
 

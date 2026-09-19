@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import cast
 
 
+@dataclass(frozen=True, slots=True)
+class ContextKey[T]:
+    name: str
+
+
 class _Cancellation:
     def __init__(self) -> None:
         self.event = asyncio.Event()
@@ -26,6 +31,13 @@ class Context:
     """
 
     _cancellations: tuple[_Cancellation, ...] = ()
+    _values: tuple[tuple[ContextKey[object], object], ...] = ()
+
+    def value[T](self, key: ContextKey[T]) -> T | None:
+        for stored_key, stored_value in reversed(self._values):
+            if stored_key is key:
+                return cast(T, stored_value)
+        return None
 
     def raise_if_cancelled(self) -> None:
         for cancellation in self._cancellations:
@@ -43,16 +55,25 @@ class CancelScope:
 
     def cancel(self, reason: BaseException | None = None) -> None:
         self._cancellation.cancel(
-            reason if reason is not None else asyncio.CancelledError("Context cancelled")
+            reason
+            if reason is not None
+            else asyncio.CancelledError("Context cancelled")
         )
 
 
 def with_cancel(context: Context) -> CancelScope:
     cancellation = _Cancellation()
     return CancelScope(
-        context=Context((*context._cancellations, cancellation)),
+        context=Context(
+            _cancellations=(*context._cancellations, cancellation),
+            _values=context._values,
+        ),
         _cancellation=cancellation,
     )
+
+
+def without_cancel(context: Context) -> Context:
+    return Context(_values=context._values)
 
 
 async def await_with_context[T](awaitable: Awaitable[T], context: Context) -> T:
@@ -114,3 +135,14 @@ def _observe_completion[T](task: asyncio.Future[T]) -> None:
 
 
 BACKGROUND_CONTEXT = Context()
+
+
+def create_context_key[T](name: str) -> ContextKey[T]:
+    return ContextKey(name)
+
+
+def with_context_value[T](key: ContextKey[T], value: T, context: Context) -> Context:
+    return Context(
+        _cancellations=context._cancellations,
+        _values=(*context._values, (cast(ContextKey[object], key), value)),
+    )
