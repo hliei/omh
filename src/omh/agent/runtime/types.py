@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from omh.agent.agent_harness import OperationResultRecord, ToolReplayPolicy
+from omh.agent.agent_harness import OperationResultRecord, QueueMode, ToolReplayPolicy
 from omh.agent.types import ThinkingLevel
 
 
@@ -72,8 +72,8 @@ class CompactionSettings:
 @dataclass(frozen=True, slots=True)
 class RunSettings:
     compaction: CompactionSettings = field(default_factory=CompactionSettings)
-    steering_mode: Literal["all", "one-at-a-time"] = "all"
-    follow_up_mode: Literal["all", "one-at-a-time"] = "all"
+    steering_mode: QueueMode = "all"
+    follow_up_mode: QueueMode = "all"
     tool_execution: Literal["sequential", "parallel"] = "parallel"
 
 

@@ -21,6 +21,7 @@
 | `packages/agent/src/harness/agent-harness.ts` 的 T04/T08 公开类型 | `src/omh/agent/agent_harness.py` |
 | `packages/agent/src/harness/runtime/harness.ts` | `src/omh/agent/runtime/harness.py` |
 | `packages/agent/src/harness/runtime/lane.ts` | `src/omh/agent/runtime/lane.py` |
+| `packages/agent/src/harness/runtime/transcript.ts` | `src/omh/agent/runtime/transcript.py` |
 | `packages/agent/src/harness/runtime/types.ts` 的 T04 状态类型 | `src/omh/agent/runtime/types.py` |
 | `packages/agent/src/harness/runtime/drive.ts` | `src/omh/agent/runtime/drive/drive.py` |
 | `packages/agent/src/harness/runtime/drive/checkpoint.ts` | `src/omh/agent/runtime/drive/checkpoint.py` |

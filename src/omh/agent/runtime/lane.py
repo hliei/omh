@@ -36,6 +36,7 @@ from omh.agent.agent_harness import (
     OperationResultRecord,
     PromptRequest,
     QueuedInput,
+    QueueMode,
     QueueResult,
     ResumeResult,
     RunResult,
@@ -63,6 +64,7 @@ from omh.agent.runtime.codec import (
 from omh.agent.runtime.drive import drive_operation
 from omh.agent.runtime.drive.terminal import now_ms
 from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
+from omh.agent.runtime.transcript import pending_message, read_pending_messages
 from omh.agent.runtime.types import (
     CancelRequestedControl,
     InboxItem,
@@ -74,7 +76,6 @@ from omh.agent.runtime.types import (
     RunSettings,
     StartingOperation,
 )
-from omh.agent.session.codec import decode_message, encode_message
 from omh.agent.session.commit import insert_entry
 from omh.agent.session.session import SessionInvariantError
 from omh.agent.session.types import (
@@ -96,7 +97,7 @@ from omh.agent.session.values import (
     set_value,
 )
 from omh.agent.types import AgentMessage, ThinkingLevel
-from omh.llm.types import AssistantMessage, JsonObject, Model, TextContent, UserMessage
+from omh.llm.types import AssistantMessage, Model, TextContent, UserMessage
 
 
 def _normalize_prompt(
@@ -113,8 +114,8 @@ def _normalize_prompt(
 
 def _select_accepted_inbox(
     inbox: tuple[InboxItem, ...],
-    steering_mode: str,
-    follow_up_mode: str,
+    steering_mode: QueueMode,
+    follow_up_mode: QueueMode,
 ) -> tuple[tuple[InboxItem, ...], tuple[InboxItem, ...]]:
     steer_taken = False
     follow_up_taken = False
@@ -139,23 +140,6 @@ def _select_accepted_inbox(
         else:
             remainder.append(item)
     return tuple(selected), tuple(remainder)
-
-
-def _pending_message(message: AgentMessage) -> JsonObject:
-    return {"type": "message", "payload": encode_message(message)}
-
-
-def _decode_pending_message(value: object, item: InboxItem) -> AgentMessage:
-    if not isinstance(value, dict) or value.get("type") != "message":
-        raise SessionInvariantError(
-            f"Pending {item.kind} entry {item.entry_id} is missing its message"
-        )
-    message = decode_message(value.get("payload"))
-    if isinstance(message, AssistantMessage) and message.stop_reason == "pending":
-        raise SessionInvariantError(
-            f"Pending {item.kind} entry {item.entry_id} contains a pending assistant"
-        )
-    return message
 
 
 class AgentLane:
@@ -215,18 +199,9 @@ class AgentLane:
                 self._options.steering_mode,
                 self._options.follow_up_mode,
             )
-            captured: list[tuple[InboxItem, AgentMessage]] = []
-            for item in selected:
-                stored = await mutator.get_value(
-                    pending_entry(item.entry_id), mutation_context
-                )
-                if stored is None:
-                    raise SessionInvariantError(
-                        f"Pending {item.kind} entry {item.entry_id} is missing its payload"
-                    )
-                captured.append(
-                    (item, _decode_pending_message(stored.value, item))
-                )
+            captured = await read_pending_messages(
+                mutator, selected, mutation_context
+            )
             if not messages and not captured:
                 return err(InvalidMessage(reason="empty"))
 
@@ -309,13 +284,14 @@ class AgentLane:
         context: Context,
     ) -> QueueResult:
         self._assert_open()
-        queued = (
-            UserMessage(content=message, timestamp=now_ms())
-            if isinstance(message, str)
-            else message
-        )
-        if isinstance(queued, UserMessage) and queued.content == "":
-            return err(InvalidMessage(reason="empty"))
+        if isinstance(message, str):
+            if not message:
+                return err(InvalidMessage(reason="empty"))
+            queued: AgentMessage = UserMessage(
+                content=[TextContent(text=message)], timestamp=now_ms()
+            )
+        else:
+            queued = message
         if isinstance(queued, AssistantMessage) and queued.stop_reason == "pending":
             return err(InvalidMessage(reason="pending_assistant"))
         entry_id = self._options.session.id_generator.next()
@@ -335,7 +311,7 @@ class AgentLane:
             next_lane = replace(durable_lane, inbox=inbox)
             await mutator.commit(
                 [
-                    set_value(pending_entry(entry_id), _pending_message(queued)),
+                    set_value(pending_entry(entry_id), pending_message(queued)),
                     set_value(lane_state(self.name), encode_lane_state(next_lane)),
                 ],
                 mutation_context,
@@ -548,18 +524,9 @@ class AgentLane:
                 for item in durable_lane.inbox
                 if item.kind in {"steer", "followUp"}
             )
-            drained: list[tuple[InboxItem, AgentMessage]] = []
-            for item in removed:
-                stored = await mutator.get_value(
-                    pending_entry(item.entry_id), mutation_context
-                )
-                if stored is None:
-                    raise SessionInvariantError(
-                        f"Pending {item.kind} entry {item.entry_id} is missing its payload"
-                    )
-                drained.append(
-                    (item, _decode_pending_message(stored.value, item))
-                )
+            drained = await read_pending_messages(
+                mutator, removed, mutation_context
+            )
             removed_ids = {item.entry_id for item in removed}
             inbox = tuple(
                 item

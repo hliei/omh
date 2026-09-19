@@ -99,6 +99,15 @@ class _ScriptedModels:
         return stream
 
 
+def _message_text(message: object) -> str:
+    content = getattr(message, "content")
+    if isinstance(content, str):
+        return content
+    return "".join(
+        item.text for item in content if isinstance(item, TextContent)
+    )
+
+
 async def test_next_run_can_be_cancelled_or_consumed_by_an_empty_acceptance() -> None:
     repo = MemorySessionRepo()
     session = await repo.create(
@@ -146,7 +155,7 @@ async def test_next_run_can_be_cancelled_or_consumed_by_an_empty_acceptance() ->
     history = await lane.find_entries(
         BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
     )
-    assert [entry.message.content for entry in history if entry.type == "message"] == [
+    assert [_message_text(entry.message) for entry in history if entry.type == "message"] == [
         "continue"
     ]
 
@@ -177,8 +186,8 @@ async def test_abort_drains_steer_and_follow_up_but_preserves_next_run() -> None
     requested = await lane.request_abort("run", BACKGROUND_CONTEXT)
 
     assert requested.ok is True
-    assert requested.value.steer[0].content == "steer"
-    assert requested.value.follow_up[0].content == "follow"
+    assert _message_text(requested.value.steer[0]) == "steer"
+    assert _message_text(requested.value.follow_up[0]) == "follow"
     assert (
         await session.get_value(pending_entry(steered.value.entry_id), BACKGROUND_CONTEXT)
         is None
@@ -269,7 +278,7 @@ async def test_one_at_a_time_steer_precedes_follow_up_at_run_boundaries() -> Non
         BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
     )
     user_contents = [
-        entry.message.content
+        _message_text(entry.message)
         for entry in history
         if entry.type == "message" and entry.message.role == "user"
     ]
@@ -305,10 +314,10 @@ async def test_all_mode_batches_each_queue_kind_at_its_boundary() -> None:
     assert len(models.contexts) == 2
     first_messages = cast(LlmContext, models.contexts[0]).messages
     second_messages = cast(LlmContext, models.contexts[1]).messages
-    assert [message.content for message in first_messages if message.role == "user"][
+    assert [_message_text(message) for message in first_messages if message.role == "user"][
         1:
     ] == ["steer 1", "steer 2"]
-    assert [message.content for message in second_messages if message.role == "user"][
+    assert [_message_text(message) for message in second_messages if message.role == "user"][
         -2:
     ] == ["follow 1", "follow 2"]
 
@@ -429,7 +438,7 @@ async def test_queue_consumption_race_is_linearized() -> None:
     consumed = any(
         entry.type == "message"
         and entry.message.role == "user"
-        and entry.message.content == "race"
+        and _message_text(entry.message) == "race"
         for entry in history
     )
     assert (cancelled.value.kind, consumed) in {
@@ -476,12 +485,12 @@ async def test_queues_are_isolated_between_lanes() -> None:
         BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
     )
     alpha_users = [
-        entry.message.content
+        _message_text(entry.message)
         for entry in alpha_history
         if entry.type == "message" and entry.message.role == "user"
     ]
     beta_users = [
-        entry.message.content
+        _message_text(entry.message)
         for entry in beta_history
         if entry.type == "message" and entry.message.role == "user"
     ]
