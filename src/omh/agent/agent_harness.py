@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Never, Protocol
 
 from omh.agent.context import Context
 from omh.agent.numbers import MAX_SAFE_INTEGER
@@ -66,6 +66,7 @@ type AgentHarnessToolExecute = Callable[
     Awaitable[AgentToolResult],
 ]
 type ToolReplayPolicy = Literal["never", "safe"]
+type QueueMode = Literal["all", "one-at-a-time"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +114,14 @@ class AgentHarnessOptions:
     tools: tuple[AgentHarnessTool, ...] = ()
     active_tool_names: tuple[str, ...] | None = None
     tool_execution: Literal["sequential", "parallel"] = "parallel"
+    steering_mode: QueueMode = "all"
+    follow_up_mode: QueueMode = "all"
+
+    def __post_init__(self) -> None:
+        if self.steering_mode not in {"all", "one-at-a-time"}:
+            raise ValueError("steering_mode must be 'all' or 'one-at-a-time'")
+        if self.follow_up_mode not in {"all", "one-at-a-time"}:
+            raise ValueError("follow_up_mode must be 'all' or 'one-at-a-time'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +242,22 @@ type ResumeResult = Result[DriveOutcome, NothingToResume | OperationMismatch]
 type RunResult = Result[
     OperationResultRecord, LaneBusy | InvalidMessage | OperationMismatch
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class QueuedInput:
+    entry_id: str
+
+
+type QueueResult = Result[QueuedInput, InvalidMessage]
+
+
+@dataclass(frozen=True, slots=True)
+class CancelQueuedOutcome:
+    kind: Literal["cancelled", "already_consumed", "not_found"]
+
+
+type CancelQueuedResult = Result[CancelQueuedOutcome, Never]
 
 
 @dataclass(frozen=True, slots=True)

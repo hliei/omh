@@ -12,6 +12,7 @@ from asyncio import (
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
+from typing import Literal
 
 from omh.agent.agent_harness import (
     AbortOutcome,
@@ -19,6 +20,8 @@ from omh.agent.agent_harness import (
     AbortRequestResult,
     AbortResult,
     AgentHarnessOptions,
+    CancelQueuedOutcome,
+    CancelQueuedResult,
     CurrentOperationInfo,
     DriveOptions,
     DriveResult,
@@ -32,6 +35,9 @@ from omh.agent.agent_harness import (
     OperationMismatch,
     OperationResultRecord,
     PromptRequest,
+    QueuedInput,
+    QueueMode,
+    QueueResult,
     ResumeResult,
     RunResult,
     SettledDriveOutcome,
@@ -58,8 +64,14 @@ from omh.agent.runtime.codec import (
 from omh.agent.runtime.drive import drive_operation
 from omh.agent.runtime.drive.terminal import now_ms
 from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
+from omh.agent.runtime.transcript import (
+    pending_message,
+    plan_pending_message_placement,
+    read_pending_messages,
+)
 from omh.agent.runtime.types import (
     CancelRequestedControl,
+    InboxItem,
     LaneConfiguration,
     LaneState,
     ModelIdentity,
@@ -69,6 +81,7 @@ from omh.agent.runtime.types import (
     StartingOperation,
 )
 from omh.agent.session.commit import insert_entry
+from omh.agent.session.session import SessionInvariantError
 from omh.agent.session.types import (
     BranchScan,
     Entry,
@@ -78,15 +91,17 @@ from omh.agent.session.types import (
 )
 from omh.agent.session.values import (
     branch_tip,
+    delete_value,
     lane_config,
     lane_state,
     operation_meta,
     operation_result,
     operation_state,
+    pending_entry,
     set_value,
 )
 from omh.agent.types import AgentMessage, ThinkingLevel
-from omh.llm.types import Model, TextContent, UserMessage
+from omh.llm.types import AssistantMessage, Model, TextContent, UserMessage
 
 
 def _normalize_prompt(
@@ -99,6 +114,36 @@ def _normalize_prompt(
     if isinstance(prompt, list):
         return list(prompt)
     return [prompt]
+
+
+def _select_accepted_inbox(
+    inbox: tuple[InboxItem, ...],
+    steering_mode: QueueMode,
+    follow_up_mode: QueueMode,
+) -> tuple[tuple[InboxItem, ...], tuple[InboxItem, ...]]:
+    steer_taken = False
+    follow_up_taken = False
+    selected: list[InboxItem] = []
+    remainder: list[InboxItem] = []
+    for item in inbox:
+        eligible = (
+            item.kind == "nextRun"
+            or (
+                item.kind == "steer"
+                and (steering_mode == "all" or not steer_taken)
+            )
+            or (
+                item.kind == "followUp"
+                and (follow_up_mode == "all" or not follow_up_taken)
+            )
+        )
+        if eligible:
+            selected.append(item)
+            steer_taken = steer_taken or item.kind == "steer"
+            follow_up_taken = follow_up_taken or item.kind == "followUp"
+        else:
+            remainder.append(item)
+    return tuple(selected), tuple(remainder)
 
 
 class AgentLane:
@@ -132,8 +177,6 @@ class AgentLane:
     ) -> OperationAdmissionResult:
         self._assert_open()
         messages = _normalize_prompt(request.prompt)
-        if not messages:
-            return err(InvalidMessage(reason="empty"))
         operation_id = request.operation_id or self._options.session.id_generator.next()
         started_at = now_ms()
         entry_ids = [
@@ -155,7 +198,18 @@ class AgentLane:
             if durable_lane.current_operation_id is not None:
                 return err(LaneBusy(operation_id=durable_lane.current_operation_id))
 
-            parent_id = stored_tip.value
+            selected, inbox = _select_accepted_inbox(
+                durable_lane.inbox,
+                self._options.steering_mode,
+                self._options.follow_up_mode,
+            )
+            placement = await plan_pending_message_placement(
+                mutator, selected, stored_tip.value, mutation_context
+            )
+            if not messages and placement.trigger_entry_id is None:
+                return err(InvalidMessage(reason="empty"))
+
+            parent_id = placement.tip_id
             entries: list[NewMessageEntry] = []
             for entry_id, message in zip(entry_ids, messages, strict=True):
                 entries.append(
@@ -172,17 +226,21 @@ class AgentLane:
             state = StartingOperation(
                 latest_assistant_entry_id=None,
                 settings=RunSettings(
-                    tool_execution=self._options.tool_execution
+                    tool_execution=self._options.tool_execution,
+                    steering_mode=self._options.steering_mode,
+                    follow_up_mode=self._options.follow_up_mode,
                 ),
             )
             next_lane = LaneState(
                 current_operation_id=operation_id,
                 last_operation_id=durable_lane.last_operation_id,
-                inbox=durable_lane.inbox,
+                inbox=inbox,
             )
             await mutator.commit(
                 [
+                    *placement.entry_writes,
                     *(insert_entry(entry) for entry in entries),
+                    *placement.delete_writes,
                     set_value(branch_tip(self.name), parent_id),
                     set_value(
                         operation_meta(operation_id), encode_operation_meta(meta)
@@ -201,6 +259,115 @@ class AgentLane:
             )
 
         return await self.mutate(accept, context)
+
+    async def steer(
+        self, message: str | AgentMessage, context: Context
+    ) -> QueueResult:
+        return await self._enqueue("steer", message, context)
+
+    async def follow_up(
+        self, message: str | AgentMessage, context: Context
+    ) -> QueueResult:
+        return await self._enqueue("followUp", message, context)
+
+    async def next_run(
+        self, message: str | AgentMessage, context: Context
+    ) -> QueueResult:
+        return await self._enqueue("nextRun", message, context)
+
+    async def _enqueue(
+        self,
+        kind: Literal["steer", "followUp", "nextRun"],
+        message: str | AgentMessage,
+        context: Context,
+    ) -> QueueResult:
+        self._assert_open()
+        if isinstance(message, str):
+            if not message:
+                return err(InvalidMessage(reason="empty"))
+            queued: AgentMessage = UserMessage(
+                content=[TextContent(text=message)], timestamp=now_ms()
+            )
+        else:
+            queued = message
+        if isinstance(queued, AssistantMessage) and queued.stop_reason == "pending":
+            return err(InvalidMessage(reason="pending_assistant"))
+        entry_id = self._options.session.id_generator.next()
+
+        async def enqueue(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> QueueResult:
+            stored_lane = await mutator.get_value(
+                lane_state(self.name), mutation_context
+            )
+            if stored_lane is None:
+                raise SessionInvariantError(
+                    f"Lane {self.name!r} is missing durable state"
+                )
+            durable_lane = decode_lane_state(stored_lane.value)
+            inbox = (*durable_lane.inbox, InboxItem(entry_id=entry_id, kind=kind))
+            next_lane = replace(durable_lane, inbox=inbox)
+            await mutator.commit(
+                [
+                    set_value(pending_entry(entry_id), pending_message(queued)),
+                    set_value(lane_state(self.name), encode_lane_state(next_lane)),
+                ],
+                mutation_context,
+            )
+            return ok(QueuedInput(entry_id=entry_id))
+
+        return await self.mutate(enqueue, context)
+
+    async def cancel_queued(
+        self, entry_id: str, context: Context
+    ) -> CancelQueuedResult:
+        self._assert_open()
+
+        async def cancel(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> CancelQueuedResult:
+            stored_lane = await mutator.get_value(
+                lane_state(self.name), mutation_context
+            )
+            if stored_lane is None:
+                raise SessionInvariantError(
+                    f"Lane {self.name!r} is missing durable state"
+                )
+            durable_lane = decode_lane_state(stored_lane.value)
+            queued = next(
+                (item for item in durable_lane.inbox if item.entry_id == entry_id),
+                None,
+            )
+            if queued is None:
+                consumed = entry_id in await mutator.get_entries(
+                    [entry_id], mutation_context
+                )
+                return ok(
+                    CancelQueuedOutcome(
+                        kind="already_consumed" if consumed else "not_found"
+                    )
+                )
+            payload = await mutator.get_value(pending_entry(entry_id), mutation_context)
+            if payload is None:
+                raise SessionInvariantError(
+                    f"Queued {queued.kind} entry {entry_id} is missing its payload"
+                )
+            next_lane = replace(
+                durable_lane,
+                inbox=tuple(
+                    item for item in durable_lane.inbox if item.entry_id != entry_id
+                ),
+            )
+            await mutator.commit(
+                [
+                    delete_value(pending_entry(entry_id)),
+                    set_value(lane_state(self.name), encode_lane_state(next_lane)),
+                ],
+                mutation_context,
+            )
+            return ok(CancelQueuedOutcome(kind="cancelled"))
+
+        return await self.mutate(cancel, context)
 
     async def drive(self, options: DriveOptions, context: Context) -> DriveResult:
         self._assert_open()
@@ -350,20 +517,54 @@ class AgentLane:
                 return ok(
                     AbortRequest(operation_id=operation_id, newly_requested=False)
                 )
+            removed = tuple(
+                item
+                for item in durable_lane.inbox
+                if item.kind in {"steer", "followUp"}
+            )
+            drained = await read_pending_messages(
+                mutator, removed, mutation_context
+            )
+            removed_ids = {item.entry_id for item in removed}
+            inbox = tuple(
+                item
+                for item in durable_lane.inbox
+                if item.entry_id not in removed_ids
+            )
             cancelled = replace(
                 state,
                 control=CancelRequestedControl(requested_at=requested_at),
             )
             await mutator.commit(
                 [
+                    *(delete_value(pending_entry(item.entry_id)) for item in removed),
                     set_value(
                         operation_state(operation_id),
                         encode_operation_state(cancelled),
-                    )
+                    ),
+                    set_value(
+                        lane_state(self.name),
+                        encode_lane_state(replace(durable_lane, inbox=inbox)),
+                    ),
                 ],
                 mutation_context,
             )
-            return ok(AbortRequest(operation_id=operation_id, newly_requested=True))
+            return ok(
+                AbortRequest(
+                    operation_id=operation_id,
+                    newly_requested=True,
+                    steer=tuple(
+                        message
+                        for item, message in drained
+                        if item.kind == "steer"
+                    ),
+                    follow_up=tuple(
+                        message
+                        for item, message in drained
+                        if item.kind == "followUp"
+                    ),
+                )
+            )
 
         try:
             result = await self._options.session.mutate(request, context)
