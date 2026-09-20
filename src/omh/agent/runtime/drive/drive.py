@@ -47,7 +47,10 @@ async def drive_operation(
                 outcome=await reconcile_abort(lane, options.operation_id, context)
             )
         current = await lane.inspect_execution(context)
-        if current.current is None:
+        if (
+            current.current is None
+            or current.current.operation_id != options.operation_id
+        ):
             result = await lane.get_result(options.operation_id, context)
             if result is None:
                 raise RuntimeError(
@@ -72,11 +75,15 @@ async def drive_operation(
                 checkpoint = decode_operation_state(stored.value)
                 if not isinstance(checkpoint, CheckpointOperation):
                     continue
-                if await prepare_compaction_threshold(
+                threshold = await prepare_compaction_threshold(
                     lane, options.operation_id, checkpoint, context
-                ):
-                    continue
-                outcome = await run_checkpoint(lane, options.operation_id, context)
+                )
+                outcome = await run_checkpoint(
+                    lane,
+                    options.operation_id,
+                    context,
+                    threshold=threshold,
+                )
                 if outcome is not None:
                     return SettledDriveOutcome(outcome=outcome)
             case "assistant.ready":

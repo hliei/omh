@@ -349,7 +349,12 @@ class HookRegistry:
             try:
                 result = await self._invoke(registration, event, context)
                 if isinstance(result, BeforeCompactionResult):
-                    return result
+                    if result.decline and result.compaction is not None:
+                        raise ValueError(
+                            "before_compaction cannot both decline and provide a compaction"
+                        )
+                    if result.decline or result.compaction is not None:
+                        return result
             except Exception as error:
                 await self._error(error, "before_compaction", event.lane, context)
         return None

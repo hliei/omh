@@ -144,6 +144,7 @@
 - `CompactionSettings` 在 operation 接纳时捕获进 durable `RunSettings`。`AgentLane.compact` 接纳独立 compaction operation；普通 run 在 checkpoint 用最近有效 assistant usage 加尾部字符估算判断阈值。阈值 hook 若拒绝，本 run 的后续 checkpoint 不再重复同一自动压缩决定。
 - `prepare_compaction` 对应上游的 cut-point 与 split-turn 算法：迭代摘要复用上一条 compaction 的 summary、retained tail 和文件操作明细；新 compaction entry 追加到原始树末端，不删除旧消息。模型上下文只投影最近 compaction 的 summary、保留尾部和之后的新条目，原始历史仍可通过 branch 查询。
 - 摘要执行保留 `summary.deciding → summary.ready → summary.effect_pending ↔ summary.retry_wait` durable 状态。split-turn 的两个结构请求各自先写 request intent，再独立记 usage；丢失 effect 的结果视为未知并以新 attempt 重试。abort 删除 preparation 并终结；close 不终结，重开后由显式 `resume` 恢复。
-- `before_compaction` 可拒绝或提供结果；`before_request(step="compaction")` 每个结构请求执行。`compaction_start`/`compaction_end`、retry、entry 和 usage 事件都在相应 durable commit 后发布，监听器失败仍由 `handler_error` 隔离。
+- `before_compaction` 可拒绝或提供结果；无动作结果继续交给后续 handler，同时拒绝和提供结果的冲突返回通过 `handler_error` 报告。`before_request(step="compaction")` 每个结构请求执行。`compaction_start`/`compaction_end`、retry、entry 和 usage 事件都在相应 durable commit 后发布，监听器失败仍由 `handler_error` 隔离。
+- checkpoint 先让已排队 steer 获得进入上下文的优先权；无 steer 才提交阈值压缩。阈值压缩结束时，compaction entry、当时已排队 steer 的入树与 assistant-ready 续态在同一事务发布，因此 abort 不能在中间窗口排空本应继续该 run 的输入。
 - `compact` 结束结构 operation 后，仅在队列仍能接纳空 prompt 时创建新的普通 run；它使用新 operation id。若竞争者先占用 idle 窗口或没有可消费输入，返回值只包含 compaction 结果。
 - 明确差异：本票实现显式和阈值压缩，不实现 provider context-overflow 自动恢复，也不实现 navigation summary；当 `reserve_tokens >= context_window` 时视为没有可用摘要预算并跳过自动压缩，避免负阈值循环。结构请求沿用 Python provider 的 `stream_simple(...).result()`，不发布 assistant message frame/lifecycle。compaction 配置由 harness 创建选项提供，本切片尚未补齐上游所有 harness-global 配置 setter。

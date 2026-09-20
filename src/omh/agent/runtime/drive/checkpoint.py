@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from omh.agent.agent_harness import OperationResultRecord
 from omh.agent.context import Context
 from omh.agent.events import (
+    CompactionStartEvent,
     HarnessEvent,
     QueueUpdateEvent,
     RunEndEvent,
@@ -17,6 +18,7 @@ from omh.agent.hooks import (
 )
 from omh.agent.runtime.codec import (
     decode_lane_configuration,
+    encode_compaction_preparation,
     encode_lane_state,
     encode_operation_state,
 )
@@ -37,6 +39,8 @@ from omh.agent.runtime.types import (
     NeedAssistant,
     RunIntent,
     StartingOperation,
+    SummaryDecidingOperation,
+    SummaryTask,
 )
 from omh.agent.session.commit import insert_entry
 from omh.agent.session.types import (
@@ -49,6 +53,7 @@ from omh.agent.session.values import (
     branch_tip,
     lane_config,
     lane_state,
+    operation_preparation,
     operation_state,
     set_value,
 )
@@ -56,6 +61,7 @@ from omh.agent.types import AgentMessage
 from omh.llm.types import AssistantMessage, UserMessage
 
 if TYPE_CHECKING:
+    from omh.agent.runtime.drive.structural import CompactionThreshold
     from omh.agent.runtime.lane import AgentLane
 
 
@@ -157,6 +163,8 @@ async def run_checkpoint(
     lane: AgentLane,
     operation_id: str,
     context: Context,
+    *,
+    threshold: CompactionThreshold | None = None,
 ) -> OperationResultRecord | None:
     stored_state = await lane._options.session.get_value(
         operation_state(operation_id), context
@@ -208,7 +216,7 @@ async def run_checkpoint(
             snapshot.lane.inbox,
             state.settings,
             stored_tip.value,
-            isinstance(state.continuation, MayFinish),
+            threshold is None and isinstance(state.continuation, MayFinish),
             mutation_context,
         )
         if placement.trigger_entry_id is not None:
@@ -259,6 +267,62 @@ async def run_checkpoint(
                     ),
                 )
             return None, events
+        if threshold is not None:
+            deciding = SummaryDecidingOperation(
+                latest_assistant_entry_id=state.latest_assistant_entry_id,
+                task=SummaryTask(
+                    task_id=threshold.task_id,
+                    reason="threshold",
+                    resume_continuation=state.continuation,
+                    resume_trigger_entry_id=state.trigger_entry_id,
+                ),
+                control=state.control,
+                settings=state.settings,
+            )
+            next_lane = LaneState(
+                current_operation_id=operation_id,
+                last_operation_id=snapshot.lane.last_operation_id,
+                inbox=placement.inbox,
+            )
+            writes = [
+                *placement.writes,
+                set_value(
+                    operation_preparation(operation_id, threshold.task_id),
+                    encode_compaction_preparation(threshold.preparation),
+                ),
+                set_value(
+                    operation_state(operation_id), encode_operation_state(deciding)
+                ),
+                set_value(lane_state(lane.name), encode_lane_state(next_lane)),
+            ]
+            commit = await mutator.commit(writes, mutation_context)
+            threshold_events = list(
+                committed_message_events(
+                    writes,
+                    commit.seqs,
+                    commit.timestamp,
+                    lane.name,
+                    operation_id,
+                )
+            )
+            if placement.inbox != snapshot.lane.inbox:
+                threshold_events.append(
+                    QueueUpdateEvent(
+                        lane=lane.name,
+                        queues=await read_lane_queue(
+                            mutator, placement.inbox, mutation_context
+                        ),
+                    )
+                )
+            threshold_events.append(
+                CompactionStartEvent(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    reason="threshold",
+                    started_at=commit.timestamp,
+                )
+            )
+            return None, tuple(threshold_events)
         if isinstance(state.continuation, NeedAssistant):
             stored_configuration = await mutator.get_value(
                 lane_config(lane.name), mutation_context

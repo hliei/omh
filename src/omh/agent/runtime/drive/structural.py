@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from omh.agent.agent_harness import DriveOptions, OperationError, WaitingDriveOutcome
@@ -15,9 +15,9 @@ from omh.agent.compaction import (
 from omh.agent.context import Context, cancel_on_context
 from omh.agent.events import (
     CompactionEndEvent,
-    CompactionStartEvent,
     EntryAddedEvent,
     HarnessEvent,
+    QueueUpdateEvent,
     RetryEndEvent,
     RetryScheduledEvent,
     RetryStartEvent,
@@ -31,9 +31,11 @@ from omh.agent.hooks import (
 )
 from omh.agent.runtime.codec import (
     decode_compaction_preparation,
-    encode_compaction_preparation,
+    decode_lane_configuration,
+    encode_lane_state,
     encode_operation_state,
 )
+from omh.agent.runtime.drive.boundary import plan_boundary_inbox
 from omh.agent.runtime.drive.terminal import result_record, terminal_writes
 from omh.agent.runtime.retry import (
     is_retryable_assistant_error,
@@ -42,16 +44,21 @@ from omh.agent.runtime.retry import (
     wait_until,
 )
 from omh.agent.runtime.state import read_operation
+from omh.agent.runtime.transcript import committed_message_events, read_lane_queue
 from omh.agent.runtime.types import (
+    AssistantReadyOperation,
     CheckpointOperation,
+    GenerationContext,
     GenerationRetryPolicy,
+    LaneState,
+    MayFinish,
+    NeedAssistant,
     SummaryContext,
     SummaryDecidingOperation,
     SummaryEffectPendingOperation,
     SummaryReadyOperation,
     SummaryRequestState,
     SummaryRetryWaitOperation,
-    SummaryTask,
 )
 from omh.agent.session.commit import commit_write, insert_entry, insert_usage
 from omh.agent.session.types import (
@@ -66,6 +73,7 @@ from omh.agent.session.values import (
     branch_tip,
     delete_value,
     lane_config,
+    lane_state,
     operation_preparation,
     operation_state,
     set_value,
@@ -77,15 +85,21 @@ if TYPE_CHECKING:
     from omh.agent.runtime.lane import AgentLane
 
 
+@dataclass(frozen=True, slots=True)
+class CompactionThreshold:
+    task_id: str
+    preparation: CompactionPreparation
+
+
 async def prepare_compaction_threshold(
     lane: AgentLane,
     operation_id: str,
     checkpoint: CheckpointOperation,
     context: Context,
-) -> bool:
+) -> CompactionThreshold | None:
     settings = checkpoint.settings.compaction
     if not settings.enabled:
-        return False
+        return None
     configuration = await lane._options.session.get_value(
         lane_config(lane.name), context
     )
@@ -98,15 +112,17 @@ async def prepare_compaction_threshold(
         model_identity.provider, model_identity.model_id
     )
     if model is None:
-        return False
+        return None
     task_id = lane._options.session.id_generator.next()
 
-    async def prepare(mutator: SessionMutator, mutation_context: Context) -> bool:
+    async def prepare(
+        mutator: SessionMutator, mutation_context: Context
+    ) -> CompactionThreshold | None:
         snapshot = await read_operation(
             mutator, lane.name, operation_id, mutation_context
         )
         if snapshot.state != checkpoint:
-            return False
+            return None
         stored_tip = await mutator.get_value(branch_tip(lane.name), mutation_context)
         if stored_tip is None:
             raise RuntimeError(f"Lane {lane.name!r} is missing branch state")
@@ -130,44 +146,13 @@ async def prepare_compaction_threshold(
         if preparation is None or not should_compact(
             preparation.tokens_before, model.context_window, settings
         ):
-            return False
-        deciding = SummaryDecidingOperation(
-            latest_assistant_entry_id=checkpoint.latest_assistant_entry_id,
-            task=SummaryTask(
-                task_id=task_id,
-                reason="threshold",
-                resume_continuation=checkpoint.continuation,
-                resume_trigger_entry_id=checkpoint.trigger_entry_id,
-            ),
-            control=checkpoint.control,
-            settings=checkpoint.settings,
+            return None
+        return CompactionThreshold(
+            task_id=task_id,
+            preparation=preparation,
         )
-        await mutator.commit(
-            [
-                set_value(
-                    operation_preparation(operation_id, task_id),
-                    encode_compaction_preparation(preparation),
-                ),
-                set_value(
-                    operation_state(operation_id), encode_operation_state(deciding)
-                ),
-            ],
-            mutation_context,
-        )
-        return True
 
-    started = await lane.mutate(prepare, context)
-    if started:
-        await lane.emit_event(
-            CompactionStartEvent(
-                lane=lane.name,
-                run_id=operation_id,
-                reason="threshold",
-                started_at=lane.now_ms(),
-            ),
-            context,
-        )
-    return started
+    return await lane.mutate(prepare, context)
 
 
 async def _read_preparation(
@@ -680,6 +665,7 @@ async def _publish_outcome(
         )
         error = outcome if isinstance(outcome, OperationError) else None
         resumes_run = capability.task.resume_continuation is not None
+        placed_inbox = snapshot.lane.inbox
         if resumes_run and error is None:
             trigger_entry_id = capability.task.resume_trigger_entry_id
             resume_continuation = capability.task.resume_continuation
@@ -687,33 +673,99 @@ async def _publish_outcome(
                 raise RuntimeError("Threshold compaction is missing its resume trigger")
             if resume_continuation is None:
                 raise RuntimeError("Threshold compaction is missing its continuation")
+            placement = await plan_boundary_inbox(
+                mutator,
+                lane.name,
+                snapshot.lane.inbox,
+                capability.settings,
+                tip_id,
+                outcome is None and isinstance(resume_continuation, MayFinish),
+                mutation_context,
+            )
+            writes.extend(placement.writes)
+            tip_id = placement.tip_id
+            placed_inbox = placement.inbox
             resumed_settings = capability.settings
             if outcome is None:
                 resumed_settings = replace(
                     resumed_settings,
                     compaction=replace(resumed_settings.compaction, enabled=False),
                 )
-            writes.append(
-                set_value(
-                    operation_state(operation_id),
-                    encode_operation_state(
-                        CheckpointOperation(
-                            latest_assistant_entry_id=capability.latest_assistant_entry_id,
-                            continuation=resume_continuation,
-                            trigger_entry_id=trigger_entry_id,
-                            control=capability.control,
-                            settings=resumed_settings,
-                        )
-                    ),
+            next_state: AssistantReadyOperation | CheckpointOperation
+            if placement.trigger_entry_id is not None or isinstance(
+                resume_continuation, NeedAssistant
+            ):
+                stored_configuration = await mutator.get_value(
+                    lane_config(lane.name), mutation_context
                 )
+                if stored_configuration is None:
+                    raise RuntimeError(
+                        f"Lane {lane.name!r} is missing configuration"
+                    )
+                retry = lane._options.retry
+                next_state = AssistantReadyOperation(
+                    latest_assistant_entry_id=capability.latest_assistant_entry_id,
+                    generation_context=GenerationContext(
+                        step_id=lane._options.session.id_generator.next(),
+                        trigger_entry_id=(
+                            placement.trigger_entry_id or trigger_entry_id
+                        ),
+                        configuration=decode_lane_configuration(
+                            stored_configuration.value
+                        ),
+                        retry_policy=GenerationRetryPolicy(
+                            max_attempts=(
+                                retry.max_retries + 1 if retry.enabled else 1
+                            ),
+                            base_delay_ms=retry.base_delay_ms,
+                            max_agent_delay_ms=retry.max_agent_delay_ms,
+                        ),
+                        overflow_recovery_used=(
+                            resume_continuation.overflow_recovery_used
+                            if placement.trigger_entry_id is None
+                            and isinstance(resume_continuation, NeedAssistant)
+                            else False
+                        ),
+                    ),
+                    next_attempt=1,
+                    control=capability.control,
+                    settings=resumed_settings,
+                )
+            else:
+                next_state = CheckpointOperation(
+                    latest_assistant_entry_id=capability.latest_assistant_entry_id,
+                    continuation=resume_continuation,
+                    trigger_entry_id=trigger_entry_id,
+                    control=capability.control,
+                    settings=resumed_settings,
+                )
+            writes.extend(
+                [
+                    set_value(
+                        operation_state(operation_id),
+                        encode_operation_state(next_state),
+                    ),
+                    set_value(
+                        lane_state(lane.name),
+                        encode_lane_state(
+                            LaneState(
+                                current_operation_id=operation_id,
+                                last_operation_id=snapshot.lane.last_operation_id,
+                                inbox=placed_inbox,
+                            )
+                        ),
+                    ),
+                ]
             )
             record = None
-            ended_at = lane.now_ms()
+            ended_at = 0
         else:
             record = result_record(snapshot.meta, status, tip_id, error)
             writes.extend(terminal_writes(lane.name, snapshot, record))
             ended_at = record.ended_at
         commit = await mutator.commit(writes, mutation_context)
+        if record is None:
+            ended_at = commit.timestamp
         events: list[HarnessEvent] = []
         for index, write in enumerate(writes):
             committed = commit_write(write, commit.seqs[index], commit.timestamp)
@@ -733,6 +785,32 @@ async def _publish_outcome(
                         totals=commit.stats.usage,
                     )
                 )
+        boundary_events: list[HarnessEvent] = []
+        message_writes: list[Write] = []
+        message_seqs: list[int] = []
+        for index, write in enumerate(writes):
+            if write.kind == "entry" and write.entry.type == "message":
+                message_writes.append(write)
+                message_seqs.append(commit.seqs[index])
+        if message_writes:
+            boundary_events.extend(
+                committed_message_events(
+                    message_writes,
+                    message_seqs,
+                    commit.timestamp,
+                    lane.name,
+                    operation_id,
+                )
+            )
+        if placed_inbox != snapshot.lane.inbox:
+            boundary_events.append(
+                QueueUpdateEvent(
+                    lane=lane.name,
+                    queues=await read_lane_queue(
+                        mutator, placed_inbox, mutation_context
+                    ),
+                )
+            )
         if isinstance(capability, SummaryReadyOperation | SummaryEffectPendingOperation):
             attempt = (
                 capability.next_attempt
@@ -774,6 +852,7 @@ async def _publish_outcome(
                     error=error,
                 )
             )
+        events.extend(boundary_events)
         return tuple(events), record
 
     events, _record = await lane.mutate(publish, context)
