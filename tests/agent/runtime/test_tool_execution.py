@@ -193,6 +193,7 @@ async def test_tool_memo_commit_failure_faults_harness() -> None:
         _tool_call_id: str,
         _arguments: dict[str, object],
         _on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         _context: Context,
     ) -> AgentToolResult:
@@ -333,6 +334,7 @@ async def test_parallel_tools_stage_independently_and_enter_history_in_source_or
             tool_call_id: str,
             params: dict[str, object],
             on_update: AgentHarnessToolUpdateCallback,
+            _tool_context: object,
             invocation: AgentHarnessToolInvocation,
             context: Context,
         ) -> AgentToolResult:
@@ -430,6 +432,7 @@ async def test_sequential_tool_setting_waits_for_each_source_call() -> None:
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -442,6 +445,7 @@ async def test_sequential_tool_setting_waits_for_each_source_call() -> None:
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -487,6 +491,7 @@ async def test_prompt_executes_active_tool_then_continues_model() -> None:
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -571,6 +576,7 @@ async def test_completed_tool_fences_late_memo_and_checkpoint_updates() -> None:
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -665,6 +671,7 @@ async def test_invalid_tool_arguments_become_error_result_without_execution(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -722,6 +729,7 @@ async def test_terminating_tool_result_is_durable_and_skips_another_model_reques
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -796,6 +804,7 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -868,6 +877,7 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -969,6 +979,7 @@ async def test_request_abort_cancels_tool_and_fences_its_late_result() -> None:
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -1060,6 +1071,7 @@ async def test_reopen_places_staged_parallel_result_after_interrupted_prefix(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -1072,6 +1084,7 @@ async def test_reopen_places_staged_parallel_result_after_interrupted_prefix(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -1114,6 +1127,7 @@ async def test_reopen_places_staged_parallel_result_after_interrupted_prefix(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -1171,6 +1185,7 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -1229,6 +1244,7 @@ async def test_reopen_interrupts_tool_unless_both_replay_declarations_are_safe(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -1295,6 +1311,7 @@ async def test_reopen_materializes_staged_tool_result_without_rerunning_tool(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:
@@ -1345,6 +1362,7 @@ async def test_reopen_materializes_staged_tool_result_without_rerunning_tool(
         tool_call_id: str,
         params: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         invocation: AgentHarnessToolInvocation,
         context: Context,
     ) -> AgentToolResult:

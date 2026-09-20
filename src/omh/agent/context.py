@@ -47,6 +47,11 @@ class Context:
                     raise RuntimeError("Context cancellation is missing its reason")
                 raise reason
 
+    @property
+    def cancelled(self) -> bool:
+        """Whether this context was cancelled, without consuming the reason."""
+        return any(cancellation.event.is_set() for cancellation in self._cancellations)
+
 
 @dataclass(frozen=True, slots=True)
 class CancelScope:
@@ -82,6 +87,23 @@ async def await_with_context[T](awaitable: Awaitable[T], context: Context) -> T:
 
 async def cancel_on_context[T](awaitable: Awaitable[T], context: Context) -> T:
     return await _race_with_context(awaitable, context, cancel_target=True)
+
+
+async def wait_for_cancellation(context: Context) -> None:
+    """Wait until this context is cancelled; never resolves without a cancellation."""
+    if not context._cancellations:
+        await asyncio.Future()
+        return
+    waiters = [
+        asyncio.create_task(cancellation.event.wait())
+        for cancellation in context._cancellations
+    ]
+    try:
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
 
 
 async def _race_with_context[T](

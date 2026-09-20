@@ -525,6 +525,7 @@ async def test_tool_hooks_progress_usage_and_terminal_events_are_observable() ->
         _tool_call_id: str,
         arguments: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         _invocation: AgentHarnessToolInvocation,
         _context: Context,
     ) -> AgentToolResult:
@@ -656,6 +657,7 @@ async def test_lane_snapshot_reconstructs_a_running_tool_checkpoint() -> None:
         _tool_call_id: str,
         _arguments: dict[str, object],
         on_update: AgentHarnessToolUpdateCallback,
+        _tool_context: object,
         _invocation: AgentHarnessToolInvocation,
         _context: Context,
     ) -> AgentToolResult:

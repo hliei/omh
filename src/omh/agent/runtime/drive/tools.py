@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
@@ -180,6 +181,7 @@ async def run_tools(lane: AgentLane, operation_id: str, context: Context) -> Non
     if not calls:
         raise RuntimeError("Tool batch has no unfinished call")
     materialization_lock = asyncio.Lock()
+    tool_context = await _resolve_tool_context(lane, context)
 
     async def run_call(call: PlannedToolCall | EffectPendingToolCall) -> None:
         tool_call = await _read_tool_call(lane, state, call.source_index, context)
@@ -191,6 +193,7 @@ async def run_tools(lane: AgentLane, operation_id: str, context: Context) -> Non
                 call,
                 tool_call,
                 context,
+                tool_context,
                 recovery=recovery,
             )
         else:
@@ -201,6 +204,7 @@ async def run_tools(lane: AgentLane, operation_id: str, context: Context) -> Non
                 call,
                 tool_call,
                 context,
+                tool_context,
                 recovery=recovery,
             )
         async with materialization_lock:
@@ -216,6 +220,16 @@ async def run_tools(lane: AgentLane, operation_id: str, context: Context) -> Non
         await materialize_ready_prefix(
             lane, operation_id, context, recovery=recovery
         )
+
+
+async def _resolve_tool_context(lane: AgentLane, context: Context) -> object:
+    source = lane._options.tool_context
+    if callable(source):
+        result = source(context)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+    return source
 
 
 async def _read_tools_state(
@@ -264,6 +278,7 @@ async def _start_planned_call(
     call: PlannedToolCall,
     tool_call: ToolCall,
     context: Context,
+    tool_context: object,
     *,
     recovery: bool,
 ) -> None:
@@ -359,6 +374,7 @@ async def _start_planned_call(
         tool,
         arguments,
         context,
+        tool_context,
         recovery=recovery,
     )
 
@@ -370,6 +386,7 @@ async def _recover_pending_call(
     call: EffectPendingToolCall,
     tool_call: ToolCall,
     context: Context,
+    tool_context: object,
     *,
     recovery: bool,
 ) -> None:
@@ -413,6 +430,7 @@ async def _recover_pending_call(
             tool,
             recovered_args,
             context,
+            tool_context,
             recovery=recovery,
         )
         return
@@ -518,6 +536,7 @@ async def _execute_tool(
     tool: AgentHarnessTool,
     arguments: dict[str, object],
     context: Context,
+    tool_context: object,
     *,
     recovery: bool,
 ) -> None:
@@ -559,7 +578,14 @@ async def _execute_tool(
         execution: asyncio.Future[AgentToolResult] = lane.admit_effect(
             operation_id,
             lambda: asyncio.ensure_future(
-                tool.execute(tool_call.id, arguments, on_update, invocation, context)
+                tool.execute(
+                    tool_call.id,
+                    arguments,
+                    on_update,
+                    tool_context,
+                    invocation,
+                    context,
+                )
             ),
         )
         result = await cancel_on_context(
