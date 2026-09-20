@@ -4,9 +4,23 @@ from typing import TYPE_CHECKING
 
 from omh.agent.agent_harness import OperationError
 from omh.agent.context import Context
+from omh.agent.events import (
+    EntryAddedEvent,
+    HarnessEvent,
+    MessageEndEvent,
+    RetryEndEvent,
+    RetryScheduledEvent,
+    RunEndEvent,
+    TurnEndEvent,
+    UsageEvent,
+)
 from omh.agent.runtime.codec import encode_lane_state, encode_operation_state
 from omh.agent.runtime.drive.terminal import result_record, terminal_writes
-from omh.agent.runtime.retry import is_retryable_assistant_error, retry_not_before
+from omh.agent.runtime.retry import (
+    is_retryable_assistant_error,
+    retry_delay_ms,
+    retry_not_before,
+)
 from omh.agent.runtime.state import read_operation
 from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
@@ -18,8 +32,14 @@ from omh.agent.runtime.types import (
     ToolBatch,
     ToolsOperation,
 )
-from omh.agent.session.commit import insert_entry, insert_usage
-from omh.agent.session.types import NewMessageEntry, SessionMutator, UsageRow, Write
+from omh.agent.session.commit import commit_write, insert_entry, insert_usage
+from omh.agent.session.types import (
+    MessageEntry,
+    NewMessageEntry,
+    SessionMutator,
+    UsageRow,
+    Write,
+)
 from omh.agent.session.values import (
     branch_tip,
     delete_list,
@@ -43,7 +63,9 @@ async def settle_response(
     *,
     recovery: bool = False,
 ) -> None:
-    async def settle(mutator: SessionMutator, mutation_context: Context) -> None:
+    async def settle(
+        mutator: SessionMutator, mutation_context: Context
+    ) -> tuple[HarnessEvent, ...]:
         snapshot = await read_operation(
             mutator, lane.name, operation_id, mutation_context
         )
@@ -56,10 +78,7 @@ async def settle_response(
         if stored_tip is None:
             raise RuntimeError(f"Lane {lane.name!r} is missing branch state")
         next_state: (
-            CheckpointOperation
-            | AssistantRetryWaitOperation
-            | ToolsOperation
-            | None
+            CheckpointOperation | AssistantRetryWaitOperation | ToolsOperation | None
         ) = None
         failure: OperationError | None = None
         if response.stop_reason == "error":
@@ -175,6 +194,87 @@ async def settle_response(
                 snapshot.meta, "failed", state.response_entry_id, failure
             )
             writes.extend(terminal_writes(lane.name, snapshot, record))
-        await mutator.commit(writes, mutation_context)
+        commit = await mutator.commit(writes, mutation_context)
+        entry = commit_write(writes[0], commit.seqs[0], commit.timestamp)
+        usage = commit_write(writes[1], commit.seqs[1], commit.timestamp)
+        if not isinstance(entry, MessageEntry) or not isinstance(usage, UsageRow):
+            raise RuntimeError("Assistant settlement materialized unexpected writes")
+        terminal = (
+            None
+            if failure is None
+            else RunEndEvent(
+                lane=lane.name,
+                run_id=operation_id,
+                status="failed",
+                from_tip_id=snapshot.meta.source_tip_id,
+                tip_id=state.response_entry_id,
+                ended_at=record.ended_at,
+                error=failure,
+            )
+        )
+        events: list[HarnessEvent] = [
+            MessageEndEvent(
+                lane=lane.name,
+                run_id=operation_id,
+                message=response,
+                entry_id=entry.id,
+                recovery=recovery,
+            ),
+            EntryAddedEvent(
+                lane=lane.name,
+                entry=entry,
+                run_id=operation_id,
+                recovery=recovery,
+            ),
+            UsageEvent(lane=lane.name, row=usage, totals=commit.stats.usage),
+        ]
+        if not recovery:
+            if isinstance(next_state, AssistantRetryWaitOperation):
+                policy = state.generation_context.retry_policy
+                events.append(
+                    RetryScheduledEvent(
+                        lane=lane.name,
+                        run_id=operation_id,
+                        step=state.generation_context.step_id,
+                        attempt=next_state.next_attempt,
+                        max_attempts=policy.max_attempts,
+                        delay_ms=retry_delay_ms(
+                            policy.base_delay_ms,
+                            policy.max_agent_delay_ms,
+                            state.attempt,
+                        ),
+                        not_before=next_state.not_before,
+                        error_message=next_state.error_message,
+                    )
+                )
+            elif state.attempt > 1:
+                events.append(
+                    RetryEndEvent(
+                        lane=lane.name,
+                        run_id=operation_id,
+                        step=state.generation_context.step_id,
+                        attempt=state.attempt,
+                        success=response.stop_reason not in {"error", "aborted"},
+                        final_error=(
+                            response.error_message
+                            if response.stop_reason in {"error", "aborted"}
+                            else None
+                        ),
+                    )
+                )
+            if not isinstance(next_state, AssistantRetryWaitOperation | ToolsOperation):
+                events.append(
+                    TurnEndEvent(
+                        lane=lane.name,
+                        run_id=operation_id,
+                        turn_id=state.generation_context.step_id,
+                        message=response,
+                        tool_results=(),
+                    )
+                )
+        if terminal is not None:
+            events.append(terminal)
+        return tuple(events)
 
-    await lane._options.session.mutate(settle, context)
+    events = await lane._options.session.mutate(settle, context)
+    await lane.emit_events(events, context)

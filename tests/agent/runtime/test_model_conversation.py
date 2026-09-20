@@ -526,6 +526,20 @@ async def test_reopen_is_inert_and_resume_recovers_unknown_partial_tool_call(
     ]
     assert resumed_models.stream_calls == 0
     reopened_lane = await reopened.harness.lane("main", BACKGROUND_CONTEXT)
+    observed: list[object] = []
+
+    async def capture(event: object, _context: Context) -> None:
+        observed.append(event)
+
+    for event_type in (
+        "message_start",
+        "message_end",
+        "entry_added",
+        "retry_scheduled",
+        "retry_end",
+        "turn_end",
+    ):
+        reopened.harness.events.on(event_type, capture)
     resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
 
     assert resumed.ok is True
@@ -544,6 +558,14 @@ async def test_reopen_is_inert_and_resume_recovers_unknown_partial_tool_call(
     assert assistant_messages[0].content[0].type == "toolCall"
     assert "external outcome is unknown" in assistant_messages[0].error_message
     assert (await reopened_session.get_stats(BACKGROUND_CONTEXT)).usage == USAGE
+    recovery_events = [event for event in observed if getattr(event, "recovery", False)]
+    assert [event.type for event in recovery_events] == [
+        "message_start",
+        "message_end",
+        "entry_added",
+    ]
+    synthetic = assistant_messages[0]
+    assert all(event.message == synthetic for event in recovery_events[:2])
 
     await reopened.harness.close(BACKGROUND_CONTEXT)
     await reopened_repo.close(BACKGROUND_CONTEXT)
@@ -680,6 +702,19 @@ async def test_request_abort_cancels_live_model_and_settles_shared_drive() -> No
         AgentHarnessOptions(session=session, models=interrupted, model=MODEL),
         BACKGROUND_CONTEXT,
     )
+    drive_hooks = 0
+    observed: list[object] = []
+
+    async def before_drive(_event: object, _context: Context) -> None:
+        nonlocal drive_hooks
+        drive_hooks += 1
+
+    async def capture(event: object, _context: Context) -> None:
+        observed.append(event)
+
+    created.harness.hooks.on("before_drive", before_drive)
+    for event_type in ("message_start", "message_end", "entry_added"):
+        created.harness.events.on(event_type, capture)
     lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
     admitted = await lane.accept(
         PromptRequest(prompt="hello", operation_id="run"), BACKGROUND_CONTEXT
@@ -702,6 +737,7 @@ async def test_request_abort_cancels_live_model_and_settles_shared_drive() -> No
     assert first_result.ok is True
     assert first_result.value.kind == "settled"
     assert first_result.value.outcome.status == "aborted"
+    assert drive_hooks == 1
     assert interrupted.provider_cancelled.is_set()
     assert (await lane.inspect_execution(BACKGROUND_CONTEXT)).current is None
     history = await lane.find_entries(
@@ -713,6 +749,9 @@ async def test_request_abort_cancels_live_model_and_settles_shared_drive() -> No
     assert assistant.content[0].type == "toolCall"
     assert "external outcome is unknown" in assistant.error_message
     assert (await session.get_stats(BACKGROUND_CONTEXT)).usage.total_tokens == 0
+    assert [
+        event.type for event in observed if getattr(event, "recovery", False)
+    ] == ["message_start", "message_end", "entry_added"]
 
     await created.harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)
@@ -824,9 +863,12 @@ async def test_close_rejects_observation_but_preserves_open_operation() -> None:
     assert [(item.lane, item.operation_id) for item in reopened.open] == [
         ("main", "run")
     ]
-    assert await (
-        await reopened.harness.lane("main", BACKGROUND_CONTEXT)
-    ).get_result("run", BACKGROUND_CONTEXT) is None
+    assert (
+        await (await reopened.harness.lane("main", BACKGROUND_CONTEXT)).get_result(
+            "run", BACKGROUND_CONTEXT
+        )
+        is None
+    )
 
     await reopened.harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)

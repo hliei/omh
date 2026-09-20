@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from omh.agent.agent_harness import DriveOptions, WaitingDriveOutcome
 from omh.agent.context import Context, cancel_on_context
+from omh.agent.events import RetryStartEvent
 from omh.agent.runtime.codec import decode_operation_state, encode_operation_state
 from omh.agent.runtime.retry import wait_until
 from omh.agent.runtime.state import read_operation
@@ -38,13 +39,13 @@ async def run_retry_wait(
     if remaining_ms > 0:
         await cancel_on_context(wait_until(state.not_before, lane.now_ms), context)
 
-    async def transition(mutator: SessionMutator, mutation_context: Context) -> None:
+    async def transition(mutator: SessionMutator, mutation_context: Context) -> bool:
         snapshot = await read_operation(
             mutator, lane.name, options.operation_id, mutation_context
         )
         current = snapshot.state
         if not isinstance(current, AssistantRetryWaitOperation):
-            return
+            return False
         ready = AssistantReadyOperation(
             latest_assistant_entry_id=current.latest_assistant_entry_id,
             generation_context=current.generation_context,
@@ -60,6 +61,17 @@ async def run_retry_wait(
             ],
             mutation_context,
         )
+        return True
 
-    await lane._options.session.mutate(transition, context)
+    started = await lane._options.session.mutate(transition, context)
+    if started:
+        await lane.emit_event(
+            RetryStartEvent(
+                lane=lane.name,
+                run_id=options.operation_id,
+                step=state.generation_context.step_id,
+                attempt=state.next_attempt,
+            ),
+            context,
+        )
     return None

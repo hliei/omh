@@ -4,19 +4,30 @@ from typing import TYPE_CHECKING
 
 from omh.agent.agent_harness import OperationResultRecord
 from omh.agent.context import Context
+from omh.agent.events import (
+    HarnessEvent,
+    RunEndEvent,
+    UsageEvent,
+)
 from omh.agent.runtime.drive.recovery import (
     interrupted_assistant_message,
     read_assistant_frames,
 )
 from omh.agent.runtime.drive.terminal import result_record, terminal_writes
 from omh.agent.runtime.state import read_operation
+from omh.agent.runtime.transcript import committed_message_events
 from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
     CancelRequestedControl,
     ToolsOperation,
 )
-from omh.agent.session.commit import insert_entry, insert_usage
-from omh.agent.session.types import NewMessageEntry, SessionMutator, UsageRow, Write
+from omh.agent.session.commit import commit_write, insert_entry, insert_usage
+from omh.agent.session.types import (
+    NewMessageEntry,
+    SessionMutator,
+    UsageRow,
+    Write,
+)
 from omh.agent.session.values import (
     branch_tip,
     delete_list,
@@ -39,7 +50,7 @@ async def reconcile_abort(
 ) -> OperationResultRecord:
     async def reconcile(
         mutator: SessionMutator, mutation_context: Context
-    ) -> OperationResultRecord:
+    ) -> tuple[OperationResultRecord, tuple[HarnessEvent, ...]]:
         snapshot = await read_operation(
             mutator, lane.name, operation_id, mutation_context
         )
@@ -60,9 +71,7 @@ async def reconcile_abort(
                 pending_tool_output_prefix(operation_id), mutation_context
             ),
         ]
-        cleanup: list[Write] = [
-            *(delete_value(item.address) for item in owned_values)
-        ]
+        cleanup: list[Write] = [*(delete_value(item.address) for item in owned_values)]
         state = snapshot.state
         result_tip = stored_tip.value
         if isinstance(state, AssistantEffectPendingOperation):
@@ -108,10 +117,44 @@ async def reconcile_abort(
             )
 
         record = result_record(snapshot.meta, "aborted", result_tip)
-        await mutator.commit(
-            [*cleanup, *terminal_writes(lane.name, snapshot, record)],
-            mutation_context,
+        writes = [*cleanup, *terminal_writes(lane.name, snapshot, record)]
+        commit = await mutator.commit(writes, mutation_context)
+        events = list(
+            committed_message_events(
+                writes,
+                commit.seqs,
+                commit.timestamp,
+                lane.name,
+                operation_id,
+                recovery=isinstance(state, AssistantEffectPendingOperation),
+            )
         )
-        return record
+        for index, write in enumerate(writes):
+            committed = commit_write(write, commit.seqs[index], commit.timestamp)
+            if isinstance(committed, UsageRow):
+                events.append(
+                    UsageEvent(
+                        lane=lane.name,
+                        row=committed,
+                        totals=commit.stats.usage,
+                    )
+                )
+        return record, tuple(events)
 
-    return await lane._options.session.mutate(reconcile, context)
+    record, events = await lane._options.session.mutate(reconcile, context)
+    await lane.emit_events(
+        (
+            *events,
+            RunEndEvent(
+                lane=lane.name,
+                run_id=operation_id,
+                status=record.status,
+                from_tip_id=record.from_tip_id,
+                tip_id=record.tip_id,
+                ended_at=record.ended_at,
+                error=record.error,
+            ),
+        ),
+        context,
+    )
+    return record

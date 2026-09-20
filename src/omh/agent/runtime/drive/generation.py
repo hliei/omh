@@ -2,8 +2,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from omh.agent.agent_harness import AgentHarnessTool, OperationError
+from omh.agent.agent_harness import (
+    AgentHarnessTool,
+    OperationError,
+    OperationResultRecord,
+)
 from omh.agent.context import Context, cancel_on_context
+from omh.agent.events import (
+    MessageStartEvent,
+    MessageUpdateEvent,
+    RunEndEvent,
+    TurnStartEvent,
+)
+from omh.agent.hooks import (
+    AfterResponseHook,
+    AfterResponseResult,
+    BeforeRequestHook,
+    TransformContextHook,
+    TransformContextResult,
+)
 from omh.agent.runtime.codec import encode_assistant_frame, encode_operation_state
 from omh.agent.runtime.drive.response import settle_response
 from omh.agent.runtime.drive.terminal import result_record, terminal_writes
@@ -20,7 +37,15 @@ from omh.agent.session.values import (
     pending_assistant_frames,
     set_value,
 )
-from omh.llm.types import AssistantMessage, Model, SimpleStreamOptions, Tool
+from omh.llm.types import (
+    AssistantMessage,
+    DoneEvent,
+    ErrorEvent,
+    Model,
+    SimpleStreamOptions,
+    StartEvent,
+    Tool,
+)
 from omh.llm.types import Context as LlmContext
 from omh.llm.utils.assistant_message_frame import (
     AssistantMessageFrame,
@@ -56,6 +81,18 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
             context,
         )
         return
+    ready = await _read_ready_state(lane, operation_id, context)
+    await lane.hooks.run(
+        "before_request",
+        BeforeRequestHook(
+            lane=lane.name,
+            run_id=operation_id,
+            model=model,
+            attempt=ready.next_attempt,
+        ),
+        context,
+    )
+    context.raise_if_cancelled()
     intent = await _publish_generation_intent(lane, operation_id, model, context)
     entries = await lane.find_entries(BranchScan(order="oldest_first"), context)
     provider_messages = [
@@ -67,6 +104,17 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
             and entry.message.stop_reason in {"error", "aborted"}
         )
     ]
+    transformed = await lane.hooks.run(
+        "transform_context",
+        TransformContextHook(
+            lane=lane.name,
+            run_id=operation_id,
+            messages=tuple(provider_messages),
+        ),
+        context,
+    )
+    if not isinstance(transformed, TransformContextResult):
+        raise RuntimeError("transform_context returned an invalid result")
     thinking_level = intent.generation_context.configuration.thinking_level
     reasoning = None if thinking_level == "off" else thinking_level
     context.raise_if_cancelled()
@@ -75,7 +123,8 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
         lambda: lane._options.models.stream_simple(
             model,
             LlmContext(
-                messages=provider_messages,
+                messages=list(transformed.messages or ()),
+                system_prompt=transformed.system_prompt or None,
                 tools=(
                     [
                         Tool(
@@ -103,7 +152,35 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
             await _append_frame(
                 lane, operation_id, intent.response_entry_id, frame, context
             )
+        if isinstance(event, StartEvent):
+            await lane.emit_event(
+                MessageStartEvent(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    message=event.partial,
+                ),
+                context,
+            )
+        elif not isinstance(event, DoneEvent | ErrorEvent):
+            await lane.emit_event(
+                MessageUpdateEvent(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    message=event.partial,
+                    event=event,
+                    frame=frame,
+                ),
+                context,
+            )
     response = await cancel_on_context(stream.result(), context)
+    hook_result = await lane.hooks.run(
+        "after_response",
+        AfterResponseHook(lane=lane.name, run_id=operation_id, message=response),
+        context,
+    )
+    if isinstance(hook_result, AfterResponseResult):
+        response = hook_result.message
+    context.raise_if_cancelled()
     await settle_response(lane, operation_id, intent, response, context)
 
 
@@ -151,12 +228,14 @@ async def _finish_ready_failure(
     error: OperationError,
     context: Context,
 ) -> None:
-    async def finish(mutator: SessionMutator, mutation_context: Context) -> None:
+    async def finish(
+        mutator: SessionMutator, mutation_context: Context
+    ) -> OperationResultRecord | None:
         snapshot = await read_operation(
             mutator, lane.name, operation_id, mutation_context
         )
         if not isinstance(snapshot.state, AssistantReadyOperation):
-            return
+            return None
         stored_tip = await mutator.get_value(branch_tip(lane.name), mutation_context)
         if stored_tip is None:
             raise RuntimeError(f"Lane {lane.name!r} is missing branch state")
@@ -164,8 +243,22 @@ async def _finish_ready_failure(
         await mutator.commit(
             terminal_writes(lane.name, snapshot, record), mutation_context
         )
+        return record
 
-    await lane._options.session.mutate(finish, context)
+    record = await lane._options.session.mutate(finish, context)
+    if record is not None:
+        await lane.emit_event(
+            RunEndEvent(
+                lane=lane.name,
+                run_id=operation_id,
+                status=record.status,
+                from_tip_id=record.from_tip_id,
+                tip_id=record.tip_id,
+                ended_at=record.ended_at,
+                error=record.error,
+            ),
+            context,
+        )
 
 
 async def _publish_generation_intent(
@@ -203,7 +296,17 @@ async def _publish_generation_intent(
         )
         return pending
 
-    return await lane._options.session.mutate(transition, context)
+    pending = await lane._options.session.mutate(transition, context)
+    if pending.attempt == 1:
+        await lane.emit_event(
+            TurnStartEvent(
+                lane=lane.name,
+                run_id=operation_id,
+                turn_id=pending.generation_context.step_id,
+            ),
+            context,
+        )
+    return pending
 
 
 async def _append_frame(

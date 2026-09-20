@@ -910,6 +910,22 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
         ("main", "run")
     ]
     reopened_lane = await reopened.harness.lane("main", BACKGROUND_CONTEXT)
+    observed: list[object] = []
+
+    async def capture(event: object, _context: Context) -> None:
+        observed.append(event)
+
+    for event_type in (
+        "turn_start",
+        "tool_start",
+        "tool_update",
+        "tool_end",
+        "message_start",
+        "message_end",
+        "entry_added",
+        "turn_end",
+    ):
+        reopened.harness.events.on(event_type, capture)
     resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
 
     assert resumed.ok is True
@@ -925,6 +941,17 @@ async def test_reopen_replays_only_safe_tool_with_stable_invocation_and_memo(
         )
     ]
     assert len(models.contexts) == 1
+    assert [
+        event.type for event in observed if getattr(event, "recovery", False)
+    ] == [
+        "turn_start",
+        "tool_start",
+        "tool_end",
+        "message_start",
+        "message_end",
+        "entry_added",
+        "turn_end",
+    ]
 
     await reopened.harness.close(BACKGROUND_CONTEXT)
     await reopened_repo.close(BACKGROUND_CONTEXT)

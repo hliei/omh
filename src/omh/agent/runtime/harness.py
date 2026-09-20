@@ -12,6 +12,13 @@ from omh.agent.agent_harness import (
     OpenOperation,
 )
 from omh.agent.context import Context
+from omh.agent.events import (
+    ConfigUpdateEvent,
+    FaultEvent,
+    HarnessEventBus,
+    LaneCreatedEvent,
+)
+from omh.agent.hooks import HookName, HookRegistry
 from omh.agent.result import HarnessClosed, HarnessFault, InvalidLane, UnknownTarget
 from omh.agent.runtime.codec import (
     decode_lane_configuration,
@@ -37,6 +44,8 @@ class Harness(AgentHarness):
     def __init__(self, options: AgentHarnessOptions) -> None:
         self._options = options
         self._tool_registry = ToolRegistry(options.tools)
+        self.events = HarnessEventBus()
+        self.hooks = HookRegistry(self._report_hook_error)
         self._active_tool_seed = (
             options.active_tool_names
             if options.active_tool_names is not None
@@ -56,7 +65,10 @@ class Harness(AgentHarness):
         options: AcquireLaneOptions | None = None,
     ) -> AgentLane:
         async with self._lane_lock:
-            return await self._lane(name, context, options)
+            lane, created, at = await self._lane(name, context, options)
+        if created:
+            await self.events.emit(LaneCreatedEvent(lane=name, at=at), context)
+        return lane
 
     async def lanes(self, context: Context) -> list[LaneInfo]:
         self._assert_open()
@@ -85,7 +97,7 @@ class Harness(AgentHarness):
         name: str,
         context: Context,
         options: AcquireLaneOptions | None = None,
-    ) -> AgentLane:
+    ) -> tuple[AgentLane, bool, str | None]:
         self._assert_open()
         if not name or "\0" in name:
             reason = (
@@ -96,11 +108,11 @@ class Harness(AgentHarness):
             raise InvalidLane(name, reason)
         existing = self._lanes.get(name)
         if existing is not None:
-            return existing
+            return existing, False, None
 
         async def acquire(
             mutator: SessionMutator, mutation_context: Context
-        ) -> AgentLane:
+        ) -> tuple[AgentLane, bool, str | None]:
             stored = await read_lane_storage(mutator, name, mutation_context)
             if stored.kind == "lane":
                 try:
@@ -110,8 +122,17 @@ class Harness(AgentHarness):
                     raise SessionInvariantError(
                         f"Lane {name!r} has invalid durable state"
                     ) from error
-                return AgentLane(
-                    name, self._options, self._tool_registry, self._fault
+                return (
+                    AgentLane(
+                        name,
+                        self._options,
+                        self._tool_registry,
+                        self.events,
+                        self.hooks,
+                        self._fault,
+                    ),
+                    False,
+                    None,
                 )
             tip_id = attachment_tip(
                 stored, None if options is None else options.create_at
@@ -138,16 +159,27 @@ class Harness(AgentHarness):
             if stored.kind == "absent":
                 writes.insert(0, set_value(branch_tip(name), tip_id))
             await mutator.commit(writes, mutation_context)
-            return AgentLane(name, self._options, self._tool_registry, self._fault)
+            return (
+                AgentLane(
+                    name,
+                    self._options,
+                    self._tool_registry,
+                    self.events,
+                    self.hooks,
+                    self._fault,
+                ),
+                True,
+                tip_id,
+            )
 
         try:
-            acquired = await self._options.session.mutate(acquire, context)
+            acquired, created, at = await self._options.session.mutate(acquire, context)
         except UnknownTarget:
             raise
         except Exception as error:
-            raise self._fault(error) from error
+            raise await self._fault(error, context) from error
         published = self._lanes.setdefault(name, acquired)
-        return published
+        return published, created, at
 
     async def close(self, context: Context) -> None:
         async with self._lane_lock:
@@ -167,30 +199,58 @@ class Harness(AgentHarness):
     async def set_tools(
         self, tools: tuple[AgentHarnessTool, ...], context: Context
     ) -> None:
-        del context
         self._assert_open()
         await self._tool_registry.replace(tools)
+        await self.events.emit(ConfigUpdateEvent(property="tools"), context)
 
     async def _finish_close(self, error: HarnessClosed, context: Context) -> None:
         for lane in self._lanes.values():
             await lane.close(error)
+        self.events.close(error)
+        self.hooks.close(error)
         await self._options.session.close(context)
 
     def restore_lane(self, name: str) -> AgentLane:
         lane = self._lanes.get(name)
         if lane is None:
-            lane = AgentLane(name, self._options, self._tool_registry, self._fault)
+            lane = AgentLane(
+                name,
+                self._options,
+                self._tool_registry,
+                self.events,
+                self.hooks,
+                self._fault,
+            )
             self._lanes[name] = lane
         return lane
 
-    def _fault(self, cause: BaseException) -> HarnessFault:
+    async def _fault(self, cause: BaseException, context: Context) -> HarnessFault:
         if self._fault_error is not None:
             return self._fault_error
         fault = cause if isinstance(cause, HarnessFault) else HarnessFault(cause)
         self._fault_error = fault
         for lane in self._lanes.values():
             lane.seal_fault(fault)
+        self.hooks.close(fault)
+        await self.events.emit(
+            FaultEvent(code="harness_fault", message=str(fault)), context
+        )
+        self.events.close(fault)
         return fault
+
+    async def _report_hook_error(
+        self,
+        error: Exception,
+        hook: HookName,
+        lane: str,
+        context: Context,
+    ) -> None:
+        from omh.agent.events import HandlerErrorEvent
+
+        await self.events.emit(
+            HandlerErrorEvent(kind="hook", hook=hook, error=str(error), lane=lane),
+            context,
+        )
 
     def _assert_open(self) -> None:
         if self._fault_error is not None:

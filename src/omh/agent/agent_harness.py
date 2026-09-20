@@ -7,13 +7,16 @@ from typing import TYPE_CHECKING, Literal, Never, Protocol
 from omh.agent.context import Context
 from omh.agent.numbers import MAX_SAFE_INTEGER
 from omh.agent.result import Result
-from omh.agent.session.types import Session
+from omh.agent.session.types import Entry, Session, SessionStats
 from omh.agent.types import AgentMessage, ThinkingLevel
 from omh.llm.models import Models
-from omh.llm.types import JsonValue, Model, ToolResultContent, Usage
+from omh.llm.types import AssistantMessage, JsonValue, Model, ToolResultContent, Usage
 
 if TYPE_CHECKING:
+    from omh.agent.events import Events
+    from omh.agent.hooks import HookRegistry
     from omh.agent.runtime.lane import AgentLane
+    from omh.agent.runtime.types import LaneConfiguration
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +97,9 @@ class RetryPolicy:
             "max_agent_delay_ms": self.max_agent_delay_ms,
         }
         for name, value in values.items():
-            maximum = MAX_SAFE_INTEGER - 1 if name == "max_retries" else MAX_SAFE_INTEGER
+            maximum = (
+                MAX_SAFE_INTEGER - 1 if name == "max_retries" else MAX_SAFE_INTEGER
+            )
             if (
                 isinstance(value, bool)
                 or not isinstance(value, int)
@@ -291,12 +296,77 @@ class LaneInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class LaneQueuedItem:
+    entry_id: str
+    kind: Literal["steer", "followUp", "nextRun", "write"]
+    message: AgentMessage
+    type: Literal["message"] = "message"
+
+
+@dataclass(frozen=True, slots=True)
+class RunningToolSnapshot:
+    tool_call_id: str
+    tool_name: str
+    args: object
+    result: AgentToolResult | None = None
+    status: Literal["running"] = "running"
+
+
+@dataclass(frozen=True, slots=True)
+class SettledToolSnapshot:
+    tool_call_id: str
+    tool_name: str
+    args: object
+    result: AgentToolResult
+    is_error: bool
+    status: Literal["settled"] = "settled"
+
+
+type LaneSnapshotTool = RunningToolSnapshot | SettledToolSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class LaneRetrySnapshot:
+    attempt: int
+    max_attempts: int
+    next_attempt_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class LaneOperationSnapshot:
+    id: str
+    kind: Literal["run"]
+    started_at: int
+    from_tip_id: str | None
+    status: Literal["open", "aborting"]
+    running_tools: tuple[LaneSnapshotTool, ...] = ()
+    retry: LaneRetrySnapshot | None = None
+    streaming_message: AssistantMessage | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LaneSnapshot:
+    lane: str
+    transcript: tuple[Entry, ...]
+    tip_id: str | None
+    last_result: OperationResultRecord | None
+    configuration: LaneConfiguration
+    stats: SessionStats
+    operation: LaneOperationSnapshot | None
+    queues: tuple[LaneQueuedItem, ...]
+    faulted: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AgentHarnessCreateResult:
     harness: AgentHarness
     open: list[OpenOperation]
 
 
 class AgentHarness(Protocol):
+    events: Events
+    hooks: HookRegistry
+
     @staticmethod
     async def create(
         options: AgentHarnessOptions, context: Context

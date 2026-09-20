@@ -18,7 +18,7 @@
 | `packages/agent/src/harness/session/memory.ts` | `src/omh/agent/session/memory.py` |
 | `memory.ts` 的 `MemorySessionFacade` 与 `sqlite-node/src/sqlite/session.ts` 的 `SqliteOpenSession`（同一接纳/排空规则） | `src/omh/agent/session/facade.py`（两后端共用） |
 | 消息与 usage 的落盘 JSON 形状（上游依赖普通对象可直接 JSON 化） | `src/omh/agent/session/codec.py`（新增） |
-| `packages/agent/src/harness/agent-harness.ts` 的 T04/T08 公开类型 | `src/omh/agent/agent_harness.py` |
+| `packages/agent/src/harness/agent-harness.ts` 的 T04/T08/T10 公开类型 | `src/omh/agent/agent_harness.py` |
 | `packages/agent/src/harness/runtime/harness.ts` | `src/omh/agent/runtime/harness.py` |
 | `packages/agent/src/harness/runtime/lane.ts` | `src/omh/agent/runtime/lane.py` |
 | `packages/agent/src/harness/runtime/transcript.ts` | `src/omh/agent/runtime/transcript.py` |
@@ -39,6 +39,9 @@
 | `packages/agent/src/harness/runtime/drive/tool-placement.ts` 的 ready 前缀入树 | `src/omh/agent/runtime/drive/tool_placement.py` |
 | `packages/agent/src/harness/runtime/restore.ts` | `src/omh/agent/runtime/restore.py` |
 | durable runtime state 与 assistant frame 的 SQLite JSON 形状（上游对象可直接 JSON 化） | `src/omh/agent/runtime/codec.py`（新增） |
+| `packages/agent/src/harness/events.ts` | `src/omh/agent/events.py` |
+| `packages/agent/src/harness/hooks.ts` | `src/omh/agent/hooks.py` |
+| `packages/agent/src/harness/telemetry.ts` | `src/omh/agent/telemetry.py` |
 
 主要公开能力：`MemorySessionRepo.create/open/list/delete`、`StorageBackedSession.begin_mutation/mutate`、`create_branch`、`branch`、Branch 的 `append_message`/`append_custom_entry` 与历史查询、绑定值和列表读写、usage 查询及统计。`Session`、`SessionMutation`、`SessionMutator` 和 `SessionRepo` Protocol 描述这些公开边界。
 
@@ -107,3 +110,12 @@
 - `request_abort` 首次提交取消标记时同时排空并返回全部 steer/follow-up 消息，保留 `next_run`；重复请求返回空 drain。取消标记之后新入队的内容以及 terminal cleanup 都保留在 lane-owned inbox，close/reopen 也不消费或调度队列。
 - `InboxItem` 保留上游共用的 `write` tag 以维持 durable lane-state 形状，但本票只公开三种消息输入；运行中 Branch/custom deferred write 仍未实现，因此受支持的 API 不会产生 `write` 项，消费者也不会把手工注入的该项冒充已支持能力。
 - 离线公共行为测试覆盖：pending payload 到 entry 的独占转换、空 prompt 接纳 next-run、one-at-a-time 边界顺序、abort drain、SQLite 重开、terminal 保留、cancel/consume 竞争及多 lane 隔离。
+
+## T10 事件、lane watch、hooks 与 telemetry
+
+- `harness.events` 按注册顺序串行投递已提交状态对应的事件；接纳、配置、队列、assistant/tool 生命周期、retry、usage 与 operation 终态沿用调用方 `Context`。监听器异常转成 `handler_error`，不会回滚已经成功的 Session commit，也不会阻止同一批次的后续事件。
+- 恢复 orphaned assistant effect 或在 abort 时固化其 durable frame 时，合成消息的 `message_start`/`message_end`/`entry_added` 带 `recovery=True`；恢复 tool effect/batch 时，对应 `turn_*`、`tool_*` 和 materialized message/entry 事件同样带该标记。assistant 恢复结算不冒充正常请求去发布 `retry_scheduled`、`retry_end` 或 `turn_end`；durable retry 状态仍由后续 drive 正常推进。
+- `lane.watch()` 先同步注册事件接收者，再在一次 Session mutation 中读取 transcript、tip、last result、配置、统计、当前 operation、retry/streaming/tool checkpoint、队列和 fault 状态。开始消费前事件会缓冲；`resnapshot()` 用事件总线 barrier 丢弃快照已经覆盖的旧事件并保留边界之后的事件，避免重连窗口遗漏。
+- hooks 保持注册顺序。`before_run` 的注入消息进入 durable transcript；`before_drive` 失败关闭 drive；`before_request` 每次 provider retry 都重跑；`transform_context`、`after_response`、`before_tool` 与 `after_tool` 逐项链式应用；`before_run_end` 可在终结边界注入后续用户消息并继续同一 run。普通 hook 异常通过 `handler_error` 报告，`before_tool` 异常按阻断处理。
+- 当前 Python provider 边界没有可变的原始 request payload，因此不公开上游 `before_payload`；compaction/navigation 尚未实现，也不提前公开对应 hooks 或事件。后续任务引入这些执行路径时，必须在各自事务与 effect 边界补齐观察行为。上游未交付的 `watchSession` 仍不公开。
+- telemetry 仅提供显式 `Context` value、`TelemetryContext`/`TelemetrySpan` Protocol、noop 实现，以及上游当前确实存在的 `pi.harness.hook` tool-hook span 与属性。没有 exporter、全局 tracer、自动配置或声称完成上游尚未实现的 tracing。
