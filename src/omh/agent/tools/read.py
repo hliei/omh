@@ -17,6 +17,7 @@ from omh.agent.agent_harness import (
 )
 from omh.agent.context import Context
 from omh.agent.execution_env import get_or_throw
+from omh.agent.tools.arguments import optional_int, required_string
 from omh.agent.tools.image import detect_supported_image_mime_type, encode_base64
 from omh.agent.tools.path_utils import resolve_read_tool_path
 from omh.agent.tools.tool_context import execution_env
@@ -99,9 +100,9 @@ def create_read_tool(options: ReadToolOptions | None = None) -> AgentHarnessTool
     ) -> AgentToolResult:
         del tool_call_id, on_update, invocation
         env = execution_env(tool_context)
-        path = _required_string(arguments, "path")
-        offset = _optional_int(arguments, "offset")
-        limit = _optional_int(arguments, "limit")
+        path = required_string(arguments, "path")
+        offset = optional_int(arguments, "offset")
+        limit = optional_int(arguments, "limit")
         absolute_path = await resolve_read_tool_path(env, path, context)
         data = get_or_throw(await env.read_binary_file(absolute_path, context))
         mime_type = detect_supported_image_mime_type(data)
@@ -244,19 +245,3 @@ def _read_text(
     return AgentToolResult(
         content=[TextContent(text=output_text)], details=details
     )
-
-
-def _required_string(arguments: dict[str, object], name: str) -> str:
-    value = arguments.get(name)
-    if not isinstance(value, str):
-        raise ValueError(f"{name} must be a string")
-    return value
-
-
-def _optional_int(arguments: dict[str, object], name: str) -> int | None:
-    value = arguments.get(name)
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(f"{name} must be a number")
-    return int(cast(float, value))

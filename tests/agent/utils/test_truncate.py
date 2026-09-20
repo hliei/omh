@@ -3,7 +3,6 @@ from __future__ import annotations
 from omh.agent.utils.truncate import (
     format_size,
     truncate_head,
-    truncate_line,
     truncate_tail,
     truncation_json,
     utf8_byte_length,
@@ -67,15 +66,6 @@ def test_tail_truncation_respects_multibyte_boundaries() -> None:
     assert result.last_line_partial is True
     assert result.content == "你" * 2
     assert utf8_byte_length(result.content) == 6
-
-
-def test_truncate_line_adds_suffix() -> None:
-    text, truncated = truncate_line("x" * 10, 4)
-    assert text == "xxxx... [truncated]"
-    assert truncated is True
-    text, truncated = truncate_line("short", 10)
-    assert text == "short"
-    assert truncated is False
 
 
 def test_truncation_json_uses_upstream_field_names() -> None:

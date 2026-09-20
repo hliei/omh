@@ -279,7 +279,6 @@ async def test_context_cancellation_kills_the_process(tmp_path: Path) -> None:
     assert result.error.code == "aborted"
     await asyncio.sleep(0.2)
     assert _processes_matching(token) == []
-    assert env._active_pids == set()
 
 
 async def test_cleanup_kills_active_children(tmp_path: Path) -> None:

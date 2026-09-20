@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import subprocess
+import uuid
 from pathlib import Path
 
 from omh.agent import (
     BACKGROUND_CONTEXT,
     AgentHarness,
     AgentHarnessOptions,
+    BashToolOptions,
     BranchScan,
+    DriveOptions,
     MemorySessionRepo,
+    PromptRequest,
     SessionCreateOptions,
     create_bash_tool,
     create_edit_tool,
@@ -235,3 +241,68 @@ async def test_tool_context_provider_is_resolved_per_turn(tmp_path: Path) -> Non
 
     await created.harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_abort_cancels_a_running_bash_subprocess(tmp_path: Path) -> None:
+    repo = MemorySessionRepo(now=lambda: NOW)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    env = LocalExecutionEnv(str(tmp_path))
+    token = f"omh-harness-{uuid.uuid4().hex}"
+    started = asyncio.Event()
+
+    async def prepare(
+        execution: object, tool_context: object, context: object
+    ) -> None:
+        del execution, tool_context, context
+        started.set()
+
+    models = ScriptedModels(
+        [
+            ToolCall(
+                id="bash-1",
+                name="bash",
+                arguments={"command": f"echo started; sleep 30 # {token}"},
+            )
+        ]
+    )
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=models,
+            model=MODEL,
+            tools=(create_bash_tool(BashToolOptions(prepare=prepare)),),
+            tool_context=ExecutionToolContext(env),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    admitted = await lane.accept(
+        PromptRequest(prompt="run a long command", operation_id="run"),
+        BACKGROUND_CONTEXT,
+    )
+    assert admitted.ok is True
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    async with asyncio.timeout(5):
+        await started.wait()
+
+    requested = await lane.request_abort("run", BACKGROUND_CONTEXT)
+    assert requested.ok is True
+    async with asyncio.timeout(5):
+        result = await driving
+    assert result.ok is True
+    assert result.value.kind == "settled"
+    assert result.value.outcome.status == "aborted"
+    await asyncio.sleep(0.2)
+    assert _processes_matching(token) == []
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+def _processes_matching(token: str) -> list[str]:
+    completed = subprocess.run(
+        ["pgrep", "-f", token], capture_output=True, text=True, check=False
+    )
+    return [line for line in completed.stdout.splitlines() if line.strip()]

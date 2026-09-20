@@ -22,7 +22,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import BinaryIO
 
 from omh.agent.context import Context, wait_for_cancellation
@@ -180,7 +180,7 @@ class LocalExecutionEnv:
         return ok(_resolve_path(self.cwd, path))
 
     async def join_path(
-        self, parts: list[str], context: Context
+        self, parts: Sequence[str], context: Context
     ) -> Result[str, FileError]:
         del context
         return ok(os.path.join(*parts))

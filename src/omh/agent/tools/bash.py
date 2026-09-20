@@ -26,12 +26,14 @@ from omh.agent.execution_env import (
     ShellOutputUpdate,
     ShellOutputView,
 )
+from omh.agent.tools.arguments import optional_number, required_string
 from omh.agent.tools.tool_context import execution_env
 from omh.agent.utils.output_capture import apply_shell_output_update
 from omh.agent.utils.truncate import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
     format_size,
+    truncate_tail,
     truncation_json,
 )
 from omh.llm.types import JsonValue, TextContent
@@ -85,8 +87,8 @@ def create_bash_tool(options: BashToolOptions | None = None) -> AgentHarnessTool
     ) -> AgentToolResult:
         del tool_call_id, invocation
         env = execution_env(tool_context)
-        command = _required_string(arguments, "command")
-        timeout = _optional_number(arguments, "timeout")
+        command = required_string(arguments, "command")
+        timeout = optional_number(arguments, "timeout")
         _validate_timeout(timeout)
 
         execution = BashExecution(
@@ -254,8 +256,6 @@ def _bash_details(view: ShellOutputView) -> JsonValue:
 
 
 def _empty_view() -> ShellOutputView:
-    from omh.agent.utils.truncate import truncate_tail
-
     return ShellOutputView(
         text="", truncation=truncate_tail("").without_content()
     )
@@ -278,22 +278,6 @@ def _encode_snapshot(snapshot: AgentToolResult) -> str:
 
 def _now_ms() -> float:
     return time.monotonic() * 1000
-
-
-def _required_string(arguments: dict[str, object], name: str) -> str:
-    value = arguments.get(name)
-    if not isinstance(value, str):
-        raise ValueError(f"{name} must be a string")
-    return value
-
-
-def _optional_number(arguments: dict[str, object], name: str) -> float | None:
-    value = arguments.get(name)
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(f"{name} must be a number")
-    return float(value)
 
 
 def _validate_timeout(timeout: float | None) -> None:

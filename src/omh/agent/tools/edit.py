@@ -18,6 +18,7 @@ from omh.agent.agent_harness import (
 )
 from omh.agent.context import Context
 from omh.agent.execution_env import ExecutionEnv, FileError
+from omh.agent.tools.arguments import required_string
 from omh.agent.tools.edit_diff import (
     Edit,
     apply_edits_to_normalized_content,
@@ -168,9 +169,7 @@ async def _apply_edit(
 def _validate_edit_input(
     arguments: dict[str, object],
 ) -> tuple[str, list[Edit]]:
-    path = arguments.get("path")
-    if not isinstance(path, str):
-        raise ValueError("path must be a string")
+    path = required_string(arguments, "path")
     raw_edits = arguments.get("edits")
     if not isinstance(raw_edits, list) or len(raw_edits) == 0:
         raise ValueError(

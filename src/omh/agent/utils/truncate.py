@@ -15,7 +15,6 @@ from typing import Literal
 
 DEFAULT_MAX_LINES = 2000
 DEFAULT_MAX_BYTES = 50 * 1024
-GREP_MAX_LINE_LENGTH = 500
 
 type TruncatedBy = Literal["lines", "bytes"]
 
@@ -278,12 +277,3 @@ def truncation_json(truncation: ShellOutputTruncation) -> dict[str, object]:
         "maxLines": truncation.max_lines,
         "maxBytes": truncation.max_bytes,
     }
-
-
-def truncate_line(
-    line: str, max_chars: int = GREP_MAX_LINE_LENGTH
-) -> tuple[str, bool]:
-    """Truncate a single line to ``max_chars`` characters, adding a suffix."""
-    if len(line) <= max_chars:
-        return line, False
-    return f"{line[:max_chars]}... [truncated]", True

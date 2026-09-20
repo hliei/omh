@@ -24,6 +24,10 @@ _states: weakref.WeakKeyDictionary[object, _MutationQueueState] = (
     weakref.WeakKeyDictionary()
 )
 
+# Keying the queue state on the environment requires a weak-referenceable,
+# hashable environment object (the Python counterpart of the upstream WeakMap).
+# ``LocalExecutionEnv`` satisfies this; a custom implementation must too.
+
 
 def _get_state(env: ExecutionEnv) -> _MutationQueueState:
     state = _states.get(env)

@@ -13,6 +13,7 @@ from omh.agent.agent_harness import (
 )
 from omh.agent.context import Context
 from omh.agent.execution_env import get_or_throw
+from omh.agent.tools.arguments import required_string
 from omh.agent.tools.file_mutation_queue import with_file_mutation_queue
 from omh.agent.tools.path_utils import resolve_tool_path
 from omh.agent.tools.tool_context import execution_env
@@ -47,8 +48,8 @@ def create_write_tool() -> AgentHarnessTool:
     ) -> AgentToolResult:
         del tool_call_id, on_update, invocation
         env = execution_env(tool_context)
-        path = _required_string(arguments, "path")
-        content = _required_string(arguments, "content")
+        path = required_string(arguments, "path")
+        content = required_string(arguments, "content")
         absolute_path = await resolve_tool_path(env, path, context)
 
         async def write() -> AgentToolResult:
@@ -72,10 +73,3 @@ def create_write_tool() -> AgentHarnessTool:
         parameters=_WRITE_SCHEMA,
         execute=execute,
     )
-
-
-def _required_string(arguments: dict[str, object], name: str) -> str:
-    value = arguments.get(name)
-    if not isinstance(value, str):
-        raise ValueError(f"{name} must be a string")
-    return value
