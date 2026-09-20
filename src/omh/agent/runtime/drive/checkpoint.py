@@ -175,8 +175,10 @@ async def run_checkpoint(
 
     current = decode_operation_state(stored_state.value)
     follow_up: tuple[str, UserMessage] | None = None
-    if isinstance(current, CheckpointOperation) and isinstance(
-        current.continuation, MayFinish
+    if (
+        threshold is None
+        and isinstance(current, CheckpointOperation)
+        and isinstance(current.continuation, MayFinish)
     ):
         entries = await lane.find_entries(BranchScan(order="oldest_first"), context)
         hook = await lane.hooks.run(
