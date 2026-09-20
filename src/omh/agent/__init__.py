@@ -16,6 +16,10 @@ from omh.agent.agent_harness import (
     AgentToolResult,
     CancelQueuedOutcome,
     CancelQueuedResult,
+    CompactionOptions,
+    CompactionOutcome,
+    CompactionRequest,
+    CompactionResult,
     CurrentOperationInfo,
     DriveOptions,
     DriveOutcome,
@@ -30,6 +34,7 @@ from omh.agent.agent_harness import (
     LaneSnapshot,
     LaneSnapshotTool,
     NoActiveOperation,
+    NothingToCompact,
     NothingToResume,
     OpenOperation,
     OperationAdmission,
@@ -37,6 +42,7 @@ from omh.agent.agent_harness import (
     OperationAdmissionResult,
     OperationError,
     OperationMismatch,
+    OperationRequest,
     OperationResultRecord,
     PromptRequest,
     QueuedInput,
@@ -56,6 +62,11 @@ from omh.agent.agent_harness import (
     WaitingDriveOutcome,
     create_agent_harness,
 )
+from omh.agent.compaction import (
+    CompactionPreparation,
+    CompactionSettings,
+    CompactResult,
+)
 from omh.agent.context import (
     BACKGROUND_CONTEXT,
     CancelScope,
@@ -67,6 +78,8 @@ from omh.agent.context import (
 )
 from omh.agent.env import LocalExecutionEnv
 from omh.agent.events import (
+    CompactionEndEvent,
+    CompactionStartEvent,
     ConfigUpdateEvent,
     EntryAddedEvent,
     Events,
@@ -124,6 +137,8 @@ from omh.agent.hooks import (
     AfterResponseResult,
     AfterToolHook,
     AfterToolResult,
+    BeforeCompactionHook,
+    BeforeCompactionResult,
     BeforeDriveHook,
     BeforeRequestHook,
     BeforeRunEndHook,
@@ -153,6 +168,7 @@ from omh.agent.session import (
     Branch,
     BranchScan,
     CommitResult,
+    CompactionEntry,
     CustomEntry,
     Entry,
     EntryCursor,
@@ -165,6 +181,7 @@ from omh.agent.session import (
     MemorySessionRepo,
     MemoryStorage,
     MessageEntry,
+    NewCompactionEntry,
     NewCustomEntry,
     NewEntry,
     NewMessageEntry,
@@ -235,7 +252,7 @@ from omh.agent.tools import (
     create_read_tool,
     create_write_tool,
 )
-from omh.agent.types import AgentMessage, ThinkingLevel
+from omh.agent.types import AgentMessage, CompactionSummaryMessage, ThinkingLevel
 from omh.agent.utils.truncate import ShellOutputTruncation
 
 __all__ = [
@@ -260,6 +277,15 @@ __all__ = [
     "AfterToolResult",
     "CancelQueuedOutcome",
     "CancelQueuedResult",
+    "CompactResult",
+    "CompactionEndEvent",
+    "CompactionOutcome",
+    "CompactionOptions",
+    "CompactionPreparation",
+    "CompactionRequest",
+    "CompactionResult",
+    "CompactionSettings",
+    "CompactionStartEvent",
     "AgentMessage",
     "BashExecution",
     "BashPrepare",
@@ -267,6 +293,8 @@ __all__ = [
     "Branch",
     "BranchScan",
     "BeforeDriveHook",
+    "BeforeCompactionHook",
+    "BeforeCompactionResult",
     "BeforeRequestHook",
     "BeforeRunEndHook",
     "BeforeRunEndResult",
@@ -286,6 +314,8 @@ __all__ = [
     "DriveOutcome",
     "DriveResult",
     "CustomEntry",
+    "CompactionEntry",
+    "CompactionSummaryMessage",
     "Entry",
     "EntryAddedEvent",
     "EntryCursor",
@@ -319,6 +349,7 @@ __all__ = [
     "LaneSnapshotTool",
     "LocalExecutionEnv",
     "NothingToResume",
+    "NothingToCompact",
     "NoActiveOperation",
     "ListCursor",
     "ListElement",
@@ -334,6 +365,7 @@ __all__ = [
     "MessageUpdateEvent",
     "ModelIdentity",
     "NewCustomEntry",
+    "NewCompactionEntry",
     "NewEntry",
     "NewMessageEntry",
     "NoopTelemetryContext",
@@ -346,6 +378,7 @@ __all__ = [
     "OperationAdmissionResult",
     "OperationError",
     "OperationMismatch",
+    "OperationRequest",
     "OperationResultRecord",
     "PromptRequest",
     "QueuedInput",

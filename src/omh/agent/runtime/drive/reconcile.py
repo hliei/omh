@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from omh.agent.agent_harness import OperationResultRecord
 from omh.agent.context import Context
 from omh.agent.events import (
+    CompactionEndEvent,
     HarnessEvent,
     RunEndEvent,
     UsageEvent,
@@ -19,6 +20,10 @@ from omh.agent.runtime.transcript import committed_message_events
 from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
     CancelRequestedControl,
+    SummaryDecidingOperation,
+    SummaryEffectPendingOperation,
+    SummaryReadyOperation,
+    SummaryRetryWaitOperation,
     ToolsOperation,
 )
 from omh.agent.session.commit import commit_write, insert_entry, insert_usage
@@ -32,6 +37,7 @@ from omh.agent.session.values import (
     branch_tip,
     delete_list,
     delete_value,
+    operation_preparation,
     operation_tool_args_prefix,
     operation_tool_memo_prefix,
     pending_assistant_frames,
@@ -50,7 +56,11 @@ async def reconcile_abort(
 ) -> OperationResultRecord:
     async def reconcile(
         mutator: SessionMutator, mutation_context: Context
-    ) -> tuple[OperationResultRecord, tuple[HarnessEvent, ...]]:
+    ) -> tuple[
+        OperationResultRecord,
+        tuple[HarnessEvent, ...],
+        Literal["manual", "threshold", "overflow"] | None,
+    ]:
         snapshot = await read_operation(
             mutator, lane.name, operation_id, mutation_context
         )
@@ -73,6 +83,18 @@ async def reconcile_abort(
         ]
         cleanup: list[Write] = [*(delete_value(item.address) for item in owned_values)]
         state = snapshot.state
+        if isinstance(
+            state,
+            SummaryDecidingOperation
+            | SummaryReadyOperation
+            | SummaryEffectPendingOperation
+            | SummaryRetryWaitOperation,
+        ):
+            cleanup.append(
+                delete_value(
+                    operation_preparation(operation_id, state.task.task_id)
+                )
+            )
         result_tip = stored_tip.value
         if isinstance(state, AssistantEffectPendingOperation):
             address = pending_assistant_frames(operation_id, state.response_entry_id)
@@ -139,12 +161,35 @@ async def reconcile_abort(
                         totals=commit.stats.usage,
                     )
                 )
-        return record, tuple(events)
+        compaction_reason = (
+            state.task.reason
+            if isinstance(
+                state,
+                SummaryDecidingOperation
+                | SummaryReadyOperation
+                | SummaryEffectPendingOperation
+                | SummaryRetryWaitOperation,
+            )
+            else None
+        )
+        return record, tuple(events), compaction_reason
 
-    record, events = await lane._options.session.mutate(reconcile, context)
-    await lane.emit_events(
-        (
-            *events,
+    record, events, compaction_reason = await lane._options.session.mutate(
+        reconcile, context
+    )
+    terminals: list[HarnessEvent] = []
+    if compaction_reason is not None:
+        terminals.append(
+            CompactionEndEvent(
+                lane=lane.name,
+                run_id=operation_id,
+                reason=compaction_reason,
+                status="aborted",
+                ended_at=record.ended_at,
+            )
+        )
+    if record.kind == "run":
+        terminals.append(
             RunEndEvent(
                 lane=lane.name,
                 run_id=operation_id,
@@ -153,8 +198,7 @@ async def reconcile_abort(
                 tip_id=record.tip_id,
                 ended_at=record.ended_at,
                 error=record.error,
-            ),
-        ),
-        context,
-    )
+            )
+        )
+    await lane.emit_events((*events, *terminals), context)
     return record

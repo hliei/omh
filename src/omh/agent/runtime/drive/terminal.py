@@ -23,13 +23,13 @@ def now_ms() -> int:
 
 def result_record(
     meta: OperationMeta,
-    status: Literal["completed", "aborted", "failed"],
+    status: Literal["completed", "declined", "aborted", "failed"],
     tip_id: str | None,
     error: OperationError | None = None,
 ) -> OperationResultRecord:
     return OperationResultRecord(
         operation_id=meta.operation_id,
-        kind="run",
+        kind=meta.intent.kind,
         status=status,
         error=error,
         from_tip_id=meta.source_tip_id,

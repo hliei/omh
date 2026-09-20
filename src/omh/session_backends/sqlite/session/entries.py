@@ -3,8 +3,19 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from omh.agent.session.codec import decode_message, encode_message
-from omh.agent.session.types import CustomEntry, Entry, EntryScan, MessageEntry
+from omh.agent.session.codec import (
+    decode_message,
+    decode_usage,
+    encode_message,
+    encode_usage,
+)
+from omh.agent.session.types import (
+    CompactionEntry,
+    CustomEntry,
+    Entry,
+    EntryScan,
+    MessageEntry,
+)
 from omh.llm.types import JsonValue
 from omh.session_backends.sqlite.sql import SqlQuery, join_sql_fragments, sql
 from omh.session_backends.sqlite.types import SqliteDatabase, SqliteRow, SqliteStatement
@@ -22,6 +33,18 @@ def _entry_payload(entry: Entry) -> dict[str, JsonValue]:
         payload: dict[str, JsonValue] = {"message": encode_message(entry.message)}
         if entry.terminate:
             payload["terminate"] = True
+        return payload
+    if isinstance(entry, CompactionEntry):
+        payload = {
+            "summary": entry.summary,
+            "retainedTail": [encode_message(message) for message in entry.retained_tail],
+            "tokensBefore": entry.tokens_before,
+            "fromHook": entry.from_hook,
+        }
+        if entry.details is not None:
+            payload["details"] = entry.details
+        if entry.usage is not None:
+            payload["usage"] = encode_usage(entry.usage)
         return payload
     return {} if entry.data is None else {"data": entry.data}
 
@@ -87,6 +110,33 @@ def decode_entry_row(row: SqliteRow) -> Entry:
             timestamp=timestamp,
             custom_type=cast(str, custom_type),
             data=_parse_payload(row).get("data"),
+        )
+    if entry_type == "compaction":
+        payload = _parse_payload(row)
+        summary = payload.get("summary")
+        retained_tail = payload.get("retainedTail")
+        tokens_before = payload.get("tokensBefore")
+        from_hook = payload.get("fromHook")
+        if not isinstance(summary, str):
+            raise ValueError(f"Compaction entry {entry_id} summary must be a string")
+        if not isinstance(retained_tail, list):
+            raise ValueError(f"Compaction entry {entry_id} retainedTail must be a list")
+        if isinstance(tokens_before, bool) or not isinstance(tokens_before, int):
+            raise ValueError(f"Compaction entry {entry_id} tokensBefore must be an integer")
+        if not isinstance(from_hook, bool):
+            raise ValueError(f"Compaction entry {entry_id} fromHook must be a boolean")
+        usage = payload.get("usage")
+        return CompactionEntry(
+            id=entry_id,
+            parent_id=parent_id,
+            seq=seq,
+            timestamp=timestamp,
+            summary=summary,
+            retained_tail=tuple(decode_message(message) for message in retained_tail),
+            tokens_before=tokens_before,
+            details=payload.get("details"),
+            usage=None if usage is None else decode_usage(usage),
+            from_hook=from_hook,
         )
     raise ValueError(f"Unsupported entry type: {entry_type}")
 

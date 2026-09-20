@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Literal, cast
 
+from omh.agent.compaction import CompactionPreparation, CompactResult
 from omh.agent.context import Context
 from omh.agent.telemetry import TelemetrySpan, start_harness_span
 from omh.agent.types import AgentMessage
@@ -19,6 +20,7 @@ type HookName = Literal[
     "after_response",
     "before_tool",
     "after_tool",
+    "before_compaction",
 ]
 type HookHandler = Callable[[object, Context], object | Awaitable[object]]
 type HookErrorReporter = Callable[
@@ -39,7 +41,7 @@ class HookInvocation:
 
 @dataclass(frozen=True, slots=True)
 class BeforeDriveHook(HookInvocation):
-    operation: Literal["run"] = "run"
+    operation: Literal["run", "compaction"] = "run"
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +79,7 @@ class TransformContextResult:
 @dataclass(frozen=True, slots=True)
 class BeforeRequestHook(HookInvocation):
     model: Model | None = None
-    step: Literal["assistant"] = "assistant"
+    step: Literal["assistant", "compaction"] = "assistant"
     attempt: int = 1
 
 
@@ -136,6 +138,19 @@ class AfterToolResult:
     is_error: bool | HookUnset = HOOK_UNSET
     usage: Usage | None | HookUnset = HOOK_UNSET
     terminate: bool | HookUnset = HOOK_UNSET
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeCompactionHook(HookInvocation):
+    reason: Literal["manual", "threshold", "overflow"] = "manual"
+    preparation: CompactionPreparation | None = None
+    custom_instructions: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeCompactionResult:
+    decline: bool = False
+    compaction: CompactResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +216,10 @@ class HookRegistry:
             return await self._before_tool(cast(BeforeToolHook, event), context)
         if name == "after_tool":
             return await self._after_tool(cast(AfterToolHook, event), context)
+        if name == "before_compaction":
+            return await self._before_compaction(
+                cast(BeforeCompactionHook, event), context
+            )
         await self._invoke_all(name, event, context)
         return None
 
@@ -322,6 +341,18 @@ class HookRegistry:
             except Exception as error:
                 await self._error(error, "after_tool", event.lane, context)
         return aggregate if changed else None
+
+    async def _before_compaction(
+        self, event: BeforeCompactionHook, context: Context
+    ) -> BeforeCompactionResult | None:
+        for registration in self._snapshot("before_compaction"):
+            try:
+                result = await self._invoke(registration, event, context)
+                if isinstance(result, BeforeCompactionResult):
+                    return result
+            except Exception as error:
+                await self._error(error, "before_compaction", event.lane, context)
+        return None
 
     async def _invoke_all(
         self,

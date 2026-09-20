@@ -35,6 +35,7 @@ from omh.agent.runtime.types import (
     LaneState,
     MayFinish,
     NeedAssistant,
+    RunIntent,
     StartingOperation,
 )
 from omh.agent.session.commit import insert_entry
@@ -67,6 +68,8 @@ async def start_run(lane: AgentLane, operation_id: str, context: Context) -> Non
         )
         if not isinstance(snapshot.state, StartingOperation):
             return None
+        if not isinstance(snapshot.meta.intent, RunIntent):
+            raise RuntimeError("Run start has a non-run intent")
         entries = await mutator.get_entries(
             list(snapshot.meta.intent.prompt_entry_ids), mutation_context
         )
@@ -104,6 +107,8 @@ async def start_run(lane: AgentLane, operation_id: str, context: Context) -> Non
         state = snapshot.state
         if not isinstance(state, StartingOperation):
             return ()
+        if not isinstance(snapshot.meta.intent, RunIntent):
+            raise RuntimeError("Run start has a non-run intent")
         prompt_entry_ids = snapshot.meta.intent.prompt_entry_ids
         stored_tip = await mutator.get_value(branch_tip(lane.name), mutation_context)
         if stored_tip is None:

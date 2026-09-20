@@ -158,7 +158,7 @@ async def restore_session(
                 )
             restored[name] = CurrentOperationInfo(
                 operation_id=operation_id,
-                kind="run",
+                kind=durable_meta.intent.kind,
                 started_at=durable_meta.started_at,
                 at=durable_state.at,
             )

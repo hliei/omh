@@ -6,9 +6,9 @@ physically present in one segment and ``branch_meta`` stores its tip plus an
 optional ``base_branch_id``/``base_seq``. A segment logically contains its own
 rows above ``base_seq`` plus the referenced base prefix through ``base_seq``.
 
-The copy bound is the newest compaction at or below the divergence point.
-Until compaction entries exist, every divergence copies the whole prefix through
-the parent, which is the O(history) limitation accepted by ADR-0005.
+The copy bound is the newest compaction at or below the divergence point. A
+branch without a compaction still copies the whole prefix through the parent,
+which is the O(history) limitation accepted by ADR-0005.
 """
 
 from __future__ import annotations

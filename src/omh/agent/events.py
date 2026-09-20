@@ -22,6 +22,8 @@ from omh.llm.utils.assistant_message_frame import AssistantMessageFrame
 type EventType = Literal[
     "run_start",
     "run_end",
+    "compaction_start",
+    "compaction_end",
     "operation_abort",
     "turn_start",
     "turn_end",
@@ -76,12 +78,33 @@ class RunStartEvent:
 class RunEndEvent:
     lane: str
     run_id: str
-    status: Literal["completed", "aborted", "failed"]
+    status: Literal["completed", "declined", "aborted", "failed"]
     from_tip_id: str | None
     tip_id: str | None
     ended_at: int
     error: OperationError | None = None
     type: Literal["run_end"] = "run_end"
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionStartEvent:
+    lane: str
+    run_id: str
+    reason: Literal["manual", "threshold", "overflow"]
+    started_at: int
+    type: Literal["compaction_start"] = "compaction_start"
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionEndEvent:
+    lane: str
+    run_id: str
+    reason: Literal["manual", "threshold", "overflow"]
+    status: Literal["completed", "declined", "aborted", "failed"]
+    ended_at: int
+    entry_id: str | None = None
+    error: OperationError | None = None
+    type: Literal["compaction_end"] = "compaction_end"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +146,7 @@ class RetryScheduledEvent:
     delay_ms: int
     not_before: int
     error_message: str
+    recovery: bool = False
     type: Literal["retry_scheduled"] = "retry_scheduled"
 
 
@@ -254,7 +278,9 @@ class FaultEvent:
 
 
 type HarnessEvent = (
-    ConfigUpdateEvent
+    CompactionEndEvent
+    | CompactionStartEvent
+    | ConfigUpdateEvent
     | EntryAddedEvent
     | FaultEvent
     | HandlerErrorEvent

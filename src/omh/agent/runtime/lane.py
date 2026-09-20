@@ -23,6 +23,10 @@ from omh.agent.agent_harness import (
     AgentToolResult,
     CancelQueuedOutcome,
     CancelQueuedResult,
+    CompactionOptions,
+    CompactionOutcome,
+    CompactionRequest,
+    CompactionResult,
     CurrentOperationInfo,
     DriveOptions,
     DriveResult,
@@ -34,10 +38,12 @@ from omh.agent.agent_harness import (
     LaneRetrySnapshot,
     LaneSnapshot,
     NoActiveOperation,
+    NothingToCompact,
     NothingToResume,
     OperationAdmission,
     OperationAdmissionResult,
     OperationMismatch,
+    OperationRequest,
     OperationResultRecord,
     PromptRequest,
     QueuedInput,
@@ -49,6 +55,7 @@ from omh.agent.agent_harness import (
     SettledDriveOutcome,
     SettledToolSnapshot,
 )
+from omh.agent.compaction import prepare_compaction
 from omh.agent.context import (
     CancelScope,
     Context,
@@ -57,6 +64,7 @@ from omh.agent.context import (
     without_cancel,
 )
 from omh.agent.events import (
+    CompactionStartEvent,
     ConfigProperty,
     ConfigUpdateEvent,
     HarnessEvent,
@@ -75,6 +83,7 @@ from omh.agent.runtime.codec import (
     decode_operation_meta,
     decode_operation_result,
     decode_operation_state,
+    encode_compaction_preparation,
     encode_lane_configuration,
     encode_lane_state,
     encode_operation_meta,
@@ -96,6 +105,7 @@ from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
     AssistantRetryWaitOperation,
     CancelRequestedControl,
+    CompactionIntent,
     CompletedToolCall,
     EffectPendingToolCall,
     InboxItem,
@@ -105,8 +115,12 @@ from omh.agent.runtime.types import (
     OperationMeta,
     OutcomeReadyToolCall,
     RunIntent,
+    RunningControl,
     RunSettings,
     StartingOperation,
+    SummaryDecidingOperation,
+    SummaryRetryWaitOperation,
+    SummaryTask,
     ToolsOperation,
 )
 from omh.agent.session.codec import decode_message
@@ -126,6 +140,7 @@ from omh.agent.session.values import (
     lane_config,
     lane_state,
     operation_meta,
+    operation_preparation,
     operation_result,
     operation_state,
     operation_tool_args,
@@ -216,9 +231,11 @@ class AgentLane:
         return now_ms()
 
     async def accept(
-        self, request: PromptRequest, context: Context
+        self, request: OperationRequest, context: Context
     ) -> OperationAdmissionResult:
         self._assert_open()
+        if isinstance(request, CompactionRequest):
+            return await self._accept_compaction(request, context)
         messages = _normalize_prompt(request.prompt)
         operation_id = request.operation_id or self._options.session.id_generator.next()
         started_at = now_ms()
@@ -272,6 +289,7 @@ class AgentLane:
             state = StartingOperation(
                 latest_assistant_entry_id=None,
                 settings=RunSettings(
+                    compaction=self._options.compaction,
                     tool_execution=self._options.tool_execution,
                     steering_mode=self._options.steering_mode,
                     follow_up_mode=self._options.follow_up_mode,
@@ -328,6 +346,104 @@ class AgentLane:
 
         result, events = await self.mutate(accept, context)
         await self.emit_events(events, context)
+        return result
+
+    async def _accept_compaction(
+        self, request: CompactionRequest, context: Context
+    ) -> OperationAdmissionResult:
+        operation_id = request.operation_id or self._options.session.id_generator.next()
+        started_at = now_ms()
+        task_id = self._options.session.id_generator.next(started_at)
+
+        async def accept(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> OperationAdmissionResult:
+            stored_lane = await mutator.get_value(
+                lane_state(self.name), mutation_context
+            )
+            stored_tip = await mutator.get_value(
+                branch_tip(self.name), mutation_context
+            )
+            if stored_lane is None or stored_tip is None:
+                raise RuntimeError(f"Lane {self.name!r} is missing durable state")
+            durable_lane = decode_lane_state(stored_lane.value)
+            if durable_lane.current_operation_id is not None:
+                return err(LaneBusy(operation_id=durable_lane.current_operation_id))
+            path = (
+                []
+                if stored_tip.value is None
+                else list(
+                    reversed(
+                        await mutator.scan_branch(
+                            StorageBranchScan(
+                                start=stored_tip.value,
+                                stop_at_type="compaction",
+                                order="newest_first",
+                            ),
+                            mutation_context,
+                        )
+                    )
+                )
+            )
+            preparation = prepare_compaction(path, self._options.compaction)
+            if preparation is None:
+                return err(NothingToCompact())
+            meta = OperationMeta(
+                operation_id=operation_id,
+                lane=self.name,
+                source_tip_id=stored_tip.value,
+                started_at=started_at,
+                intent=CompactionIntent(
+                    custom_instructions=request.custom_instructions
+                ),
+            )
+            state = SummaryDecidingOperation(
+                latest_assistant_entry_id=None,
+                task=SummaryTask(
+                    task_id=task_id,
+                    reason="manual",
+                    custom_instructions=request.custom_instructions,
+                ),
+                control=RunningControl(),
+                settings=RunSettings(
+                    compaction=self._options.compaction,
+                    tool_execution=self._options.tool_execution,
+                    steering_mode=self._options.steering_mode,
+                    follow_up_mode=self._options.follow_up_mode,
+                ),
+            )
+            next_lane = replace(durable_lane, current_operation_id=operation_id)
+            await mutator.commit(
+                [
+                    set_value(
+                        operation_preparation(operation_id, task_id),
+                        encode_compaction_preparation(preparation),
+                    ),
+                    set_value(operation_meta(operation_id), encode_operation_meta(meta)),
+                    set_value(operation_state(operation_id), encode_operation_state(state)),
+                    set_value(lane_state(self.name), encode_lane_state(next_lane)),
+                ],
+                mutation_context,
+            )
+            return ok(
+                OperationAdmission(
+                    operation_id=operation_id,
+                    kind="compaction",
+                    started_at=started_at,
+                )
+            )
+
+        result = await self.mutate(accept, context)
+        if result.ok:
+            await self.emit_event(
+                CompactionStartEvent(
+                    lane=self.name,
+                    run_id=operation_id,
+                    reason="manual",
+                    started_at=started_at,
+                ),
+                context,
+            )
         return result
 
     async def steer(self, message: str | AgentMessage, context: Context) -> QueueResult:
@@ -540,7 +656,9 @@ class AgentLane:
     ) -> RunResult:
         admission = await self.accept(PromptRequest(prompt=prompt), context)
         if not admission.ok:
-            return err(admission.error)
+            if isinstance(admission.error, LaneBusy | InvalidMessage):
+                return err(admission.error)
+            raise RuntimeError("Prompt admission returned an invalid error")
         driven = await self.drive(
             DriveOptions(
                 operation_id=admission.value.operation_id, wait_for_retry=True
@@ -554,6 +672,52 @@ class AgentLane:
                 "Prompt returned a retry wait despite wait_for_retry=True"
             )
         return ok(driven.value.outcome)
+
+    async def compact(
+        self,
+        options: CompactionOptions | None,
+        context: Context,
+    ) -> CompactionResult:
+        custom_instructions = None if options is None else options.custom_instructions
+        admission = await self.accept(
+            CompactionRequest(custom_instructions=custom_instructions), context
+        )
+        if not admission.ok:
+            if isinstance(admission.error, LaneBusy | NothingToCompact):
+                return err(admission.error)
+            raise RuntimeError("Compaction admission returned an invalid error")
+        driven = await self.drive(
+            DriveOptions(operation_id=admission.value.operation_id, wait_for_retry=True),
+            context,
+        )
+        if not driven.ok:
+            return err(driven.error)
+        if driven.value.kind != "settled":
+            raise RuntimeError("Compaction returned a retry wait")
+        if driven.value.outcome.status == "aborted":
+            return ok(CompactionOutcome(compaction=driven.value.outcome))
+        continuation = await self.accept(PromptRequest(prompt=""), context)
+        if not continuation.ok:
+            if isinstance(continuation.error, InvalidMessage | LaneBusy):
+                return ok(CompactionOutcome(compaction=driven.value.outcome))
+            raise RuntimeError("Compaction continuation returned an invalid error")
+        continued = await self.drive(
+            DriveOptions(
+                operation_id=continuation.value.operation_id,
+                wait_for_retry=True,
+            ),
+            context,
+        )
+        if not continued.ok:
+            return err(continued.error)
+        if continued.value.kind != "settled":
+            raise RuntimeError("Compaction continuation returned a retry wait")
+        return ok(
+            CompactionOutcome(
+                compaction=driven.value.outcome,
+                run=continued.value.outcome,
+            )
+        )
 
     async def resume(self, context: Context) -> ResumeResult:
         execution = await self.inspect_execution(context)
@@ -788,7 +952,7 @@ class AgentLane:
             durable_state = decode_operation_state(state.value)
             current = CurrentOperationInfo(
                 operation_id=operation_id,
-                kind="run",
+                kind=durable_meta.intent.kind,
                 started_at=durable_meta.started_at,
                 at=durable_state.at,
             )
@@ -884,6 +1048,12 @@ class AgentLane:
                     max_attempts=state.generation_context.retry_policy.max_attempts,
                     next_attempt_at=state.not_before,
                 )
+            elif isinstance(state, SummaryRetryWaitOperation):
+                retry = LaneRetrySnapshot(
+                    attempt=state.next_attempt,
+                    max_attempts=state.summary_context.retry_policy.max_attempts,
+                    next_attempt_at=state.not_before,
+                )
             elif isinstance(state, AssistantEffectPendingOperation):
                 frames = await read_assistant_frames(
                     reader,
@@ -965,7 +1135,7 @@ class AgentLane:
                         )
             operation = LaneOperationSnapshot(
                 id=operation_id,
-                kind="run",
+                kind=meta.intent.kind,
                 started_at=meta.started_at,
                 from_tip_id=meta.source_tip_id,
                 status=(
