@@ -63,6 +63,7 @@ type AgentHarnessToolExecute = Callable[
         str,
         dict[str, object],
         AgentHarnessToolUpdateCallback,
+        object,
         AgentHarnessToolInvocation,
         Context,
     ],
@@ -70,6 +71,8 @@ type AgentHarnessToolExecute = Callable[
 ]
 type ToolReplayPolicy = Literal["never", "safe"]
 type QueueMode = Literal["all", "one-at-a-time"]
+type ToolContextProvider = Callable[[Context], Awaitable[object] | object]
+type ToolContextSource = object | ToolContextProvider | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +121,7 @@ class AgentHarnessOptions:
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     tools: tuple[AgentHarnessTool, ...] = ()
     active_tool_names: tuple[str, ...] | None = None
+    tool_context: ToolContextSource = None
     tool_execution: Literal["sequential", "parallel"] = "parallel"
     steering_mode: QueueMode = "all"
     follow_up_mode: QueueMode = "all"

@@ -32,6 +32,11 @@
 | `packages/agent/src/harness/runtime/drive/retry.ts` | `src/omh/agent/runtime/drive/retry.py` 与 `src/omh/agent/runtime/retry.py` |
 | `packages/agent/src/harness/runtime/drive/terminal.ts` | `src/omh/agent/runtime/drive/terminal.py` |
 | `packages/agent/src/harness/types.ts` 的 T05 工具声明 | `src/omh/agent/agent_harness.py` |
+| `packages/agent/src/harness/types.ts` 的 `ExecutionEnv`/`FileSystem`/`Shell` 与 shell 输出类型 | `src/omh/agent/execution_env.py`（与工具声明分开，避免单一职责文件膨胀） |
+| `packages/agent/src/harness/env/nodejs.ts` | `src/omh/agent/env/local.py` |
+| `packages/agent/src/harness/tools/` | `src/omh/agent/tools/`（逐文件对应 `bash.py`、`edit.py`、`edit_diff.py`、`file_mutation_queue.py`、`image.py`、`path_utils.py`、`read.py`、`tool_context.py`、`write.py`） |
+| `packages/agent/src/harness/utils/truncate.ts` | `src/omh/agent/utils/truncate.py` |
+| `packages/agent/src/harness/utils/output-capture.ts` 与 `adaptive-publisher.ts` | `src/omh/agent/utils/output_capture.py` 与 `src/omh/agent/utils/adaptive_publisher.py` |
 | `packages/agent/src/harness/config.ts` 的工具名校验与进程内 registry | `src/omh/agent/runtime/tool_registry.py` |
 | `packages/agent/src/harness/runtime/drive/tools.ts` 的工具 intent、effect 与 outcome staging | `src/omh/agent/runtime/drive/tools.py` |
 | `packages/agent/src/harness/runtime/progress.ts` 的工具 checkpoint 通道 | `src/omh/agent/runtime/progress.py` |
@@ -119,3 +124,13 @@
 - hooks 保持注册顺序。`before_run` 的注入消息进入 durable transcript；`before_drive` 失败关闭 drive；`before_request` 每次 provider retry 都重跑；`transform_context`、`after_response`、`before_tool` 与 `after_tool` 逐项链式应用；`before_run_end` 可在终结边界注入后续用户消息并继续同一 run。普通 hook 异常通过 `handler_error` 报告，`before_tool` 异常按阻断处理。
 - 当前 Python provider 边界没有可变的原始 request payload，因此不公开上游 `before_payload`；compaction/navigation 尚未实现，也不提前公开对应 hooks 或事件。后续任务引入这些执行路径时，必须在各自事务与 effect 边界补齐观察行为。上游未交付的 `watchSession` 仍不公开。
 - telemetry 仅提供显式 `Context` value、`TelemetryContext`/`TelemetrySpan` Protocol、noop 实现，以及上游当前确实存在的 `pi.harness.hook` tool-hook span 与属性。没有 exporter、全局 tracer、自动配置或声称完成上游尚未实现的 tracing。
+
+## T11 内置本地工具与执行环境
+
+- `execution_env.py` 对应上游 `harness/types.ts` 的 `FileSystem`、`Shell`、`ExecutionEnv`、`FileError`、`ExecutionError`、`FileInfo`、`TextLine`/`TextLineReader` 与 shell 输出类型。约定与上游一致：路径可以是绝对路径或相对 `cwd`，操作失败（含意外后端错误）编码进返回的 `Result`，`get_or_throw` 供测试与适配边界抛出。Python 用 `Ok`/`Err` dataclass 表达，选项对象（`ReadTextLinesOptions`、`CreateDirOptions`、`RemoveOptions`、`CreateTempFileOptions`）代替上游内联对象类型。
+- `env/local.py` 对应 `env/nodejs.ts`，只支持声明的 macOS/Linux：`~`、`~/` 与 `file://` 路径归一化，`ENOENT`/`EACCES`/`EPERM`/`ENOTDIR`/`EISDIR`/`EINVAL` 映射到稳定的 `FileError.code`，临时目录/文件基于 `tempfile` 与 `uuid`。文件系统调用在事件循环内同步执行，而非 Node 的异步 API；这是首版接受的差异，不声称大文件下的吞吐等价。
+- `bash` 子进程用 `asyncio.create_subprocess_exec` 启动（`start_new_session=True`），shell 依次选择 `/bin/bash`、PATH 上的 `bash`、`sh`。取消通过 `wait_for_cancellation` 观察 harness `Context` 的进程内取消事件，先 kill 进程组再收敛；调用方 task 取消、超时与显式 `cleanup` 也走同一 kill-and-wait 路径，覆盖命令取消与进程清理。Windows/WSL bash 探测与 `shellPath` 的 Windows 分支未移植。
+- `utils/truncate.py` 与 `utils/output_capture.py` 对应上游同名工具：行/字节双上限、head/tail 截断、部分尾行、UTF-8 边界与 shell 控制字符清洗保持一致；`adaptive_publisher.py` 保留“最新状态、首个 dirty 立即发布、后续按体积限速”的语义，但使用事件循环定时器。截断元数据进入 `details` 时使用上游 camelCase JSON 字段（`truncatedBy`、`totalLines` 等），与 durable codec 的 JSON 形状约定一致。
+- `tools/` 逐文件对应上游：`read`（文本 offset/limit、图片检测与可选 processor、BMP 无 processor 时省略图片）、`write`、`edit`（多块精确替换、CRLF/BOM 保留、模糊匹配、重复/缺失/重叠错误、diff 与 unified patch）、`bash`（截断后缀、spill 完整输出、非零退出与超时错误）、`path_utils`、`file_mutation_queue`（按环境与 canonical path 串行化写操作）、`image`、`tool_context`。
+- 新增 `AgentHarnessOptions.tool_context` 与工具 `execute` 的第 4 个参数，对应上游 `toolContext`/`AgentHarnessToolContextSource`：可为静态值或 `Context` 到值的同步/异步 provider，在每次 `run_tools` 解析一次。内置工具要求该值为 `ExecutionToolContext`（`env` 字段），否则抛出明确 `TypeError`；工作目录由应用创建 `LocalExecutionEnv` 时显式提供。
+- 明确差异：不移植上游 `edit` 的 `prepareArguments` 兼容路径（legacy `oldText`/`newText`、JSON 字符串），Python 工具只接受文档化的 `edits` 数组；不内置图片缩放/转换，BMP 需显式 processor；不实现远程执行环境；spill 在截断后同步写入，未复制上游的背压与高水位暂停；`shell-output.ts` 的 `executeShellWithCapture` 兼容收集器未移植，因为首版内置工具只经 `env.exec` 的 `onUpdate` 消费输出。
