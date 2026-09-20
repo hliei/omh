@@ -166,20 +166,23 @@ async def run_checkpoint(
     *,
     threshold: CompactionThreshold | None = None,
 ) -> OperationResultRecord | None:
-    stored_state = await lane._options.session.get_value(
-        operation_state(operation_id), context
-    )
-    if stored_state is None:
-        raise RuntimeError(f"Operation {operation_id!r} is missing state")
-    from omh.agent.runtime.codec import decode_operation_state
+    async def may_run_finish_hook(
+        mutator: SessionMutator, mutation_context: Context
+    ) -> bool:
+        snapshot = await read_operation(
+            mutator, lane.name, operation_id, mutation_context
+        )
+        return (
+            isinstance(snapshot.state, CheckpointOperation)
+            and isinstance(snapshot.state.continuation, MayFinish)
+            and not any(item.kind == "steer" for item in snapshot.lane.inbox)
+        )
 
-    current = decode_operation_state(stored_state.value)
+    finish_candidate = await lane._options.session.mutate(
+        may_run_finish_hook, context
+    )
     follow_up: tuple[str, UserMessage] | None = None
-    if (
-        threshold is None
-        and isinstance(current, CheckpointOperation)
-        and isinstance(current.continuation, MayFinish)
-    ):
+    if threshold is None and finish_candidate:
         entries = await lane.find_entries(BranchScan(order="oldest_first"), context)
         hook = await lane.hooks.run(
             "before_run_end",

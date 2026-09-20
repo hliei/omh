@@ -214,6 +214,10 @@ def _cut_point(entries: list[Entry], keep_recent_tokens: int) -> tuple[int, int,
         if accumulated >= keep_recent_tokens:
             cut_index = next((point for point in points if point >= index), points[-1])
             break
+    while cut_index > 0 and not isinstance(
+        entries[cut_index - 1], MessageEntry | CompactionEntry
+    ):
+        cut_index -= 1
     cut = entries[cut_index]
     is_user = isinstance(cut, MessageEntry) and isinstance(cut.message, UserMessage)
     turn_start = -1 if is_user else _turn_start(entries, cut_index)

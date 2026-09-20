@@ -12,6 +12,7 @@ from omh.agent import (
     AgentHarnessOptions,
     BeforeCompactionHook,
     BeforeCompactionResult,
+    BeforeRunEndHook,
     BranchScan,
     CompactionEntry,
     CompactionSettings,
@@ -33,12 +34,14 @@ from omh.llm import (
     DoneEvent,
     ErrorEvent,
     Model,
+    SimpleStreamOptions,
     StartEvent,
     TextContent,
     Usage,
     UsageCost,
 )
 from omh.llm import Context as LlmContext
+from omh.llm.types import AbortSignal
 from omh.session_backends.sqlite import SqliteSessionRepo
 
 MODEL = Model(
@@ -171,12 +174,15 @@ class InterruptingCompactionModels(CompactionModels):
         super().__init__()
         self.summary_started = asyncio.Event()
         self.summary_cancelled = asyncio.Event()
+        self.summary_signal: AbortSignal | None = None
 
     def stream_simple(
         self, model: Model, context: LlmContext, options: object
     ) -> object:
         if context.system_prompt and "context summarization assistant" in context.system_prompt:
+            assert isinstance(options, SimpleStreamOptions)
             self.summary_contexts.append(context)
+            self.summary_signal = options.signal
             self.summary_started.set()
             cancelled = self.summary_cancelled
 
@@ -191,6 +197,41 @@ class InterruptingCompactionModels(CompactionModels):
 
             return InterruptedSummaryStream()
         return super().stream_simple(model, context, options)
+
+
+class GatedConversationModels(CompactionModels):
+    def __init__(self) -> None:
+        super().__init__()
+        self.conversation_started = asyncio.Event()
+        self.release_conversation = asyncio.Event()
+
+    def stream_simple(
+        self, model: Model, context: LlmContext, options: object
+    ) -> object:
+        if context.system_prompt and "context summarization assistant" in context.system_prompt:
+            return super().stream_simple(model, context, options)
+        self.conversation_contexts.append(context)
+        self.conversation_started.set()
+        release = self.release_conversation
+        stream = AssistantMessageEventStream()
+
+        async def produce() -> None:
+            await release.wait()
+            message = AssistantMessage(
+                api=model.api,
+                provider=model.provider,
+                model=model.id,
+                usage=_usage(3),
+                stop_reason="stop",
+                timestamp=1,
+                content=[TextContent(text="gated answer")],
+            )
+            stream.push(StartEvent(partial=message))
+            stream.push(DoneEvent(reason="stop", message=message))
+            stream.end()
+
+        asyncio.create_task(produce())
+        return stream
 
 
 def _text(message: object) -> str:
@@ -277,6 +318,40 @@ async def test_split_turn_compaction_summarizes_prefix_separately() -> None:
     assert "Turn Context (split turn)" in entry.summary
     assert len(models.summary_contexts) == 2
     assert [_text(message) for message in entry.retained_tail] == ["answer 2"]
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_cut_point_normalizes_across_custom_entry() -> None:
+    repo = MemorySessionRepo()
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    models = CompactionModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=models,
+            model=MODEL,
+            compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=4),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    assert (await lane.prompt("first", BACKGROUND_CONTEXT)).ok
+    branch = await session.branch("main", BACKGROUND_CONTEXT)
+    assert branch is not None
+    await branch.append_custom_entry("note", {"text": "between turns"}, BACKGROUND_CONTEXT)
+    assert (await lane.prompt("second", BACKGROUND_CONTEXT)).ok
+
+    compacted = await lane.compact(None, BACKGROUND_CONTEXT)
+
+    assert compacted.ok
+    history = await lane.find_entries(BranchScan(order="oldest_first"), BACKGROUND_CONTEXT)
+    entry = history[-1]
+    assert isinstance(entry, CompactionEntry)
+    assert "Turn Context (split turn)" in entry.summary
+    assert len(models.summary_contexts) == 1
+    assert [_text(message) for message in entry.retained_tail] == ["second", "answer 2"]
 
     await created.harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)
@@ -560,6 +635,42 @@ async def test_queued_steer_precedes_threshold_compaction() -> None:
     await repo.close(BACKGROUND_CONTEXT)
 
 
+async def test_queued_steer_skips_before_run_end_hook() -> None:
+    repo = MemorySessionRepo()
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    models = GatedConversationModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=models, model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    hook_calls: list[BeforeRunEndHook] = []
+    created.harness.hooks.on(
+        "before_run_end", lambda event, _: hook_calls.append(event)
+    )
+    admitted = await lane.accept(PromptRequest(prompt="initial"), BACKGROUND_CONTEXT)
+    assert admitted.ok
+    driving = asyncio.create_task(
+        lane.drive(
+            DriveOptions(operation_id=admitted.value.operation_id, wait_for_retry=True),
+            BACKGROUND_CONTEXT,
+        )
+    )
+    await models.conversation_started.wait()
+    assert (await lane.steer("steer first", BACKGROUND_CONTEXT)).ok
+    models.release_conversation.set()
+
+    driven = await driving
+
+    assert driven.ok
+    assert len(hook_calls) == 1
+    assert len(models.conversation_contexts) == 2
+    assert _text(models.conversation_contexts[1].messages[-1]) == "steer first"
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
 async def test_threshold_publication_places_steer_before_abort_race() -> None:
     repo = MemorySessionRepo()
     session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
@@ -722,6 +833,8 @@ async def test_interrupted_summary_recovers_as_a_new_attempt_after_reopen(
 
     await created.harness.close(BACKGROUND_CONTEXT)
     await interrupted_models.summary_cancelled.wait()
+    assert interrupted_models.summary_signal is not None
+    assert interrupted_models.summary_signal.aborted
     with pytest.raises(HarnessClosed):
         await compacting
 
@@ -790,6 +903,8 @@ async def test_abort_during_summary_ends_compaction_without_writing_an_entry() -
     assert aborted.ok
     assert compacted.ok
     assert compacted.value.compaction.status == "aborted"
+    assert models.summary_signal is not None
+    assert models.summary_signal.aborted
     assert compaction_events == ["aborted"]
     history = await lane.find_entries(BranchScan(order="oldest_first"), BACKGROUND_CONTEXT)
     assert not any(isinstance(entry, CompactionEntry) for entry in history)

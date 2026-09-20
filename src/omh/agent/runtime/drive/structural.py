@@ -78,7 +78,7 @@ from omh.agent.session.values import (
     operation_state,
     set_value,
 )
-from omh.llm.types import AssistantMessage, SimpleStreamOptions, Usage
+from omh.llm.types import AbortController, AssistantMessage, SimpleStreamOptions, Usage
 from omh.llm.types import Context as LlmContext
 
 if TYPE_CHECKING:
@@ -398,11 +398,17 @@ async def run_structural_generation(
             lane, operation_id, effect, request_index, request_context
         )
         request_index += 1
+        abort = AbortController()
+        options.signal = abort.signal
         stream = lane.admit_effect(
             operation_id,
             lambda: lane._options.models.stream_simple(model, llm_context, options),
         )
-        response = await cancel_on_context(stream.result(), request_context)
+        try:
+            response = await cancel_on_context(stream.result(), request_context)
+        except BaseException as error:
+            abort.abort(error)
+            raise
         last_response = response
         effect = await _publish_request_outcome(
             lane, operation_id, effect, response, request_context
