@@ -7,13 +7,14 @@ from omh.agent.agent_harness import (
     OperationError,
     OperationResultRecord,
 )
+from omh.agent.compaction import CompactionPreparation, CompactionSettings
 from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
     AssistantReadyOperation,
     AssistantRetryWaitOperation,
     CancelRequestedControl,
     CheckpointOperation,
-    CompactionSettings,
+    CompactionIntent,
     CompletedToolCall,
     EffectPendingToolCall,
     GenerationContext,
@@ -34,6 +35,13 @@ from omh.agent.runtime.types import (
     RunningControl,
     RunSettings,
     StartingOperation,
+    SummaryContext,
+    SummaryDecidingOperation,
+    SummaryEffectPendingOperation,
+    SummaryReadyOperation,
+    SummaryRequestState,
+    SummaryRetryWaitOperation,
+    SummaryTask,
     ToolBatch,
     ToolCallState,
     ToolsOperation,
@@ -46,6 +54,7 @@ from omh.agent.session.codec import (
     encode_tool_result_content,
     encode_usage,
 )
+from omh.agent.types import AgentMessage
 from omh.llm.types import (
     AssistantMessage,
     JsonValue,
@@ -392,34 +401,50 @@ def decode_lane_state(value: object) -> LaneState:
 
 
 def encode_operation_meta(meta: OperationMeta) -> dict[str, JsonValue]:
+    intent: dict[str, JsonValue]
+    if isinstance(meta.intent, RunIntent):
+        intent = {
+            "kind": meta.intent.kind,
+            "promptEntryIds": list(meta.intent.prompt_entry_ids),
+        }
+    else:
+        intent = {"kind": meta.intent.kind}
+        _optional(intent, "customInstructions", meta.intent.custom_instructions)
     return {
         "operationId": meta.operation_id,
         "lane": meta.lane,
         "sourceTipId": meta.source_tip_id,
         "startedAt": meta.started_at,
-        "intent": {
-            "kind": meta.intent.kind,
-            "promptEntryIds": list(meta.intent.prompt_entry_ids),
-        },
+        "intent": intent,
     }
 
 
 def decode_operation_meta(value: object) -> OperationMeta:
     record = _record(value, "operation meta")
     intent = _record(record.get("intent"), "operation meta.intent")
-    prompt_ids = intent.get("promptEntryIds")
-    if (
-        intent.get("kind") != "run"
-        or not isinstance(prompt_ids, list)
-        or not all(isinstance(item, str) for item in prompt_ids)
-    ):
+    if intent.get("kind") == "run":
+        prompt_ids = intent.get("promptEntryIds")
+        if not isinstance(prompt_ids, list) or not all(
+            isinstance(item, str) for item in prompt_ids
+        ):
+            raise ValueError("operation meta.intent is invalid")
+        decoded_intent: RunIntent | CompactionIntent = RunIntent(
+            prompt_entry_ids=tuple(cast(list[str], prompt_ids))
+        )
+    elif intent.get("kind") == "compaction":
+        decoded_intent = CompactionIntent(
+            custom_instructions=_nullable_text(
+                intent, "customInstructions", "operation meta.intent"
+            )
+        )
+    else:
         raise ValueError("operation meta.intent is invalid")
     return OperationMeta(
         operation_id=_text(record, "operationId", "operation meta"),
         lane=_text(record, "lane", "operation meta"),
         source_tip_id=_nullable_text(record, "sourceTipId", "operation meta"),
         started_at=_integer(record, "startedAt", "operation meta"),
-        intent=RunIntent(prompt_entry_ids=tuple(cast(list[str], prompt_ids))),
+        intent=decoded_intent,
     )
 
 
@@ -485,6 +510,70 @@ def _decode_settings(value: object) -> RunSettings:
     )
 
 
+def encode_compaction_preparation(
+    preparation: CompactionPreparation,
+) -> dict[str, JsonValue]:
+    return {
+        "kind": "compaction",
+        "messagesToSummarize": [
+            encode_message(message) for message in preparation.messages_to_summarize
+        ],
+        "turnPrefixMessages": [
+            encode_message(message) for message in preparation.turn_prefix_messages
+        ],
+        "retainedTail": [
+            encode_message(message) for message in preparation.retained_tail
+        ],
+        "isSplitTurn": preparation.is_split_turn,
+        "tokensBefore": preparation.tokens_before,
+        "previousSummary": preparation.previous_summary,
+        "readFiles": list(preparation.read_files),
+        "modifiedFiles": list(preparation.modified_files),
+        "settings": _encode_settings(RunSettings(compaction=preparation.settings))["compaction"],
+    }
+
+
+def decode_compaction_preparation(value: object) -> CompactionPreparation:
+    record = _record(value, "compaction preparation")
+    if record.get("kind") != "compaction":
+        raise ValueError("compaction preparation.kind is invalid")
+
+    def messages(key: str) -> tuple[AgentMessage, ...]:
+        raw = record.get(key)
+        if not isinstance(raw, list):
+            raise ValueError(f"compaction preparation.{key} must be a list")
+        return tuple(decode_message(cast(JsonValue, item)) for item in raw)
+
+    def strings(key: str) -> tuple[str, ...]:
+        raw = record.get(key)
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raise ValueError(f"compaction preparation.{key} must be a string list")
+        return tuple(cast(list[str], raw))
+
+    settings = _record(record.get("settings"), "compaction preparation.settings")
+    return CompactionPreparation(
+        messages_to_summarize=messages("messagesToSummarize"),
+        turn_prefix_messages=messages("turnPrefixMessages"),
+        retained_tail=messages("retainedTail"),
+        is_split_turn=_boolean(record, "isSplitTurn", "compaction preparation"),
+        tokens_before=_integer(record, "tokensBefore", "compaction preparation"),
+        previous_summary=_nullable_text(
+            record, "previousSummary", "compaction preparation"
+        ),
+        read_files=strings("readFiles"),
+        modified_files=strings("modifiedFiles"),
+        settings=CompactionSettings(
+            enabled=_boolean(settings, "enabled", "compaction preparation.settings"),
+            reserve_tokens=_integer(
+                settings, "reserveTokens", "compaction preparation.settings"
+            ),
+            keep_recent_tokens=_integer(
+                settings, "keepRecentTokens", "compaction preparation.settings"
+            ),
+        ),
+    )
+
+
 def _encode_generation_context(context: GenerationContext) -> dict[str, JsonValue]:
     return {
         "stepId": context.step_id,
@@ -526,6 +615,126 @@ def _decode_generation_context(value: object) -> GenerationContext:
         ),
         overflow_recovery_used=_boolean(
             record, "overflowRecoveryUsed", "operation state.generationContext"
+        ),
+    )
+
+
+def _encode_summary_task(task: SummaryTask) -> dict[str, JsonValue]:
+    if task.resume_continuation is None:
+        boundary: dict[str, JsonValue] = {"kind": "finish"}
+    else:
+        continuation: dict[str, JsonValue]
+        if isinstance(task.resume_continuation, NeedAssistant):
+            continuation = {
+                "kind": "need_assistant",
+                "overflowRecoveryUsed": task.resume_continuation.overflow_recovery_used,
+            }
+        else:
+            continuation = {
+                "kind": "may_finish",
+                "includeFinalAssistant": task.resume_continuation.include_final_assistant,
+            }
+        boundary = {
+            "kind": "resume_checkpoint",
+            "resumeAfter": {
+                "continuation": continuation,
+                "triggerEntryId": task.resume_trigger_entry_id,
+            },
+        }
+    encoded: dict[str, JsonValue] = {
+        "taskId": task.task_id,
+        "reason": task.reason,
+        "boundary": boundary,
+    }
+    _optional(encoded, "customInstructions", task.custom_instructions)
+    return encoded
+
+
+def _decode_summary_task(value: object) -> SummaryTask:
+    record = _record(value, "operation state.task")
+    reason = record.get("reason")
+    if reason not in {"manual", "threshold", "overflow"}:
+        raise ValueError("operation state.task.reason is invalid")
+    boundary = _record(record.get("boundary"), "operation state.task.boundary")
+    resume_continuation: RunContinuation | None = None
+    resume_trigger_entry_id: str | None = None
+    if boundary.get("kind") == "resume_checkpoint":
+        resume = _record(
+            boundary.get("resumeAfter"), "operation state.task.boundary.resumeAfter"
+        )
+        continuation = _record(
+            resume.get("continuation"),
+            "operation state.task.boundary.resumeAfter.continuation",
+        )
+        if continuation.get("kind") == "need_assistant":
+            resume_continuation = NeedAssistant(
+                overflow_recovery_used=_boolean(
+                    continuation,
+                    "overflowRecoveryUsed",
+                    "operation state.task.boundary.resumeAfter.continuation",
+                )
+            )
+        elif continuation.get("kind") == "may_finish":
+            resume_continuation = MayFinish(
+                include_final_assistant=_boolean(
+                    continuation,
+                    "includeFinalAssistant",
+                    "operation state.task.boundary.resumeAfter.continuation",
+                )
+            )
+        else:
+            raise ValueError("operation state.task boundary continuation is invalid")
+        resume_trigger_entry_id = _text(
+            resume,
+            "triggerEntryId",
+            "operation state.task.boundary.resumeAfter",
+        )
+    elif boundary.get("kind") != "finish":
+        raise ValueError("operation state.task.boundary is invalid")
+    return SummaryTask(
+        task_id=_text(record, "taskId", "operation state.task"),
+        reason=reason,
+        custom_instructions=_nullable_text(
+            record, "customInstructions", "operation state.task"
+        ),
+        resume_continuation=resume_continuation,
+        resume_trigger_entry_id=resume_trigger_entry_id,
+    )
+
+
+def _encode_summary_context(context: SummaryContext) -> dict[str, JsonValue]:
+    return {
+        "resultEntryId": context.result_entry_id,
+        "configuration": encode_lane_configuration(context.configuration),
+        "streamOptions": {},
+        "retryPolicy": {
+            "maxAttempts": context.retry_policy.max_attempts,
+            "baseDelayMs": context.retry_policy.base_delay_ms,
+            "maxAgentDelayMs": context.retry_policy.max_agent_delay_ms,
+        },
+    }
+
+
+def _decode_summary_context(value: object) -> SummaryContext:
+    record = _record(value, "operation state.summaryContext")
+    retry = _record(
+        record.get("retryPolicy"), "operation state.summaryContext.retryPolicy"
+    )
+    return SummaryContext(
+        result_entry_id=_text(
+            record, "resultEntryId", "operation state.summaryContext"
+        ),
+        configuration=decode_lane_configuration(record.get("configuration")),
+        retry_policy=GenerationRetryPolicy(
+            max_attempts=_integer(
+                retry, "maxAttempts", "operation state.summaryContext.retryPolicy"
+            ),
+            base_delay_ms=_integer(
+                retry, "baseDelayMs", "operation state.summaryContext.retryPolicy"
+            ),
+            max_agent_delay_ms=_integer(
+                retry, "maxAgentDelayMs", "operation state.summaryContext.retryPolicy"
+            ),
         ),
     )
 
@@ -613,6 +822,36 @@ def encode_operation_state(state: OperationState) -> dict[str, JsonValue]:
             "calls": [_encode_tool_call_state(call) for call in state.batch.calls],
         }
         return encoded
+    if isinstance(state, SummaryDecidingOperation):
+        encoded["task"] = _encode_summary_task(state.task)
+        return encoded
+    if isinstance(
+        state,
+        SummaryReadyOperation
+        | SummaryEffectPendingOperation
+        | SummaryRetryWaitOperation,
+    ):
+        encoded["task"] = _encode_summary_task(state.task)
+        encoded["summaryContext"] = _encode_summary_context(state.summary_context)
+        if isinstance(state, SummaryReadyOperation):
+            encoded["nextAttempt"] = state.next_attempt
+        elif isinstance(state, SummaryEffectPendingOperation):
+            encoded["attempt"] = state.attempt
+            encoded["usageIds"] = list(state.usage_ids)
+            if state.request is not None:
+                encoded["request"] = {
+                    "index": state.request.index,
+                    "usageId": state.request.usage_id,
+                }
+        else:
+            encoded.update(
+                {
+                    "nextAttempt": state.next_attempt,
+                    "notBefore": state.not_before,
+                    "errorMessage": state.error_message,
+                }
+            )
+        return encoded
     encoded["generationContext"] = _encode_generation_context(state.generation_context)
     if isinstance(state, AssistantReadyOperation):
         encoded["nextAttempt"] = state.next_attempt
@@ -692,6 +931,61 @@ def decode_operation_state(value: object) -> OperationState:
             control=control,
             settings=settings,
         )
+    if at == "summary.deciding":
+        return SummaryDecidingOperation(
+            latest_assistant_entry_id=latest,
+            task=_decode_summary_task(record.get("task")),
+            control=control,
+            settings=settings,
+        )
+    if at in {"summary.ready", "summary.effect_pending", "summary.retry_wait"}:
+        task = _decode_summary_task(record.get("task"))
+        summary_context = _decode_summary_context(record.get("summaryContext"))
+        if at == "summary.ready":
+            return SummaryReadyOperation(
+                latest_assistant_entry_id=latest,
+                task=task,
+                summary_context=summary_context,
+                next_attempt=_integer(record, "nextAttempt", "operation state"),
+                control=control,
+                settings=settings,
+            )
+        if at == "summary.effect_pending":
+            request_value = record.get("request")
+            request = None
+            if request_value is not None:
+                request_record = _record(request_value, "operation state.request")
+                request = SummaryRequestState(
+                    index=_integer(request_record, "index", "operation state.request"),
+                    usage_id=_text(
+                        request_record, "usageId", "operation state.request"
+                    ),
+                )
+            usage_ids = record.get("usageIds")
+            if not isinstance(usage_ids, list) or not all(
+                isinstance(item, str) for item in usage_ids
+            ):
+                raise ValueError("operation state.usageIds must be a string list")
+            return SummaryEffectPendingOperation(
+                latest_assistant_entry_id=latest,
+                task=task,
+                summary_context=summary_context,
+                attempt=_integer(record, "attempt", "operation state"),
+                request=request,
+                usage_ids=tuple(cast(list[str], usage_ids)),
+                control=control,
+                settings=settings,
+            )
+        return SummaryRetryWaitOperation(
+            latest_assistant_entry_id=latest,
+            task=task,
+            summary_context=summary_context,
+            next_attempt=_integer(record, "nextAttempt", "operation state"),
+            not_before=_integer(record, "notBefore", "operation state"),
+            error_message=_text(record, "errorMessage", "operation state"),
+            control=control,
+            settings=settings,
+        )
     generation_context = _decode_generation_context(record.get("generationContext"))
     if at == "assistant.ready":
         return AssistantReadyOperation(
@@ -746,7 +1040,13 @@ def encode_operation_result(record: OperationResultRecord) -> dict[str, JsonValu
 def decode_operation_result(value: object) -> OperationResultRecord:
     record = _record(value, "operation result")
     status = record.get("status")
-    if record.get("kind") != "run" or status not in {"completed", "aborted", "failed"}:
+    kind = record.get("kind")
+    if kind not in {"run", "compaction"} or status not in {
+        "completed",
+        "declined",
+        "aborted",
+        "failed",
+    }:
         raise ValueError("operation result kind or status is invalid")
     error_value = record.get("error")
     error = None
@@ -758,7 +1058,7 @@ def decode_operation_result(value: object) -> OperationResultRecord:
         )
     return OperationResultRecord(
         operation_id=_text(record, "operationId", "operation result"),
-        kind="run",
+        kind=kind,
         status=status,
         from_tip_id=_nullable_text(record, "fromTipId", "operation result"),
         tip_id=_nullable_text(record, "tipId", "operation result"),

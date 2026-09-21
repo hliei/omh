@@ -13,6 +13,7 @@ from omh.agent.session.values import branch_tip, set_value
 class BoundaryPlacement:
     writes: tuple[Write, ...]
     inbox: tuple[InboxItem, ...]
+    tip_id: str | None
     trigger_entry_id: str | None = None
 
 
@@ -48,5 +49,6 @@ async def plan_boundary_inbox(
     return BoundaryPlacement(
         writes=tuple(writes),
         inbox=remainder,
+        tip_id=placement.tip_id,
         trigger_entry_id=placement.trigger_entry_id,
     )

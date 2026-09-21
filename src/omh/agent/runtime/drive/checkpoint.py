@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from omh.agent.agent_harness import OperationResultRecord
 from omh.agent.context import Context
 from omh.agent.events import (
+    CompactionStartEvent,
     HarnessEvent,
     QueueUpdateEvent,
     RunEndEvent,
@@ -17,11 +18,16 @@ from omh.agent.hooks import (
 )
 from omh.agent.runtime.codec import (
     decode_lane_configuration,
+    encode_compaction_preparation,
     encode_lane_state,
     encode_operation_state,
 )
 from omh.agent.runtime.drive.boundary import plan_boundary_inbox
-from omh.agent.runtime.drive.terminal import result_record, terminal_writes
+from omh.agent.runtime.drive.terminal import (
+    result_record,
+    run_end_status,
+    terminal_writes,
+)
 from omh.agent.runtime.state import read_operation
 from omh.agent.runtime.transcript import (
     committed_message_events,
@@ -35,7 +41,10 @@ from omh.agent.runtime.types import (
     LaneState,
     MayFinish,
     NeedAssistant,
+    RunIntent,
     StartingOperation,
+    SummaryDecidingOperation,
+    SummaryTask,
 )
 from omh.agent.session.commit import insert_entry
 from omh.agent.session.types import (
@@ -48,6 +57,7 @@ from omh.agent.session.values import (
     branch_tip,
     lane_config,
     lane_state,
+    operation_preparation,
     operation_state,
     set_value,
 )
@@ -55,6 +65,7 @@ from omh.agent.types import AgentMessage
 from omh.llm.types import AssistantMessage, UserMessage
 
 if TYPE_CHECKING:
+    from omh.agent.runtime.drive.structural import CompactionThreshold
     from omh.agent.runtime.lane import AgentLane
 
 
@@ -67,6 +78,8 @@ async def start_run(lane: AgentLane, operation_id: str, context: Context) -> Non
         )
         if not isinstance(snapshot.state, StartingOperation):
             return None
+        if not isinstance(snapshot.meta.intent, RunIntent):
+            raise RuntimeError("Run start has a non-run intent")
         entries = await mutator.get_entries(
             list(snapshot.meta.intent.prompt_entry_ids), mutation_context
         )
@@ -104,6 +117,8 @@ async def start_run(lane: AgentLane, operation_id: str, context: Context) -> Non
         state = snapshot.state
         if not isinstance(state, StartingOperation):
             return ()
+        if not isinstance(snapshot.meta.intent, RunIntent):
+            raise RuntimeError("Run start has a non-run intent")
         prompt_entry_ids = snapshot.meta.intent.prompt_entry_ids
         stored_tip = await mutator.get_value(branch_tip(lane.name), mutation_context)
         if stored_tip is None:
@@ -152,19 +167,29 @@ async def run_checkpoint(
     lane: AgentLane,
     operation_id: str,
     context: Context,
+    *,
+    threshold: CompactionThreshold | None = None,
 ) -> OperationResultRecord | None:
-    stored_state = await lane._options.session.get_value(
-        operation_state(operation_id), context
-    )
-    if stored_state is None:
-        raise RuntimeError(f"Operation {operation_id!r} is missing state")
-    from omh.agent.runtime.codec import decode_operation_state
+    async def may_run_finish_hook(
+        mutator: SessionMutator, mutation_context: Context
+    ) -> bool:
+        snapshot = await read_operation(
+            mutator, lane.name, operation_id, mutation_context
+        )
+        return (
+            isinstance(snapshot.state, CheckpointOperation)
+            and isinstance(snapshot.state.continuation, MayFinish)
+            and not any(
+                item.kind in {"steer", "followUp"}
+                for item in snapshot.lane.inbox
+            )
+        )
 
-    current = decode_operation_state(stored_state.value)
+    finish_candidate = await lane._options.session.mutate(
+        may_run_finish_hook, context
+    )
     follow_up: tuple[str, UserMessage] | None = None
-    if isinstance(current, CheckpointOperation) and isinstance(
-        current.continuation, MayFinish
-    ):
+    if threshold is None and finish_candidate:
         entries = await lane.find_entries(BranchScan(order="oldest_first"), context)
         hook = await lane.hooks.run(
             "before_run_end",
@@ -203,7 +228,7 @@ async def run_checkpoint(
             snapshot.lane.inbox,
             state.settings,
             stored_tip.value,
-            isinstance(state.continuation, MayFinish),
+            threshold is None and isinstance(state.continuation, MayFinish),
             mutation_context,
         )
         if placement.trigger_entry_id is not None:
@@ -254,6 +279,62 @@ async def run_checkpoint(
                     ),
                 )
             return None, events
+        if threshold is not None:
+            deciding = SummaryDecidingOperation(
+                latest_assistant_entry_id=state.latest_assistant_entry_id,
+                task=SummaryTask(
+                    task_id=threshold.task_id,
+                    reason="threshold",
+                    resume_continuation=state.continuation,
+                    resume_trigger_entry_id=state.trigger_entry_id,
+                ),
+                control=state.control,
+                settings=state.settings,
+            )
+            next_lane = LaneState(
+                current_operation_id=operation_id,
+                last_operation_id=snapshot.lane.last_operation_id,
+                inbox=placement.inbox,
+            )
+            writes = [
+                *placement.writes,
+                set_value(
+                    operation_preparation(operation_id, threshold.task_id),
+                    encode_compaction_preparation(threshold.preparation),
+                ),
+                set_value(
+                    operation_state(operation_id), encode_operation_state(deciding)
+                ),
+                set_value(lane_state(lane.name), encode_lane_state(next_lane)),
+            ]
+            commit = await mutator.commit(writes, mutation_context)
+            threshold_events = list(
+                committed_message_events(
+                    writes,
+                    commit.seqs,
+                    commit.timestamp,
+                    lane.name,
+                    operation_id,
+                )
+            )
+            if placement.inbox != snapshot.lane.inbox:
+                threshold_events.append(
+                    QueueUpdateEvent(
+                        lane=lane.name,
+                        queues=await read_lane_queue(
+                            mutator, placement.inbox, mutation_context
+                        ),
+                    )
+                )
+            threshold_events.append(
+                CompactionStartEvent(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    reason="threshold",
+                    started_at=commit.timestamp,
+                )
+            )
+            return None, tuple(threshold_events)
         if isinstance(state.continuation, NeedAssistant):
             stored_configuration = await mutator.get_value(
                 lane_config(lane.name), mutation_context
@@ -341,7 +422,7 @@ async def run_checkpoint(
             RunEndEvent(
                 lane=lane.name,
                 run_id=operation_id,
-                status=result.status,
+                status=run_end_status(result.status),
                 from_tip_id=result.from_tip_id,
                 tip_id=result.tip_id,
                 ended_at=result.ended_at,

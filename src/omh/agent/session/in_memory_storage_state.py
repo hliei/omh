@@ -11,6 +11,7 @@ from omh.agent.session.commit import (
 )
 from omh.agent.session.types import (
     CommitResult,
+    CompactionEntry,
     CustomEntry,
     Entry,
     EntryScan,
@@ -67,7 +68,7 @@ class InMemoryStorageState:
 
     def _apply(self, writes: list[CommittedWrite]) -> None:
         for write in writes:
-            if isinstance(write, (MessageEntry, CustomEntry)):
+            if isinstance(write, (MessageEntry, CustomEntry, CompactionEntry)):
                 self._entries[write.id] = write
                 self._entries_by_seq.append(write)
                 if isinstance(write, MessageEntry):

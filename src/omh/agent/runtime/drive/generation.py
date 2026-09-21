@@ -21,14 +21,20 @@ from omh.agent.hooks import (
     TransformContextHook,
     TransformContextResult,
 )
+from omh.agent.messages import convert_to_llm
 from omh.agent.runtime.codec import encode_assistant_frame, encode_operation_state
 from omh.agent.runtime.drive.response import settle_response
-from omh.agent.runtime.drive.terminal import result_record, terminal_writes
+from omh.agent.runtime.drive.terminal import (
+    result_record,
+    run_end_status,
+    terminal_writes,
+)
 from omh.agent.runtime.state import read_operation
 from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
     AssistantReadyOperation,
 )
+from omh.agent.session.context import build_session_context
 from omh.agent.session.types import BranchScan, SessionMutator
 from omh.agent.session.values import (
     append_list,
@@ -37,8 +43,8 @@ from omh.agent.session.values import (
     pending_assistant_frames,
     set_value,
 )
+from omh.llm.types import Context as LlmContext
 from omh.llm.types import (
-    AssistantMessage,
     DoneEvent,
     ErrorEvent,
     Model,
@@ -46,7 +52,6 @@ from omh.llm.types import (
     StartEvent,
     Tool,
 )
-from omh.llm.types import Context as LlmContext
 from omh.llm.utils.assistant_message_frame import (
     AssistantMessageFrame,
     AssistantMessageFrameEncoder,
@@ -95,15 +100,7 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
     context.raise_if_cancelled()
     intent = await _publish_generation_intent(lane, operation_id, model, context)
     entries = await lane.find_entries(BranchScan(order="oldest_first"), context)
-    provider_messages = [
-        entry.message
-        for entry in entries
-        if entry.type == "message"
-        and not (
-            isinstance(entry.message, AssistantMessage)
-            and entry.message.stop_reason in {"error", "aborted"}
-        )
-    ]
+    provider_messages = build_session_context(entries)
     transformed = await lane.hooks.run(
         "transform_context",
         TransformContextHook(
@@ -123,7 +120,7 @@ async def run_generation(lane: AgentLane, operation_id: str, context: Context) -
         lambda: lane._options.models.stream_simple(
             model,
             LlmContext(
-                messages=list(transformed.messages or ()),
+                messages=convert_to_llm(list(transformed.messages or ())),
                 system_prompt=transformed.system_prompt or None,
                 tools=(
                     [
@@ -251,7 +248,7 @@ async def _finish_ready_failure(
             RunEndEvent(
                 lane=lane.name,
                 run_id=operation_id,
-                status=record.status,
+                status=run_end_status(record.status),
                 from_tip_id=record.from_tip_id,
                 tip_id=record.tip_id,
                 ended_at=record.ended_at,

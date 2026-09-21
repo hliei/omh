@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from omh.agent.agent_harness import OperationResultRecord, QueueMode, ToolReplayPolicy
+from omh.agent.compaction import CompactionSettings
 from omh.agent.types import ThinkingLevel
 
 
@@ -40,12 +41,21 @@ class RunIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class CompactionIntent:
+    custom_instructions: str | None = None
+    kind: Literal["compaction"] = "compaction"
+
+
+type OperationIntent = RunIntent | CompactionIntent
+
+
+@dataclass(frozen=True, slots=True)
 class OperationMeta:
     operation_id: str
     lane: str
     source_tip_id: str | None
     started_at: int
-    intent: RunIntent
+    intent: OperationIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,13 +70,6 @@ class CancelRequestedControl:
 
 
 type RunControl = RunningControl | CancelRequestedControl
-
-
-@dataclass(frozen=True, slots=True)
-class CompactionSettings:
-    enabled: bool = True
-    reserve_tokens: int = 16_384
-    keep_recent_tokens: int = 20_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +221,74 @@ class ToolsOperation:
     at: Literal["tools"] = "tools"
 
 
+@dataclass(frozen=True, slots=True)
+class SummaryTask:
+    task_id: str
+    reason: Literal["manual", "threshold", "overflow"]
+    custom_instructions: str | None = None
+    resume_continuation: RunContinuation | None = None
+    resume_trigger_entry_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryContext:
+    result_entry_id: str
+    configuration: LaneConfiguration
+    retry_policy: GenerationRetryPolicy
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryDecidingOperation:
+    latest_assistant_entry_id: str | None
+    task: SummaryTask
+    control: RunControl
+    settings: RunSettings
+    at: Literal["summary.deciding"] = "summary.deciding"
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryReadyOperation:
+    latest_assistant_entry_id: str | None
+    task: SummaryTask
+    summary_context: SummaryContext
+    next_attempt: int
+    control: RunControl
+    settings: RunSettings
+    at: Literal["summary.ready"] = "summary.ready"
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryRequestState:
+    index: int
+    usage_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryEffectPendingOperation:
+    latest_assistant_entry_id: str | None
+    task: SummaryTask
+    summary_context: SummaryContext
+    attempt: int
+    request: SummaryRequestState | None
+    usage_ids: tuple[str, ...]
+    control: RunControl
+    settings: RunSettings
+    at: Literal["summary.effect_pending"] = "summary.effect_pending"
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryRetryWaitOperation:
+    latest_assistant_entry_id: str | None
+    task: SummaryTask
+    summary_context: SummaryContext
+    next_attempt: int
+    not_before: int
+    error_message: str
+    control: RunControl
+    settings: RunSettings
+    at: Literal["summary.retry_wait"] = "summary.retry_wait"
+
+
 type OperationState = (
     StartingOperation
     | CheckpointOperation
@@ -225,6 +296,10 @@ type OperationState = (
     | AssistantEffectPendingOperation
     | AssistantRetryWaitOperation
     | ToolsOperation
+    | SummaryDecidingOperation
+    | SummaryReadyOperation
+    | SummaryEffectPendingOperation
+    | SummaryRetryWaitOperation
 )
 
 

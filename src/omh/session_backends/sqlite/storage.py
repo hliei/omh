@@ -13,6 +13,7 @@ from omh.agent.session.commit import (
 )
 from omh.agent.session.types import (
     CommitResult,
+    CompactionEntry,
     CustomEntry,
     Entry,
     EntryScan,
@@ -202,7 +203,7 @@ class SqliteStorage:
             raise translated from error
 
     def _write(self, write: CommittedWrite) -> None:
-        if isinstance(write, (MessageEntry, CustomEntry)):
+        if isinstance(write, (MessageEntry, CustomEntry, CompactionEntry)):
             self._entry_writer.insert(write)
             append_entry_to_branch_index(self._db, self._session_id, write)
             if isinstance(write, MessageEntry):

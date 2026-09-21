@@ -164,6 +164,10 @@ def operation_state(operation_id: str) -> Value[JsonObject]:
     return value("omh.op.state", operation_id)
 
 
+def operation_preparation(operation_id: str, task_id: str) -> Value[JsonObject]:
+    return value("omh.op.preparation", f"{operation_id}:{task_id}")
+
+
 def pending_assistant_frames(
     operation_id: str, response_entry_id: str
 ) -> ValueList[JsonObject]:
