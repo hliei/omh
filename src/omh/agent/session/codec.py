@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from omh.agent.types import AgentMessage, CompactionSummaryMessage
+from omh.agent.types import AgentMessage, BranchSummaryMessage, CompactionSummaryMessage
 from omh.llm.types import (
     AssistantContent,
     AssistantMessage,
@@ -208,6 +208,13 @@ def decode_tool_result_content(
 
 
 def encode_message(message: AgentMessage) -> dict[str, JsonValue]:
+    if isinstance(message, BranchSummaryMessage):
+        return {
+            "role": "branchSummary",
+            "summary": message.summary,
+            "fromId": message.from_id,
+            "timestamp": message.timestamp,
+        }
     if isinstance(message, CompactionSummaryMessage):
         return {
             "role": "compactionSummary",
@@ -284,6 +291,12 @@ def _stop_reason(record: dict[str, JsonValue], where: str) -> StopReason:
 def decode_message(value: JsonValue) -> AgentMessage:
     record = _record(value, "message")
     role = record.get("role")
+    if role == "branchSummary":
+        return BranchSummaryMessage(
+            summary=_text(record, "summary", "message"),
+            from_id=_optional_text(record, "fromId", "message"),
+            timestamp=_integer(record, "timestamp", "message"),
+        )
     if role == "compactionSummary":
         return CompactionSummaryMessage(
             summary=_text(record, "summary", "message"),

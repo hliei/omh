@@ -12,8 +12,18 @@ from omh.agent.session.context import (
     build_context_entries,
     session_entry_to_context_messages,
 )
-from omh.agent.session.types import CompactionEntry, Entry, MessageEntry
-from omh.agent.types import AgentMessage, CompactionSummaryMessage, ThinkingLevel
+from omh.agent.session.types import (
+    BranchSummaryEntry,
+    CompactionEntry,
+    Entry,
+    MessageEntry,
+)
+from omh.agent.types import (
+    AgentMessage,
+    BranchSummaryMessage,
+    CompactionSummaryMessage,
+    ThinkingLevel,
+)
 from omh.agent.utils.usage import add_usage
 from omh.llm.types import (
     AssistantMessage,
@@ -148,7 +158,7 @@ def estimate_tokens(message: AgentMessage) -> int:
             len(block.text) if isinstance(block, TextContent) else 4_800
             for block in message.content
         )
-    elif isinstance(message, CompactionSummaryMessage):
+    elif isinstance(message, CompactionSummaryMessage | BranchSummaryMessage):
         chars = len(message.summary)
     return math.ceil(chars / 4)
 
@@ -189,12 +199,16 @@ def _valid_cut_points(entries: list[Entry]) -> list[int]:
             entry.message, ToolResultMessage
         ):
             points.append(index)
+        elif isinstance(entry, BranchSummaryEntry):
+            points.append(index)
     return points
 
 
 def _turn_start(entries: list[Entry], entry_index: int) -> int:
     for index in range(entry_index, -1, -1):
         entry = entries[index]
+        if isinstance(entry, BranchSummaryEntry):
+            return index
         if isinstance(entry, MessageEntry) and isinstance(entry.message, UserMessage):
             return index
     return -1
@@ -225,7 +239,15 @@ def _cut_point(entries: list[Entry], keep_recent_tokens: int) -> tuple[int, int,
 
 
 def _message(entry: Entry) -> AgentMessage | None:
-    return entry.message if isinstance(entry, MessageEntry) else None
+    if isinstance(entry, MessageEntry):
+        return entry.message
+    if isinstance(entry, BranchSummaryEntry):
+        return BranchSummaryMessage(
+            summary=entry.summary,
+            from_id=entry.from_id,
+            timestamp=entry.timestamp,
+        )
+    return None
 
 
 def _file_operations(

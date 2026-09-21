@@ -10,6 +10,7 @@ from omh.agent.session.codec import (
     encode_usage,
 )
 from omh.agent.session.types import (
+    BranchSummaryEntry,
     CompactionEntry,
     CustomEntry,
     Entry,
@@ -39,6 +40,17 @@ def _entry_payload(entry: Entry) -> dict[str, JsonValue]:
             "summary": entry.summary,
             "retainedTail": [encode_message(message) for message in entry.retained_tail],
             "tokensBefore": entry.tokens_before,
+            "fromHook": entry.from_hook,
+        }
+        if entry.details is not None:
+            payload["details"] = entry.details
+        if entry.usage is not None:
+            payload["usage"] = encode_usage(entry.usage)
+        return payload
+    if isinstance(entry, BranchSummaryEntry):
+        payload = {
+            "fromId": entry.from_id,
+            "summary": entry.summary,
             "fromHook": entry.from_hook,
         }
         if entry.details is not None:
@@ -134,6 +146,33 @@ def decode_entry_row(row: SqliteRow) -> Entry:
             summary=summary,
             retained_tail=tuple(decode_message(message) for message in retained_tail),
             tokens_before=tokens_before,
+            details=payload.get("details"),
+            usage=None if usage is None else decode_usage(usage),
+            from_hook=from_hook,
+        )
+    if entry_type == "branch_summary":
+        payload = _parse_payload(row)
+        from_id = payload.get("fromId")
+        summary = payload.get("summary")
+        from_hook = payload.get("fromHook")
+        if from_id is not None and not isinstance(from_id, str):
+            raise ValueError(
+                f"Branch summary entry {entry_id} fromId must be a string or null"
+            )
+        if not isinstance(summary, str):
+            raise ValueError(f"Branch summary entry {entry_id} summary must be a string")
+        if not isinstance(from_hook, bool):
+            raise ValueError(
+                f"Branch summary entry {entry_id} fromHook must be a boolean"
+            )
+        usage = payload.get("usage")
+        return BranchSummaryEntry(
+            id=entry_id,
+            parent_id=cast(str, parent_id),
+            seq=seq,
+            timestamp=timestamp,
+            from_id=from_id,
+            summary=summary,
             details=payload.get("details"),
             usage=None if usage is None else decode_usage(usage),
             from_hook=from_hook,

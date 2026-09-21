@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 
 from omh.agent.session.types import (
+    BranchSummaryEntry,
     CompactionEntry,
     CustomEntry,
     EntryWrite,
@@ -36,7 +37,14 @@ class CommittedStateWrite:
     value: object = None
 
 
-type CommittedWrite = MessageEntry | CustomEntry | CompactionEntry | UsageRow | CommittedStateWrite
+type CommittedWrite = (
+    MessageEntry
+    | CustomEntry
+    | CompactionEntry
+    | BranchSummaryEntry
+    | UsageRow
+    | CommittedStateWrite
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +89,18 @@ def commit_write(write: Write, seq: int, timestamp: int) -> CommittedWrite:
                 summary=entry.summary,
                 retained_tail=entry.retained_tail,
                 tokens_before=entry.tokens_before,
+                details=entry.details,
+                usage=entry.usage,
+                from_hook=entry.from_hook,
+            )
+        if entry.type == "branch_summary":
+            return BranchSummaryEntry(
+                id=entry.id,
+                parent_id=entry.parent_id,
+                seq=seq,
+                timestamp=timestamp,
+                from_id=entry.from_id,
+                summary=entry.summary,
                 details=entry.details,
                 usage=entry.usage,
                 from_hook=entry.from_hook,
@@ -146,7 +166,9 @@ def validate_committed_writes(
             continue
         if state.has_entry_or_usage_id(write.id) or write.id in transaction_ids:
             raise ValueError(f"Duplicate entry or usage id: {write.id}")
-        if isinstance(write, (MessageEntry, CustomEntry, CompactionEntry)):
+        if isinstance(
+            write, (MessageEntry, CustomEntry, CompactionEntry, BranchSummaryEntry)
+        ):
             if (
                 write.parent_id is not None
                 and not state.has_entry_id(write.parent_id)

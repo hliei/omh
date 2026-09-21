@@ -11,6 +11,7 @@ from omh.agent.session.session import (
 from omh.agent.session.types import (
     Branch,
     BranchScan,
+    BranchSummaryEntry,
     CommitResult,
     CompactionEntry,
     CustomEntry,
@@ -19,6 +20,7 @@ from omh.agent.session.types import (
     EntryQuery,
     EntryScan,
     MessageEntry,
+    NewBranchSummaryEntry,
     NewCompactionEntry,
     NewCustomEntry,
     NewEntry,
@@ -64,6 +66,7 @@ from omh.agent.session.values import (
 
 __all__ = [
     "Branch",
+    "BranchSummaryEntry",
     "BranchScan",
     "CommitResult",
     "CompactionEntry",
@@ -80,6 +83,7 @@ __all__ = [
     "MemoryStorage",
     "MessageEntry",
     "NewCustomEntry",
+    "NewBranchSummaryEntry",
     "NewCompactionEntry",
     "NewEntry",
     "NewMessageEntry",

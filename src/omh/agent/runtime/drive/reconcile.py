@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from omh.agent.agent_harness import OperationResultRecord
 from omh.agent.context import Context
 from omh.agent.events import (
     CompactionEndEvent,
     HarnessEvent,
+    NavigationEndEvent,
     RunEndEvent,
     UsageEvent,
 )
@@ -28,6 +29,7 @@ from omh.agent.runtime.types import (
     SummaryEffectPendingOperation,
     SummaryReadyOperation,
     SummaryRetryWaitOperation,
+    SummaryTask,
     ToolsOperation,
 )
 from omh.agent.session.commit import commit_write, insert_entry, insert_usage
@@ -63,7 +65,7 @@ async def reconcile_abort(
     ) -> tuple[
         OperationResultRecord,
         tuple[HarnessEvent, ...],
-        Literal["manual", "threshold", "overflow"] | None,
+        SummaryTask | None,
     ]:
         snapshot = await read_operation(
             mutator, lane.name, operation_id, mutation_context
@@ -165,8 +167,8 @@ async def reconcile_abort(
                         totals=commit.stats.usage,
                     )
                 )
-        compaction_reason = (
-            state.task.reason
+        structural_task = (
+            state.task
             if isinstance(
                 state,
                 SummaryDecidingOperation
@@ -176,19 +178,44 @@ async def reconcile_abort(
             )
             else None
         )
-        return record, tuple(events), compaction_reason
+        return record, tuple(events), structural_task
 
-    record, events, compaction_reason = await lane._options.session.mutate(
+    record, events, structural_task = await lane._options.session.mutate(
         reconcile, context
     )
     terminals: list[HarnessEvent] = []
-    if compaction_reason is not None:
+    if structural_task is not None:
+        if structural_task.navigation_target_id is not None:
+            terminals.append(
+                NavigationEndEvent(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    status="aborted",
+                    from_tip_id=record.from_tip_id,
+                    tip_id=record.tip_id,
+                    ended_at=record.ended_at,
+                )
+            )
+        else:
+            if structural_task.reason is None:
+                raise RuntimeError("Compaction task is missing its reason")
+            terminals.append(
+                CompactionEndEvent(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    reason=structural_task.reason,
+                    status="aborted",
+                    ended_at=record.ended_at,
+                )
+            )
+    elif record.kind == "navigation":
         terminals.append(
-            CompactionEndEvent(
+            NavigationEndEvent(
                 lane=lane.name,
                 run_id=operation_id,
-                reason=compaction_reason,
                 status="aborted",
+                from_tip_id=record.from_tip_id,
+                tip_id=record.tip_id,
                 ended_at=record.ended_at,
             )
         )

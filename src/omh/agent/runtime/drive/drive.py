@@ -11,6 +11,7 @@ from omh.agent.runtime.drive.reconcile import reconcile_abort
 from omh.agent.runtime.drive.recovery import recover_assistant_generation
 from omh.agent.runtime.drive.retry import run_retry_wait
 from omh.agent.runtime.drive.structural import (
+    commit_navigation,
     prepare_compaction_threshold,
     recover_structural_generation,
     run_structural_decision,
@@ -108,5 +109,22 @@ async def drive_operation(
                 await recover_structural_generation(
                     lane, options.operation_id, context
                 )
+            case "navigation.ready_to_commit":
+                from omh.agent.runtime.codec import decode_operation_state
+                from omh.agent.runtime.types import NavigationReadyToCommitOperation
+                from omh.agent.session.values import operation_state
+
+                stored = await lane._options.session.get_value(
+                    operation_state(options.operation_id), context
+                )
+                if stored is None:
+                    raise RuntimeError(
+                        f"Operation {options.operation_id!r} is missing state"
+                    )
+                navigation = decode_operation_state(stored.value)
+                if isinstance(navigation, NavigationReadyToCommitOperation):
+                    await commit_navigation(
+                        lane, options.operation_id, navigation, context
+                    )
             case other:
                 raise RuntimeError(f"Unsupported operation state: {other}")

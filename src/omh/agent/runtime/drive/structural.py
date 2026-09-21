@@ -5,10 +5,14 @@ from typing import TYPE_CHECKING, Literal
 
 from omh.agent.agent_harness import DriveOptions, OperationError, WaitingDriveOutcome
 from omh.agent.compaction import (
+    BranchPreparation,
+    BranchSummaryFailure,
+    BranchSummaryResult,
     CompactionFailure,
     CompactionPreparation,
     CompactResult,
     compact_with_request,
+    generate_branch_summary_with_request,
     prepare_compaction,
     should_compact,
 )
@@ -17,6 +21,7 @@ from omh.agent.events import (
     CompactionEndEvent,
     EntryAddedEvent,
     HarnessEvent,
+    NavigationEndEvent,
     QueueUpdateEvent,
     RetryEndEvent,
     RetryScheduledEvent,
@@ -27,9 +32,12 @@ from omh.agent.events import (
 from omh.agent.hooks import (
     BeforeCompactionHook,
     BeforeCompactionResult,
+    BeforeNavigationHook,
+    BeforeNavigationResult,
     BeforeRequestHook,
 )
 from omh.agent.runtime.codec import (
+    decode_branch_preparation,
     decode_compaction_preparation,
     decode_lane_configuration,
     encode_lane_state,
@@ -52,6 +60,7 @@ from omh.agent.runtime.types import (
     GenerationRetryPolicy,
     LaneState,
     MayFinish,
+    NavigationReadyToCommitOperation,
     NeedAssistant,
     SummaryContext,
     SummaryDecidingOperation,
@@ -62,7 +71,9 @@ from omh.agent.runtime.types import (
 )
 from omh.agent.session.commit import commit_write, insert_entry, insert_usage
 from omh.agent.session.types import (
+    BranchSummaryEntry,
     CompactionEntry,
+    NewBranchSummaryEntry,
     NewCompactionEntry,
     SessionMutator,
     StorageBranchScan,
@@ -72,6 +83,7 @@ from omh.agent.session.types import (
 from omh.agent.session.values import (
     branch_tip,
     delete_value,
+    entry_label,
     lane_config,
     lane_state,
     operation_preparation,
@@ -83,6 +95,52 @@ from omh.llm.types import Context as LlmContext
 
 if TYPE_CHECKING:
     from omh.agent.runtime.lane import AgentLane
+
+
+async def commit_navigation(
+    lane: AgentLane,
+    operation_id: str,
+    navigation: NavigationReadyToCommitOperation,
+    context: Context,
+) -> None:
+    async def commit(
+        mutator: SessionMutator, mutation_context: Context
+    ) -> tuple[HarnessEvent, ...]:
+        snapshot = await read_operation(
+            mutator, lane.name, operation_id, mutation_context
+        )
+        current = snapshot.state
+        if current != navigation:
+            return ()
+        if not isinstance(current, NavigationReadyToCommitOperation):
+            return ()
+        if current.target_id is not None:
+            entries = await mutator.get_entries([current.target_id], mutation_context)
+            if current.target_id not in entries:
+                raise RuntimeError(f"Navigation target {current.target_id!r} is missing")
+        if current.target_id == snapshot.meta.source_tip_id:
+            raise RuntimeError("Navigation target must differ from its source tip")
+        if current.target_id is None and current.label is not None:
+            raise RuntimeError("Root navigation cannot set a label")
+        record = result_record(snapshot.meta, "completed", current.target_id)
+        writes: list[Write] = [set_value(branch_tip(lane.name), current.target_id)]
+        if current.label is not None and current.target_id is not None:
+            writes.append(set_value(entry_label(current.target_id), current.label))
+        writes.extend(terminal_writes(lane.name, snapshot, record))
+        await mutator.commit(writes, mutation_context)
+        return (
+            NavigationEndEvent(
+                lane=lane.name,
+                run_id=operation_id,
+                status="completed",
+                from_tip_id=record.from_tip_id,
+                tip_id=record.tip_id,
+                ended_at=record.ended_at,
+            ),
+        )
+
+    events = await lane.mutate(commit, context)
+    await lane.emit_events(events, context)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,12 +218,14 @@ async def _read_preparation(
     operation_id: str,
     task_id: str,
     context: Context,
-) -> CompactionPreparation:
+) -> CompactionPreparation | BranchPreparation:
     stored = await lane._options.session.get_value(
         operation_preparation(operation_id, task_id), context
     )
     if stored is None:
-        raise RuntimeError(f"Compaction task {task_id!r} is missing its preparation")
+        raise RuntimeError(f"Structural task {task_id!r} is missing its preparation")
+    if isinstance(stored.value, dict) and stored.value.get("kind") == "branch_summary":
+        return decode_branch_preparation(stored.value)
     return decode_compaction_preparation(stored.value)
 
 
@@ -183,24 +243,59 @@ async def run_structural_decision(
     preparation = await _read_preparation(
         lane, operation_id, state.task.task_id, context
     )
-    hook = await cancel_on_context(
-        lane.admit_effect(
-            operation_id,
-            lambda: lane.hooks.run(
-                "before_compaction",
-                BeforeCompactionHook(
-                    lane=lane.name,
-                    run_id=operation_id,
-                    reason=state.task.reason,
-                    preparation=preparation,
-                    custom_instructions=state.task.custom_instructions,
+    if state.task.navigation_target_id is not None:
+        if not isinstance(preparation, BranchPreparation):
+            raise RuntimeError("Navigation task has invalid durable preparation")
+        hook = await cancel_on_context(
+            lane.admit_effect(
+                operation_id,
+                lambda: lane.hooks.run(
+                    "before_navigation",
+                    BeforeNavigationHook(
+                        lane=lane.name,
+                        run_id=operation_id,
+                        target_id=state.task.navigation_target_id or "",
+                        preparation=preparation,
+                        custom_instructions=state.task.custom_instructions,
+                    ),
+                    context,
                 ),
-                context,
             ),
-        ),
-        context,
-    )
+            context,
+        )
+    else:
+        if not isinstance(preparation, CompactionPreparation):
+            raise RuntimeError("Compaction task has invalid durable preparation")
+        if state.task.reason is None:
+            raise RuntimeError("Compaction task is missing its reason")
+        compaction_reason = state.task.reason
+        hook = await cancel_on_context(
+            lane.admit_effect(
+                operation_id,
+                lambda: lane.hooks.run(
+                    "before_compaction",
+                    BeforeCompactionHook(
+                        lane=lane.name,
+                        run_id=operation_id,
+                        reason=compaction_reason,
+                        preparation=preparation,
+                        custom_instructions=state.task.custom_instructions,
+                    ),
+                    context,
+                ),
+            ),
+            context,
+        )
     context.raise_if_cancelled()
+    if isinstance(hook, BeforeNavigationResult):
+        if hook.decline:
+            await _publish_outcome(lane, operation_id, state, None, context)
+            return
+        if hook.summary is not None:
+            await _publish_outcome(
+                lane, operation_id, state, hook.summary, context, from_hook=True
+            )
+            return
     if isinstance(hook, BeforeCompactionResult):
         if hook.decline:
             await _publish_outcome(lane, operation_id, state, None, context)
@@ -397,7 +492,11 @@ async def run_structural_generation(
                         lane=lane.name,
                         run_id=operation_id,
                         model=model,
-                        step="compaction",
+                        step=(
+                            "branch_summary"
+                            if ready.task.navigation_target_id is not None
+                            else "compaction"
+                        ),
                         attempt=effect.attempt,
                     ),
                     request_context,
@@ -427,16 +526,31 @@ async def run_structural_generation(
         )
         return response
 
+    result: CompactResult | BranchSummaryResult
     try:
-        result = await compact_with_request(
-            preparation,
-            model,
-            ready.task.custom_instructions,
-            ready.summary_context.configuration.thinking_level,
-            request,
-            context,
-        )
-    except CompactionFailure as failure:
+        if ready.task.navigation_target_id is not None:
+            if not isinstance(preparation, BranchPreparation):
+                raise RuntimeError("Navigation task has invalid durable preparation")
+            result = await generate_branch_summary_with_request(
+                preparation,
+                model,
+                ready.task.custom_instructions,
+                ready.summary_context.configuration.thinking_level,
+                request,
+                context,
+            )
+        else:
+            if not isinstance(preparation, CompactionPreparation):
+                raise RuntimeError("Compaction task has invalid durable preparation")
+            result = await compact_with_request(
+                preparation,
+                model,
+                ready.task.custom_instructions,
+                ready.summary_context.configuration.thinking_level,
+                request,
+                context,
+            )
+    except (CompactionFailure, BranchSummaryFailure) as failure:
         error = OperationError(code=failure.code, message=failure.message)
         if (
             last_response is not None
@@ -621,14 +735,14 @@ async def _publish_outcome(
     capability: SummaryDecidingOperation
     | SummaryReadyOperation
     | SummaryEffectPendingOperation,
-    outcome: CompactResult | OperationError | None,
+    outcome: CompactResult | BranchSummaryResult | OperationError | None,
     context: Context,
     *,
     from_hook: bool = False,
 ) -> None:
     hook_usage_id = (
         lane._options.session.id_generator.next()
-        if from_hook and isinstance(outcome, CompactResult)
+        if from_hook and isinstance(outcome, CompactResult | BranchSummaryResult)
         else None
     )
 
@@ -670,16 +784,56 @@ async def _publish_outcome(
                 ]
             )
             tip_id = entry_id
-            if hook_usage_id is not None and outcome.usage is not None:
-                writes.append(
-                    insert_usage(
-                        UsageRow(
-                            id=hook_usage_id,
+        elif isinstance(outcome, BranchSummaryResult):
+            target_id = capability.task.navigation_target_id
+            if target_id is None:
+                raise RuntimeError("Branch summary task is missing its navigation target")
+            target = await mutator.get_entries([target_id], mutation_context)
+            if target_id not in target:
+                raise RuntimeError(f"Navigation target {target_id!r} is missing")
+            entry_id = capability.summary_context.result_entry_id if isinstance(
+                capability, SummaryReadyOperation | SummaryEffectPendingOperation
+            ) else lane._options.session.id_generator.next()
+            writes.extend(
+                [
+                    insert_entry(
+                        NewBranchSummaryEntry(
+                            id=entry_id,
+                            parent_id=target_id,
+                            from_id=snapshot.meta.source_tip_id,
+                            summary=outcome.summary,
+                            details={
+                                "readFiles": list(outcome.read_files),
+                                "modifiedFiles": list(outcome.modified_files),
+                            },
                             usage=outcome.usage,
-                            adjustment=False,
+                            from_hook=from_hook,
                         )
+                    ),
+                    set_value(branch_tip(lane.name), entry_id),
+                ]
+            )
+            if capability.task.navigation_label is not None:
+                writes.append(
+                    set_value(
+                        entry_label(target_id), capability.task.navigation_label
                     )
                 )
+            tip_id = entry_id
+        if (
+            hook_usage_id is not None
+            and isinstance(outcome, CompactResult | BranchSummaryResult)
+            and outcome.usage is not None
+        ):
+            writes.append(
+                insert_usage(
+                    UsageRow(
+                        id=hook_usage_id,
+                        usage=outcome.usage,
+                        adjustment=False,
+                    )
+                )
+            )
         status: Literal["completed", "declined", "failed"] = (
             "declined"
             if outcome is None
@@ -793,7 +947,7 @@ async def _publish_outcome(
         events: list[HarnessEvent] = []
         for index, write in enumerate(writes):
             committed = commit_write(write, commit.seqs[index], commit.timestamp)
-            if isinstance(committed, CompactionEntry):
+            if isinstance(committed, CompactionEntry | BranchSummaryEntry):
                 events.append(
                     EntryAddedEvent(
                         lane=lane.name,
@@ -848,21 +1002,38 @@ async def _publish_outcome(
                         run_id=operation_id,
                         step=capability.task.task_id,
                         attempt=attempt,
-                        success=isinstance(outcome, CompactResult),
+                        success=isinstance(
+                            outcome, CompactResult | BranchSummaryResult
+                        ),
                         final_error=None if error is None else error.message,
                     )
                 )
-        events.append(
-            CompactionEndEvent(
-                lane=lane.name,
-                run_id=operation_id,
-                reason=capability.task.reason,
-                status=status,
-                entry_id=entry_id,
-                ended_at=ended_at,
-                error=error,
+        if capability.task.navigation_target_id is not None:
+            events.append(
+                NavigationEndEvent(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    status=status,
+                    from_tip_id=snapshot.meta.source_tip_id,
+                    tip_id=tip_id,
+                    ended_at=ended_at,
+                    error=error,
+                )
             )
-        )
+        else:
+            if capability.task.reason is None:
+                raise RuntimeError("Compaction task is missing its reason")
+            events.append(
+                CompactionEndEvent(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    reason=capability.task.reason,
+                    status=status,
+                    entry_id=entry_id,
+                    ended_at=ended_at,
+                    error=error,
+                )
+            )
         if resumes_run and error is not None:
             assert record is not None
             events.append(

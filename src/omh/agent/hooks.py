@@ -5,7 +5,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Literal, cast
 
-from omh.agent.compaction import CompactionPreparation, CompactResult
+from omh.agent.compaction import (
+    BranchPreparation,
+    BranchSummaryResult,
+    CompactionPreparation,
+    CompactResult,
+)
 from omh.agent.context import Context
 from omh.agent.telemetry import TelemetrySpan, start_harness_span
 from omh.agent.types import AgentMessage
@@ -21,6 +26,7 @@ type HookName = Literal[
     "before_tool",
     "after_tool",
     "before_compaction",
+    "before_navigation",
 ]
 type HookHandler = Callable[[object, Context], object | Awaitable[object]]
 type HookErrorReporter = Callable[
@@ -41,7 +47,7 @@ class HookInvocation:
 
 @dataclass(frozen=True, slots=True)
 class BeforeDriveHook(HookInvocation):
-    operation: Literal["run", "compaction"] = "run"
+    operation: Literal["run", "compaction", "navigation"] = "run"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +85,7 @@ class TransformContextResult:
 @dataclass(frozen=True, slots=True)
 class BeforeRequestHook(HookInvocation):
     model: Model | None = None
-    step: Literal["assistant", "compaction"] = "assistant"
+    step: Literal["assistant", "compaction", "branch_summary"] = "assistant"
     attempt: int = 1
 
 
@@ -154,6 +160,19 @@ class BeforeCompactionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class BeforeNavigationHook(HookInvocation):
+    target_id: str = ""
+    preparation: BranchPreparation | None = None
+    custom_instructions: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeNavigationResult:
+    decline: bool = False
+    summary: BranchSummaryResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _Registration:
     handler: HookHandler
     id: str | None
@@ -219,6 +238,10 @@ class HookRegistry:
         if name == "before_compaction":
             return await self._before_compaction(
                 cast(BeforeCompactionHook, event), context
+            )
+        if name == "before_navigation":
+            return await self._before_navigation(
+                cast(BeforeNavigationHook, event), context
             )
         await self._invoke_all(name, event, context)
         return None
@@ -357,6 +380,23 @@ class HookRegistry:
                         return result
             except Exception as error:
                 await self._error(error, "before_compaction", event.lane, context)
+        return None
+
+    async def _before_navigation(
+        self, event: BeforeNavigationHook, context: Context
+    ) -> BeforeNavigationResult | None:
+        for registration in self._snapshot("before_navigation"):
+            try:
+                result = await self._invoke(registration, event, context)
+                if isinstance(result, BeforeNavigationResult):
+                    if result.decline and result.summary is not None:
+                        raise ValueError(
+                            "before_navigation cannot both decline and provide a summary"
+                        )
+                    if result.decline or result.summary is not None:
+                        return result
+            except Exception as error:
+                await self._error(error, "before_navigation", event.lane, context)
         return None
 
     async def _invoke_all(
