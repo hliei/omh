@@ -78,7 +78,7 @@ class RunStartEvent:
 class RunEndEvent:
     lane: str
     run_id: str
-    status: Literal["completed", "declined", "aborted", "failed"]
+    status: Literal["completed", "aborted", "failed"]
     from_tip_id: str | None
     tip_id: str | None
     ended_at: int

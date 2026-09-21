@@ -39,6 +39,14 @@ def result_record(
     )
 
 
+def run_end_status(
+    status: Literal["completed", "declined", "aborted", "failed"],
+) -> Literal["completed", "aborted", "failed"]:
+    if status == "declined":
+        raise RuntimeError("Run operations cannot end with declined status")
+    return status
+
+
 def terminal_writes(
     lane_name: str,
     snapshot: OperationSnapshot,

@@ -14,7 +14,11 @@ from omh.agent.runtime.drive.recovery import (
     interrupted_assistant_message,
     read_assistant_frames,
 )
-from omh.agent.runtime.drive.terminal import result_record, terminal_writes
+from omh.agent.runtime.drive.terminal import (
+    result_record,
+    run_end_status,
+    terminal_writes,
+)
 from omh.agent.runtime.state import read_operation
 from omh.agent.runtime.transcript import committed_message_events
 from omh.agent.runtime.types import (
@@ -193,7 +197,7 @@ async def reconcile_abort(
             RunEndEvent(
                 lane=lane.name,
                 run_id=operation_id,
-                status=record.status,
+                status=run_end_status(record.status),
                 from_tip_id=record.from_tip_id,
                 tip_id=record.tip_id,
                 ended_at=record.ended_at,

@@ -24,7 +24,11 @@ from omh.agent.hooks import (
 from omh.agent.messages import convert_to_llm
 from omh.agent.runtime.codec import encode_assistant_frame, encode_operation_state
 from omh.agent.runtime.drive.response import settle_response
-from omh.agent.runtime.drive.terminal import result_record, terminal_writes
+from omh.agent.runtime.drive.terminal import (
+    result_record,
+    run_end_status,
+    terminal_writes,
+)
 from omh.agent.runtime.state import read_operation
 from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
@@ -244,7 +248,7 @@ async def _finish_ready_failure(
             RunEndEvent(
                 lane=lane.name,
                 run_id=operation_id,
-                status=record.status,
+                status=run_end_status(record.status),
                 from_tip_id=record.from_tip_id,
                 tip_id=record.tip_id,
                 ended_at=record.ended_at,

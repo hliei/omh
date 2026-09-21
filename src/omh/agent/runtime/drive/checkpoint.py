@@ -23,7 +23,11 @@ from omh.agent.runtime.codec import (
     encode_operation_state,
 )
 from omh.agent.runtime.drive.boundary import plan_boundary_inbox
-from omh.agent.runtime.drive.terminal import result_record, terminal_writes
+from omh.agent.runtime.drive.terminal import (
+    result_record,
+    run_end_status,
+    terminal_writes,
+)
 from omh.agent.runtime.state import read_operation
 from omh.agent.runtime.transcript import (
     committed_message_events,
@@ -415,7 +419,7 @@ async def run_checkpoint(
             RunEndEvent(
                 lane=lane.name,
                 run_id=operation_id,
-                status=result.status,
+                status=run_end_status(result.status),
                 from_tip_id=result.from_tip_id,
                 tip_id=result.tip_id,
                 ended_at=result.ended_at,
