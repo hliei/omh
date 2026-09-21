@@ -96,7 +96,12 @@ async def start_run(lane: AgentLane, operation_id: str, context: Context) -> Non
         return
     hook = await lane.hooks.run(
         "before_run",
-        BeforeRunHook(lane=lane.name, run_id=operation_id, prompt=prompt),
+        BeforeRunHook(
+            lane=lane.name,
+            run_id=operation_id,
+            prompt=prompt,
+            resources=lane.read_resources(),
+        ),
         context,
     )
     context.raise_if_cancelled()

@@ -20,6 +20,7 @@ from omh.agent.agent_harness import (
     AbortRequestResult,
     AbortResult,
     AgentHarnessOptions,
+    AgentHarnessResources,
     AgentToolResult,
     CancelQueuedOutcome,
     CancelQueuedResult,
@@ -51,6 +52,7 @@ from omh.agent.agent_harness import (
     OperationRequest,
     OperationResultRecord,
     PromptRequest,
+    PromptTemplateRequest,
     QueuedInput,
     QueueMode,
     QueueResult,
@@ -59,6 +61,9 @@ from omh.agent.agent_harness import (
     RunResult,
     SettledDriveOutcome,
     SettledToolSnapshot,
+    SkillRequest,
+    UnknownSkill,
+    UnknownTemplate,
 )
 from omh.agent.compaction import prepare_branch_entries, prepare_compaction
 from omh.agent.context import (
@@ -81,7 +86,15 @@ from omh.agent.events import (
     WatchHandle,
 )
 from omh.agent.hooks import HookRegistry
-from omh.agent.result import HarnessClosed, HarnessFault, UnknownTarget, err, ok
+from omh.agent.prompt_templates import format_prompt_template_invocation
+from omh.agent.result import (
+    HarnessClosed,
+    HarnessFault,
+    Result,
+    UnknownTarget,
+    err,
+    ok,
+)
 from omh.agent.runtime.codec import (
     decode_agent_tool_result,
     decode_lane_configuration,
@@ -100,6 +113,7 @@ from omh.agent.runtime.drive import drive_operation
 from omh.agent.runtime.drive.reconcile import reconcile_abort
 from omh.agent.runtime.drive.recovery import read_assistant_frames
 from omh.agent.runtime.drive.terminal import now_ms
+from omh.agent.runtime.resource_registry import ResourceRegistry
 from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
 from omh.agent.runtime.transcript import (
     committed_message_events,
@@ -157,6 +171,7 @@ from omh.agent.session.values import (
     pending_tool_output,
     set_value,
 )
+from omh.agent.skills import format_skill_invocation
 from omh.agent.types import AgentMessage, ThinkingLevel
 from omh.llm.types import (
     AssistantMessage,
@@ -215,6 +230,7 @@ class AgentLane:
         name: str,
         options: AgentHarnessOptions,
         tool_registry: ToolRegistry,
+        resource_registry: ResourceRegistry,
         events: HarnessEventBus,
         hooks: HookRegistry,
         on_fault: Callable[[BaseException, Context], Awaitable[HarnessFault]],
@@ -222,6 +238,7 @@ class AgentLane:
         self.name = name
         self._options = options
         self._tool_registry = tool_registry
+        self._resource_registry = resource_registry
         self._events = events
         self.hooks = hooks
         self._on_fault = on_fault
@@ -239,6 +256,53 @@ class AgentLane:
     def now_ms() -> int:
         return now_ms()
 
+    def read_resources(self) -> AgentHarnessResources:
+        return self._resource_registry.get()
+
+    async def _resolve_run_messages(
+        self, request: PromptRequest | SkillRequest | PromptTemplateRequest
+    ) -> Result[list[AgentMessage], UnknownSkill | UnknownTemplate]:
+        if isinstance(request, SkillRequest):
+            resources = self._resource_registry.get()
+            skill = next(
+                (item for item in resources.skills if item.name == request.name), None
+            )
+            if skill is None:
+                return err(UnknownSkill(name=request.name))
+            return ok(
+                [
+                    UserMessage(
+                        content=[
+                            TextContent(
+                                text=format_skill_invocation(
+                                    skill, request.additional_instructions
+                                )
+                            )
+                        ],
+                        timestamp=now_ms(),
+                    )
+                ]
+            )
+        if isinstance(request, PromptTemplateRequest):
+            resources = self._resource_registry.get()
+            template = next(
+                (
+                    item
+                    for item in resources.prompt_templates
+                    if item.name == request.name
+                ),
+                None,
+            )
+            if template is None:
+                return err(UnknownTemplate(name=request.name))
+            content = format_prompt_template_invocation(template, request.args or ())
+            if not content:
+                return ok([])
+            return ok(
+                [UserMessage(content=[TextContent(text=content)], timestamp=now_ms())]
+            )
+        return ok(_normalize_prompt(request.prompt))
+
     async def accept(
         self, request: OperationRequest, context: Context
     ) -> OperationAdmissionResult:
@@ -247,7 +311,10 @@ class AgentLane:
             return await self._accept_navigation(request, context)
         if isinstance(request, CompactionRequest):
             return await self._accept_compaction(request, context)
-        messages = _normalize_prompt(request.prompt)
+        resolved = await self._resolve_run_messages(request)
+        if not resolved.ok:
+            return resolved
+        messages = resolved.value
         operation_id = request.operation_id or self._options.session.id_generator.next()
         started_at = now_ms()
         entry_ids = [
@@ -810,11 +877,42 @@ class AgentLane:
         prompt: str | AgentMessage | list[AgentMessage],
         context: Context,
     ) -> RunResult:
-        admission = await self.accept(PromptRequest(prompt=prompt), context)
+        return await self._drive_run_request(PromptRequest(prompt=prompt), context)
+
+    async def skill(
+        self,
+        name: str,
+        additional_instructions: str | None,
+        context: Context,
+    ) -> RunResult:
+        return await self._drive_run_request(
+            SkillRequest(name=name, additional_instructions=additional_instructions),
+            context,
+        )
+
+    async def prompt_from_template(
+        self,
+        name: str,
+        args: tuple[str, ...] | None,
+        context: Context,
+    ) -> RunResult:
+        return await self._drive_run_request(
+            PromptTemplateRequest(name=name, args=args), context
+        )
+
+    async def _drive_run_request(
+        self,
+        request: PromptRequest | SkillRequest | PromptTemplateRequest,
+        context: Context,
+    ) -> RunResult:
+        admission = await self.accept(request, context)
         if not admission.ok:
-            if isinstance(admission.error, LaneBusy | InvalidMessage):
+            if isinstance(
+                admission.error,
+                LaneBusy | InvalidMessage | UnknownSkill | UnknownTemplate,
+            ):
                 return err(admission.error)
-            raise RuntimeError("Prompt admission returned an invalid error")
+            raise RuntimeError("Run admission returned an invalid error")
         driven = await self.drive(
             DriveOptions(
                 operation_id=admission.value.operation_id, wait_for_retry=True
@@ -825,7 +923,7 @@ class AgentLane:
             return err(driven.error)
         if driven.value.kind != "settled":
             raise RuntimeError(
-                "Prompt returned a retry wait despite wait_for_retry=True"
+                "Run returned a retry wait despite wait_for_retry=True"
             )
         return ok(driven.value.outcome)
 
