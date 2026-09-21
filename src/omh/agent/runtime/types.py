@@ -46,7 +46,16 @@ class CompactionIntent:
     kind: Literal["compaction"] = "compaction"
 
 
-type OperationIntent = RunIntent | CompactionIntent
+@dataclass(frozen=True, slots=True)
+class NavigationIntent:
+    target_id: str | None
+    summarize: bool = False
+    label: str | None = None
+    custom_instructions: str | None = None
+    kind: Literal["navigation"] = "navigation"
+
+
+type OperationIntent = RunIntent | CompactionIntent | NavigationIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,10 +233,12 @@ class ToolsOperation:
 @dataclass(frozen=True, slots=True)
 class SummaryTask:
     task_id: str
-    reason: Literal["manual", "threshold", "overflow"]
+    reason: Literal["manual", "threshold", "overflow"] | None = None
     custom_instructions: str | None = None
     resume_continuation: RunContinuation | None = None
     resume_trigger_entry_id: str | None = None
+    navigation_target_id: str | None = None
+    navigation_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +300,16 @@ class SummaryRetryWaitOperation:
     at: Literal["summary.retry_wait"] = "summary.retry_wait"
 
 
+@dataclass(frozen=True, slots=True)
+class NavigationReadyToCommitOperation:
+    target_id: str | None
+    label: str | None = None
+    latest_assistant_entry_id: str | None = None
+    control: RunControl = field(default_factory=RunningControl)
+    settings: RunSettings = field(default_factory=RunSettings)
+    at: Literal["navigation.ready_to_commit"] = "navigation.ready_to_commit"
+
+
 type OperationState = (
     StartingOperation
     | CheckpointOperation
@@ -300,6 +321,7 @@ type OperationState = (
     | SummaryReadyOperation
     | SummaryEffectPendingOperation
     | SummaryRetryWaitOperation
+    | NavigationReadyToCommitOperation
 )
 
 

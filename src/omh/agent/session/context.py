@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from omh.agent.session.types import CompactionEntry, Entry
-from omh.agent.types import AgentMessage, CompactionSummaryMessage
+from omh.agent.types import AgentMessage, BranchSummaryMessage, CompactionSummaryMessage
 from omh.llm.types import AssistantMessage
 
 
@@ -31,6 +31,18 @@ def session_entry_to_context_messages(entry: Entry) -> list[AgentMessage]:
             ),
             *(message for message in entry.retained_tail if _is_context_message(message)),
         ]
+    if entry.type == "branch_summary":
+        return (
+            []
+            if not entry.summary
+            else [
+                BranchSummaryMessage(
+                    summary=entry.summary,
+                    from_id=entry.from_id,
+                    timestamp=entry.timestamp,
+                )
+            ]
+        )
     return []
 
 

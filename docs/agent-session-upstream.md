@@ -19,7 +19,7 @@
 | `packages/agent/src/harness/session/context.ts` | `src/omh/agent/session/context.py` |
 | `memory.ts` 的 `MemorySessionFacade` 与 `sqlite-node/src/sqlite/session.ts` 的 `SqliteOpenSession`（同一接纳/排空规则） | `src/omh/agent/session/facade.py`（两后端共用） |
 | 消息与 usage 的落盘 JSON 形状（上游依赖普通对象可直接 JSON 化） | `src/omh/agent/session/codec.py`（新增） |
-| `packages/agent/src/harness/agent-harness.ts` 的 T04/T08/T10 公开类型 | `src/omh/agent/agent_harness.py` |
+| `packages/agent/src/harness/agent-harness.ts` 的 T04/T08/T10/T13 公开类型 | `src/omh/agent/agent_harness.py` |
 | `packages/agent/src/harness/runtime/harness.ts` | `src/omh/agent/runtime/harness.py` |
 | `packages/agent/src/harness/runtime/lane.ts` | `src/omh/agent/runtime/lane.py` |
 | `packages/agent/src/harness/runtime/transcript.ts` | `src/omh/agent/runtime/transcript.py` |
@@ -40,7 +40,7 @@
 | `packages/agent/src/harness/utils/output-capture.ts` 与 `adaptive-publisher.ts` | `src/omh/agent/utils/output_capture.py` 与 `src/omh/agent/utils/adaptive_publisher.py` |
 | `packages/agent/src/harness/config.ts` 的工具名校验与进程内 registry | `src/omh/agent/runtime/tool_registry.py` |
 | `packages/agent/src/harness/runtime/drive/tools.ts` 的工具 intent、effect 与 outcome staging | `src/omh/agent/runtime/drive/tools.py` |
-| `packages/agent/src/harness/runtime/drive/structural.ts` 的 compaction 路径 | `src/omh/agent/runtime/drive/structural.py` |
+| `packages/agent/src/harness/runtime/drive/structural.ts` 的 compaction 与 navigation 路径 | `src/omh/agent/runtime/drive/structural.py` |
 | `packages/agent/src/harness/runtime/progress.ts` 的工具 checkpoint 通道 | `src/omh/agent/runtime/progress.py` |
 | `tools.ts` 与 `progress.ts` 共用的 effect 所有权条件 | `src/omh/agent/runtime/tool_effect.py`（Python 内部辅助类型） |
 | `packages/agent/src/harness/runtime/drive/tool-placement.ts` 的 ready 前缀入树 | `src/omh/agent/runtime/drive/tool_placement.py` |
@@ -51,6 +51,7 @@
 | `packages/agent/src/harness/telemetry.ts` | `src/omh/agent/telemetry.py` |
 | `packages/agent/src/harness/messages.ts` | `src/omh/agent/messages.py` |
 | `packages/agent/src/harness/compaction/compaction.ts` 与 `utils.ts` | `src/omh/agent/compaction/compaction.py` |
+| `packages/agent/src/harness/compaction/branch-summarization.ts` | `src/omh/agent/compaction/branch_summarization.py` |
 
 主要公开能力：`MemorySessionRepo.create/open/list/delete`、`StorageBackedSession.begin_mutation/mutate`、`create_branch`、`branch`、Branch 的 `append_message`/`append_custom_entry` 与历史查询、绑定值和列表读写、usage 查询及统计。`Session`、`SessionMutation`、`SessionMutator` 和 `SessionRepo` Protocol 描述这些公开边界。
 
@@ -58,7 +59,7 @@
 
 - Python API 使用 snake_case、dataclass、Protocol 与 async/await；`list_value` 对应上游 `list`，避免遮蔽 Python 内置名称。
 - `AgentMessage` 复用 `omh.llm.Message`；Agent 层保留独立的调用 `Context`，不会把 `omh.llm.Context` 当作会话调用上下文。遥测派生留待实际消费它的后续执行票，本票不公开空操作接口。
-- T02 最初只实现消息与 custom 条目；T12 加入 compaction 条目及其上下文投影。branch summary 和尚未交付的 operation family 仍不以 stub 暴露。
+- T02 最初只实现消息与 custom 条目；T12 加入 compaction 条目，T13 加入 branch summary 条目及对应上下文投影。尚未交付的 operation family 仍不以 stub 暴露。
 - Memory 实现保留一个 Session 的全局递增写序号、UUIDv7 标识、绑定当前值/列表、追加式 usage ledger 与提交前完整校验。失败事务不改变状态，也不消耗序号。
 - 固定 pi 基线只在 `Storage.scan_usage` 提供 ledger 查询；本 Python 切片也从 Session 暴露同一筛选/分页查询，以直接满足 SDK 的 usage 查询行为。底层数据和筛选语义不变。
 - Memory repo 的 Session facade 会拒绝新操作并等待已接纳操作结束，再允许重新打开同一进程内记录；关闭的 facade 及其 Branch 能力失效。跨进程持久化、SQLite、跨 Session fork 和 JSONL 不属于本票。
@@ -126,7 +127,7 @@
 - 恢复 orphaned assistant effect 或在 abort 时固化其 durable frame 时，合成消息的 `message_start`/`message_end`/`entry_added` 带 `recovery=True`；恢复 tool effect/batch 时，对应 `turn_*`、`tool_*` 和 materialized message/entry 事件同样带该标记。assistant 恢复结算不冒充正常请求去发布 `retry_scheduled`、`retry_end` 或 `turn_end`；durable retry 状态仍由后续 drive 正常推进。
 - `lane.watch()` 先同步注册事件接收者，再在一次 Session mutation 中读取 transcript、tip、last result、配置、统计、当前 operation、retry/streaming/tool checkpoint、队列和 fault 状态。开始消费前事件会缓冲；`resnapshot()` 用事件总线 barrier 丢弃快照已经覆盖的旧事件并保留边界之后的事件，避免重连窗口遗漏。
 - hooks 保持注册顺序。`before_run` 的注入消息进入 durable transcript；`before_drive` 失败关闭 drive；`before_request` 每次 provider retry 都重跑；`transform_context`、`after_response`、`before_tool` 与 `after_tool` 逐项链式应用；`before_run_end` 可在终结边界注入后续用户消息并继续同一 run。普通 hook 异常通过 `handler_error` 报告，`before_tool` 异常按阻断处理。
-- 当前 Python provider 边界没有可变的原始 request payload，因此不公开上游 `before_payload`；T12 已补齐 compaction hooks/events，navigation 仍未实现且不提前公开对应观察接口。上游未交付的 `watchSession` 仍不公开。
+- 当前 Python provider 边界没有可变的原始 request payload，因此不公开上游 `before_payload`；T12/T13 已补齐 compaction/navigation hooks 与事件。上游未交付的 `watchSession` 仍不公开。
 - telemetry 仅提供显式 `Context` value、`TelemetryContext`/`TelemetrySpan` Protocol、noop 实现，以及上游当前确实存在的 `pi.harness.hook` tool-hook span 与属性。没有 exporter、全局 tracer、自动配置或声称完成上游尚未实现的 tracing。
 
 ## T11 内置本地工具与执行环境
@@ -147,4 +148,12 @@
 - `before_compaction` 可拒绝或提供结果；无动作结果继续交给后续 handler，同时拒绝和提供结果的冲突返回通过 `handler_error` 报告。`before_request(step="compaction")` 每个结构请求执行。`compaction_start`/`compaction_end`、retry、entry 和 usage 事件都在相应 durable commit 后发布，监听器失败仍由 `handler_error` 隔离。
 - checkpoint 先让已排队 steer 获得进入上下文的优先权；无 steer 才提交阈值压缩。阈值压缩结束时，compaction entry、当时已排队 steer 的入树与 assistant-ready 续态在同一事务发布，因此 abort 不能在中间窗口排空本应继续该 run 的输入。
 - `compact` 结束结构 operation 后，仅在队列仍能接纳空 prompt 时创建新的普通 run；它使用新 operation id。若竞争者先占用 idle 窗口或没有可消费输入，返回值只包含 compaction 结果。
-- 明确差异：本票实现显式和阈值压缩，不实现 provider context-overflow 自动恢复，也不实现 navigation summary；当 `reserve_tokens >= context_window` 时视为没有可用摘要预算并跳过自动压缩，避免负阈值循环。结构请求沿用 Python provider 的 `stream_simple(...).result()`，不发布 assistant message frame/lifecycle。compaction 配置由 harness 创建选项提供，本切片尚未补齐上游所有 harness-global 配置 setter。
+- 明确差异：本票实现显式和阈值压缩，不实现 provider context-overflow 自动恢复；当 `reserve_tokens >= context_window` 时视为没有可用摘要预算并跳过自动压缩，避免负阈值循环。结构请求沿用 Python provider 的 `stream_simple(...).result()`，不发布 assistant message frame/lifecycle。compaction 配置由 harness 创建选项提供，本切片尚未补齐上游所有 harness-global 配置 setter。
+
+## T13 对话树导航与分支摘要
+
+- `AgentLane.accept(NavigationRequest(...))` 与 `navigate_tree` 对应上游 navigation 接纳和便捷组合：目标必须存在且不同于当前 tip；root 不能设置 label；摘要导航要求源和目标均非 root。接纳在同一 Session mutation 中保存 intent、完整结构状态和可选 preparation，不创建或复制 Session。
+- 无摘要导航从 `navigation.ready_to_commit` 原子移动 lane tip、写可选目标 label 并终结 operation。有摘要导航复用 T12 的 `summary.deciding → summary.ready → summary.effect_pending ↔ summary.retry_wait` 状态与恢复边界；重开时校验 navigation intent 的目标、摘要模式和选项与 durable state 一致。branch summary entry 以目标为 parent，并记录被离开 tip 的 `from_id`、文件明细和 hook 来源，原分支仍保留在不可变树中。
+- 分支 preparation 只包含旧 tip 到两条路径最近公共祖先之间的废弃路径，跳过 tool result，并投影既有 compaction/branch summary。生成后的 branch summary 作为用户可见上下文注入目标路径；后续 compaction 也把该条目视为可见消息和 turn 边界。
+- `before_navigation` 可拒绝或直接提供 `BranchSummaryResult`；模型路径为每次重试调用 `before_request(step="branch_summary")`。`navigation_start` 在接纳后发布，终结发布 entry/usage 与 `navigation_end`；abort 保留源 tip并删除 preparation，close 则保留 effect-pending 状态供重开后的显式 `resume` 按未知结果规则重试。
+- `navigate_tree` 结束 navigation 后仅在 lane 队列可用空 prompt 接纳时创建独立 run，因此排队的 `next_run` 会在新 operation 中从导航后的上下文继续；被 abort 的 navigation 不消费该队列。Python 继续沿用 `stream_simple(...).result()` 的结构请求边界，不发布 assistant message frame/lifecycle；跨 Session fork 仍不属于本票。

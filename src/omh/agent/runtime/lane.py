@@ -31,12 +31,17 @@ from omh.agent.agent_harness import (
     DriveOptions,
     DriveResult,
     InvalidMessage,
+    InvalidNavigation,
     LaneBusy,
     LaneExecutionInfo,
     LaneOperationSnapshot,
     LaneQueuedItem,
     LaneRetrySnapshot,
     LaneSnapshot,
+    NavigateOptions,
+    NavigationOutcome,
+    NavigationRequest,
+    NavigationResult,
     NoActiveOperation,
     NothingToCompact,
     NothingToResume,
@@ -55,7 +60,7 @@ from omh.agent.agent_harness import (
     SettledDriveOutcome,
     SettledToolSnapshot,
 )
-from omh.agent.compaction import prepare_compaction
+from omh.agent.compaction import prepare_branch_entries, prepare_compaction
 from omh.agent.context import (
     CancelScope,
     Context,
@@ -69,13 +74,14 @@ from omh.agent.events import (
     ConfigUpdateEvent,
     HarnessEvent,
     HarnessEventBus,
+    NavigationStartEvent,
     OperationAbortEvent,
     QueueUpdateEvent,
     RunStartEvent,
     WatchHandle,
 )
 from omh.agent.hooks import HookRegistry
-from omh.agent.result import HarnessClosed, HarnessFault, err, ok
+from omh.agent.result import HarnessClosed, HarnessFault, UnknownTarget, err, ok
 from omh.agent.runtime.codec import (
     decode_agent_tool_result,
     decode_lane_configuration,
@@ -83,6 +89,7 @@ from omh.agent.runtime.codec import (
     decode_operation_meta,
     decode_operation_result,
     decode_operation_state,
+    encode_branch_preparation,
     encode_compaction_preparation,
     encode_lane_configuration,
     encode_lane_state,
@@ -112,6 +119,8 @@ from omh.agent.runtime.types import (
     LaneConfiguration,
     LaneState,
     ModelIdentity,
+    NavigationIntent,
+    NavigationReadyToCommitOperation,
     OperationMeta,
     OutcomeReadyToolCall,
     RunIntent,
@@ -234,6 +243,8 @@ class AgentLane:
         self, request: OperationRequest, context: Context
     ) -> OperationAdmissionResult:
         self._assert_open()
+        if isinstance(request, NavigationRequest):
+            return await self._accept_navigation(request, context)
         if isinstance(request, CompactionRequest):
             return await self._accept_compaction(request, context)
         messages = _normalize_prompt(request.prompt)
@@ -346,6 +357,151 @@ class AgentLane:
 
         result, events = await self.mutate(accept, context)
         await self.emit_events(events, context)
+        return result
+
+    async def _accept_navigation(
+        self, request: NavigationRequest, context: Context
+    ) -> OperationAdmissionResult:
+        operation_id = request.operation_id or self._options.session.id_generator.next()
+        started_at = now_ms()
+        task_id = self._options.session.id_generator.next(started_at)
+        options = request.options or NavigateOptions()
+
+        async def accept(
+            mutator: SessionMutator, mutation_context: Context
+        ) -> OperationAdmissionResult:
+            stored_lane = await mutator.get_value(
+                lane_state(self.name), mutation_context
+            )
+            stored_tip = await mutator.get_value(
+                branch_tip(self.name), mutation_context
+            )
+            if stored_lane is None or stored_tip is None:
+                raise RuntimeError(f"Lane {self.name!r} is missing durable state")
+            durable_lane = decode_lane_state(stored_lane.value)
+            if durable_lane.current_operation_id is not None:
+                return err(LaneBusy(operation_id=durable_lane.current_operation_id))
+            if request.target_id == stored_tip.value:
+                return err(InvalidNavigation(reason="current_tip"))
+            if request.target_id is None and options.label is not None:
+                return err(InvalidNavigation(reason="root_label"))
+            if options.summarize and stored_tip.value is None:
+                return err(InvalidNavigation(reason="source_root"))
+            if options.summarize and request.target_id is None:
+                return err(InvalidNavigation(reason="target_root"))
+            if request.target_id is not None:
+                entries = await mutator.get_entries(
+                    [request.target_id], mutation_context
+                )
+                if request.target_id not in entries:
+                    return err(UnknownTarget(request.target_id))
+            preparation = None
+            if options.summarize:
+                assert stored_tip.value is not None
+                assert request.target_id is not None
+                old_path = await mutator.scan_branch(
+                    StorageBranchScan(start=stored_tip.value, order="newest_first"),
+                    mutation_context,
+                )
+                target_path = await mutator.scan_branch(
+                    StorageBranchScan(start=request.target_id, order="newest_first"),
+                    mutation_context,
+                )
+                old_ids = {entry.id for entry in old_path}
+                common_ancestor_id = next(
+                    (entry.id for entry in target_path if entry.id in old_ids),
+                    None,
+                )
+                abandoned = (
+                    old_path
+                    if common_ancestor_id is None
+                    else old_path[
+                        : next(
+                            index
+                            for index, entry in enumerate(old_path)
+                            if entry.id == common_ancestor_id
+                        )
+                    ]
+                )
+                preparation = prepare_branch_entries(list(reversed(abandoned)))
+            meta = OperationMeta(
+                operation_id=operation_id,
+                lane=self.name,
+                source_tip_id=stored_tip.value,
+                started_at=started_at,
+                intent=NavigationIntent(
+                    target_id=request.target_id,
+                    summarize=options.summarize,
+                    label=options.label,
+                    custom_instructions=options.custom_instructions,
+                ),
+            )
+            settings = RunSettings(
+                compaction=self._options.compaction,
+                tool_execution=self._options.tool_execution,
+                steering_mode=self._options.steering_mode,
+                follow_up_mode=self._options.follow_up_mode,
+            )
+            state = (
+                SummaryDecidingOperation(
+                    latest_assistant_entry_id=None,
+                    task=SummaryTask(
+                        task_id=task_id,
+                        custom_instructions=options.custom_instructions,
+                        navigation_target_id=request.target_id,
+                        navigation_label=options.label,
+                    ),
+                    control=RunningControl(),
+                    settings=settings,
+                )
+                if preparation is not None
+                else NavigationReadyToCommitOperation(
+                    target_id=request.target_id,
+                    label=options.label,
+                    settings=settings,
+                )
+            )
+            writes = []
+            if preparation is not None:
+                writes.append(
+                    set_value(
+                        operation_preparation(operation_id, task_id),
+                        encode_branch_preparation(preparation),
+                    )
+                )
+            await mutator.commit(
+                [
+                    *writes,
+                    set_value(operation_meta(operation_id), encode_operation_meta(meta)),
+                    set_value(operation_state(operation_id), encode_operation_state(state)),
+                    set_value(
+                        lane_state(self.name),
+                        encode_lane_state(
+                            replace(durable_lane, current_operation_id=operation_id)
+                        ),
+                    ),
+                ],
+                mutation_context,
+            )
+            return ok(
+                OperationAdmission(
+                    operation_id=operation_id,
+                    kind="navigation",
+                    started_at=started_at,
+                )
+            )
+
+        result = await self.mutate(accept, context)
+        if result.ok:
+            await self.emit_event(
+                NavigationStartEvent(
+                    lane=self.name,
+                    run_id=operation_id,
+                    target_id=request.target_id,
+                    started_at=started_at,
+                ),
+                context,
+            )
         return result
 
     async def _accept_compaction(
@@ -715,6 +871,52 @@ class AgentLane:
         return ok(
             CompactionOutcome(
                 compaction=driven.value.outcome,
+                run=continued.value.outcome,
+            )
+        )
+
+    async def navigate_tree(
+        self,
+        target_id: str | None,
+        options: NavigateOptions | None,
+        context: Context,
+    ) -> NavigationResult:
+        admission = await self.accept(
+            NavigationRequest(target_id=target_id, options=options), context
+        )
+        if not admission.ok:
+            if isinstance(admission.error, LaneBusy | InvalidNavigation | UnknownTarget):
+                return err(admission.error)
+            raise RuntimeError("Navigation admission returned an invalid error")
+        driven = await self.drive(
+            DriveOptions(operation_id=admission.value.operation_id, wait_for_retry=True),
+            context,
+        )
+        if not driven.ok:
+            return err(driven.error)
+        if driven.value.kind != "settled":
+            raise RuntimeError("Navigation returned a retry wait")
+        if driven.value.outcome.status == "aborted":
+            return ok(NavigationOutcome(navigation=driven.value.outcome))
+        continuation = await self.accept(PromptRequest(prompt=""), context)
+        if not continuation.ok:
+            if isinstance(continuation.error, InvalidMessage | LaneBusy):
+                return ok(NavigationOutcome(navigation=driven.value.outcome))
+            raise RuntimeError("Navigation continuation returned an invalid error")
+        continued = await self.drive(
+            DriveOptions(
+                operation_id=continuation.value.operation_id,
+                wait_for_retry=True,
+            ),
+            context,
+        )
+        if not continued.ok:
+            return err(continued.error)
+        if continued.value.kind != "settled":
+            raise RuntimeError("Navigation continuation returned a retry wait")
+        return ok(
+            NavigationOutcome(
+                navigation=driven.value.outcome,
                 run=continued.value.outcome,
             )
         )

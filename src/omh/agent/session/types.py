@@ -49,7 +49,21 @@ class NewCompactionEntry:
     type: Literal["compaction"] = "compaction"
 
 
-type NewEntry = NewMessageEntry | NewCustomEntry | NewCompactionEntry
+@dataclass(frozen=True, slots=True)
+class NewBranchSummaryEntry:
+    id: str
+    parent_id: str
+    from_id: str | None
+    summary: str
+    details: JsonValue = None
+    usage: Usage | None = None
+    from_hook: bool = False
+    type: Literal["branch_summary"] = "branch_summary"
+
+
+type NewEntry = (
+    NewMessageEntry | NewCustomEntry | NewCompactionEntry | NewBranchSummaryEntry
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +105,22 @@ class CompactionEntry:
     custom_type: None = field(default=None, init=False)
 
 
-type Entry = MessageEntry | CustomEntry | CompactionEntry
+@dataclass(frozen=True, slots=True)
+class BranchSummaryEntry:
+    id: str
+    parent_id: str
+    seq: int
+    timestamp: int
+    from_id: str | None
+    summary: str
+    details: JsonValue = None
+    usage: Usage | None = None
+    from_hook: bool = False
+    type: Literal["branch_summary"] = "branch_summary"
+    custom_type: None = field(default=None, init=False)
+
+
+type Entry = MessageEntry | CustomEntry | CompactionEntry | BranchSummaryEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,9 +170,9 @@ class EntryCursor:
 @dataclass(frozen=True, slots=True)
 class BranchScan:
     start: str | None = None
-    stop_at_type: Literal["message", "compaction", "custom"] | None = None
+    stop_at_type: Literal["message", "compaction", "branch_summary", "custom"] | None = None
     stop_at_id: str | None = None
-    type: Literal["message", "compaction", "custom"] | None = None
+    type: Literal["message", "compaction", "branch_summary", "custom"] | None = None
     custom_type: str | None = None
     order: Literal["newest_first", "oldest_first"] = "newest_first"
     limit: int | None = None
@@ -153,9 +182,9 @@ class BranchScan:
 @dataclass(frozen=True, slots=True)
 class StorageBranchScan:
     start: str
-    stop_at_type: Literal["message", "compaction", "custom"] | None = None
+    stop_at_type: Literal["message", "compaction", "branch_summary", "custom"] | None = None
     stop_at_id: str | None = None
-    type: Literal["message", "compaction", "custom"] | None = None
+    type: Literal["message", "compaction", "branch_summary", "custom"] | None = None
     custom_type: str | None = None
     order: Literal["newest_first", "oldest_first"] = "newest_first"
     limit: int | None = None
@@ -164,7 +193,7 @@ class StorageBranchScan:
 
 @dataclass(frozen=True, slots=True)
 class EntryScan:
-    type: Literal["message", "compaction", "custom"] | None = None
+    type: Literal["message", "compaction", "branch_summary", "custom"] | None = None
     custom_type: str | None = None
     from_seq: int | None = None
     to_seq: int | None = None
@@ -174,7 +203,7 @@ class EntryScan:
 
 @dataclass(frozen=True, slots=True)
 class EntryQuery:
-    type: Literal["message", "compaction", "custom"] | None = None
+    type: Literal["message", "compaction", "branch_summary", "custom"] | None = None
     custom_type: str | None = None
     order: Literal["asc", "desc"] = "desc"
     limit: int | None = None

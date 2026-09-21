@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal, Never, Protocol
 from omh.agent.compaction import CompactionSettings
 from omh.agent.context import Context
 from omh.agent.numbers import MAX_SAFE_INTEGER
-from omh.agent.result import Result
+from omh.agent.result import Result, UnknownTarget
 from omh.agent.session.types import Entry, Session, SessionStats
 from omh.agent.types import AgentMessage, ThinkingLevel
 from omh.llm.models import Models
@@ -159,13 +159,28 @@ class CompactionOptions:
     custom_instructions: str | None = None
 
 
-type OperationRequest = PromptRequest | CompactionRequest
+@dataclass(frozen=True, slots=True)
+class NavigateOptions:
+    summarize: bool = False
+    label: str | None = None
+    custom_instructions: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationRequest:
+    target_id: str | None
+    operation_id: str | None = None
+    options: NavigateOptions | None = None
+    kind: Literal["navigation"] = "navigation"
+
+
+type OperationRequest = PromptRequest | CompactionRequest | NavigationRequest
 
 
 @dataclass(frozen=True, slots=True)
 class OperationAdmission:
     operation_id: str
-    kind: Literal["run", "compaction"]
+    kind: Literal["run", "compaction", "navigation"]
     started_at: int
 
 
@@ -184,7 +199,14 @@ class NothingToCompact:
     pass
 
 
-type OperationAdmissionError = LaneBusy | InvalidMessage | NothingToCompact
+@dataclass(frozen=True, slots=True)
+class InvalidNavigation:
+    reason: Literal["current_tip", "root_label", "source_root", "target_root"]
+
+
+type OperationAdmissionError = (
+    LaneBusy | InvalidMessage | NothingToCompact | InvalidNavigation | UnknownTarget
+)
 type OperationAdmissionResult = Result[OperationAdmission, OperationAdmissionError]
 
 
@@ -197,7 +219,7 @@ class OperationError:
 @dataclass(frozen=True, slots=True)
 class OperationResultRecord:
     operation_id: str
-    kind: Literal["run", "compaction"]
+    kind: Literal["run", "compaction", "navigation"]
     status: Literal["completed", "declined", "aborted", "failed"]
     from_tip_id: str | None
     tip_id: str | None
@@ -287,6 +309,17 @@ type CompactionResult = Result[
 
 
 @dataclass(frozen=True, slots=True)
+class NavigationOutcome:
+    navigation: OperationResultRecord
+    run: OperationResultRecord | None = None
+
+
+type NavigationResult = Result[
+    NavigationOutcome, LaneBusy | InvalidNavigation | UnknownTarget | OperationMismatch
+]
+
+
+@dataclass(frozen=True, slots=True)
 class QueuedInput:
     entry_id: str
 
@@ -305,7 +338,7 @@ type CancelQueuedResult = Result[CancelQueuedOutcome, Never]
 @dataclass(frozen=True, slots=True)
 class CurrentOperationInfo:
     operation_id: str
-    kind: Literal["run", "compaction"]
+    kind: Literal["run", "compaction", "navigation"]
     started_at: int
     at: str
 
@@ -321,7 +354,7 @@ class LaneExecutionInfo:
 class OpenOperation:
     lane: str
     operation_id: str
-    kind: Literal["run", "compaction"]
+    kind: Literal["run", "compaction", "navigation"]
     started_at: int
 
 
@@ -372,7 +405,7 @@ class LaneRetrySnapshot:
 @dataclass(frozen=True, slots=True)
 class LaneOperationSnapshot:
     id: str
-    kind: Literal["run", "compaction"]
+    kind: Literal["run", "compaction", "navigation"]
     started_at: int
     from_tip_id: str | None
     status: Literal["open", "aborting"]

@@ -7,7 +7,11 @@ from omh.agent.agent_harness import (
     OperationError,
     OperationResultRecord,
 )
-from omh.agent.compaction import CompactionPreparation, CompactionSettings
+from omh.agent.compaction import (
+    BranchPreparation,
+    CompactionPreparation,
+    CompactionSettings,
+)
 from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
     AssistantReadyOperation,
@@ -24,6 +28,8 @@ from omh.agent.runtime.types import (
     LaneState,
     MayFinish,
     ModelIdentity,
+    NavigationIntent,
+    NavigationReadyToCommitOperation,
     NeedAssistant,
     OperationMeta,
     OperationState,
@@ -407,8 +413,16 @@ def encode_operation_meta(meta: OperationMeta) -> dict[str, JsonValue]:
             "kind": meta.intent.kind,
             "promptEntryIds": list(meta.intent.prompt_entry_ids),
         }
-    else:
+    elif isinstance(meta.intent, CompactionIntent):
         intent = {"kind": meta.intent.kind}
+        _optional(intent, "customInstructions", meta.intent.custom_instructions)
+    else:
+        intent = {
+            "kind": meta.intent.kind,
+            "targetId": meta.intent.target_id,
+            "summarize": meta.intent.summarize,
+        }
+        _optional(intent, "label", meta.intent.label)
         _optional(intent, "customInstructions", meta.intent.custom_instructions)
     return {
         "operationId": meta.operation_id,
@@ -428,7 +442,7 @@ def decode_operation_meta(value: object) -> OperationMeta:
             isinstance(item, str) for item in prompt_ids
         ):
             raise ValueError("operation meta.intent is invalid")
-        decoded_intent: RunIntent | CompactionIntent = RunIntent(
+        decoded_intent: RunIntent | CompactionIntent | NavigationIntent = RunIntent(
             prompt_entry_ids=tuple(cast(list[str], prompt_ids))
         )
     elif intent.get("kind") == "compaction":
@@ -436,6 +450,18 @@ def decode_operation_meta(value: object) -> OperationMeta:
             custom_instructions=_nullable_text(
                 intent, "customInstructions", "operation meta.intent"
             )
+        )
+    elif intent.get("kind") == "navigation":
+        target_id = intent.get("targetId")
+        if target_id is not None and not isinstance(target_id, str):
+            raise ValueError("operation meta.intent.targetId is invalid")
+        decoded_intent = NavigationIntent(
+            target_id=target_id,
+            summarize=_boolean(intent, "summarize", "operation meta.intent"),
+            label=_nullable_text(intent, "label", "operation meta.intent"),
+            custom_instructions=_nullable_text(
+                intent, "customInstructions", "operation meta.intent"
+            ),
         )
     else:
         raise ValueError("operation meta.intent is invalid")
@@ -574,6 +600,42 @@ def decode_compaction_preparation(value: object) -> CompactionPreparation:
     )
 
 
+def encode_branch_preparation(
+    preparation: BranchPreparation,
+) -> dict[str, JsonValue]:
+    return {
+        "kind": "branch_summary",
+        "messages": [encode_message(message) for message in preparation.messages],
+        "readFiles": list(preparation.read_files),
+        "modifiedFiles": list(preparation.modified_files),
+        "totalTokens": preparation.total_tokens,
+    }
+
+
+def decode_branch_preparation(value: object) -> BranchPreparation:
+    record = _record(value, "branch preparation")
+    if record.get("kind") != "branch_summary":
+        raise ValueError("branch preparation.kind is invalid")
+    raw_messages = record.get("messages")
+    if not isinstance(raw_messages, list):
+        raise ValueError("branch preparation.messages must be a list")
+
+    def strings(key: str) -> tuple[str, ...]:
+        raw = record.get(key)
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raise ValueError(f"branch preparation.{key} must be a string list")
+        return tuple(cast(list[str], raw))
+
+    return BranchPreparation(
+        messages=tuple(
+            decode_message(cast(JsonValue, item)) for item in raw_messages
+        ),
+        read_files=strings("readFiles"),
+        modified_files=strings("modifiedFiles"),
+        total_tokens=_integer(record, "totalTokens", "branch preparation"),
+    )
+
+
 def _encode_generation_context(context: GenerationContext) -> dict[str, JsonValue]:
     return {
         "stepId": context.step_id,
@@ -620,8 +682,15 @@ def _decode_generation_context(value: object) -> GenerationContext:
 
 
 def _encode_summary_task(task: SummaryTask) -> dict[str, JsonValue]:
-    if task.resume_continuation is None:
-        boundary: dict[str, JsonValue] = {"kind": "finish"}
+    boundary: dict[str, JsonValue]
+    if task.navigation_target_id is not None:
+        boundary = {
+            "kind": "commit_navigation",
+            "targetId": task.navigation_target_id,
+        }
+        _optional(boundary, "label", task.navigation_label)
+    elif task.resume_continuation is None:
+        boundary = {"kind": "finish"}
     else:
         continuation: dict[str, JsonValue]
         if isinstance(task.resume_continuation, NeedAssistant):
@@ -634,18 +703,19 @@ def _encode_summary_task(task: SummaryTask) -> dict[str, JsonValue]:
                 "kind": "may_finish",
                 "includeFinalAssistant": task.resume_continuation.include_final_assistant,
             }
+        resume_after: dict[str, JsonValue] = {
+            "continuation": continuation,
+            "triggerEntryId": task.resume_trigger_entry_id,
+        }
         boundary = {
             "kind": "resume_checkpoint",
-            "resumeAfter": {
-                "continuation": continuation,
-                "triggerEntryId": task.resume_trigger_entry_id,
-            },
+            "resumeAfter": resume_after,
         }
     encoded: dict[str, JsonValue] = {
         "taskId": task.task_id,
-        "reason": task.reason,
         "boundary": boundary,
     }
+    _optional(encoded, "reason", task.reason)
     _optional(encoded, "customInstructions", task.custom_instructions)
     return encoded
 
@@ -653,11 +723,13 @@ def _encode_summary_task(task: SummaryTask) -> dict[str, JsonValue]:
 def _decode_summary_task(value: object) -> SummaryTask:
     record = _record(value, "operation state.task")
     reason = record.get("reason")
-    if reason not in {"manual", "threshold", "overflow"}:
+    if reason is not None and reason not in {"manual", "threshold", "overflow"}:
         raise ValueError("operation state.task.reason is invalid")
     boundary = _record(record.get("boundary"), "operation state.task.boundary")
     resume_continuation: RunContinuation | None = None
     resume_trigger_entry_id: str | None = None
+    navigation_target_id: str | None = None
+    navigation_label: str | None = None
     if boundary.get("kind") == "resume_checkpoint":
         resume = _record(
             boundary.get("resumeAfter"), "operation state.task.boundary.resumeAfter"
@@ -689,6 +761,13 @@ def _decode_summary_task(value: object) -> SummaryTask:
             "triggerEntryId",
             "operation state.task.boundary.resumeAfter",
         )
+    elif boundary.get("kind") == "commit_navigation":
+        navigation_target_id = _text(
+            boundary, "targetId", "operation state.task.boundary"
+        )
+        navigation_label = _nullable_text(
+            boundary, "label", "operation state.task.boundary"
+        )
     elif boundary.get("kind") != "finish":
         raise ValueError("operation state.task.boundary is invalid")
     return SummaryTask(
@@ -699,6 +778,8 @@ def _decode_summary_task(value: object) -> SummaryTask:
         ),
         resume_continuation=resume_continuation,
         resume_trigger_entry_id=resume_trigger_entry_id,
+        navigation_target_id=navigation_target_id,
+        navigation_label=navigation_label,
     )
 
 
@@ -822,6 +903,10 @@ def encode_operation_state(state: OperationState) -> dict[str, JsonValue]:
             "calls": [_encode_tool_call_state(call) for call in state.batch.calls],
         }
         return encoded
+    if isinstance(state, NavigationReadyToCommitOperation):
+        encoded["targetId"] = state.target_id
+        _optional(encoded, "label", state.label)
+        return encoded
     if isinstance(state, SummaryDecidingOperation):
         encoded["task"] = _encode_summary_task(state.task)
         return encoded
@@ -928,6 +1013,17 @@ def decode_operation_state(value: object) -> OperationState:
                 turn_id=_text(batch, "turnId", "operation state.batch"),
                 calls=tuple(_decode_tool_call_state(call) for call in calls),
             ),
+            control=control,
+            settings=settings,
+        )
+    if at == "navigation.ready_to_commit":
+        target_id = record.get("targetId")
+        if target_id is not None and not isinstance(target_id, str):
+            raise ValueError("operation state.targetId is invalid")
+        return NavigationReadyToCommitOperation(
+            target_id=target_id,
+            label=_nullable_text(record, "label", "operation state"),
+            latest_assistant_entry_id=latest,
             control=control,
             settings=settings,
         )
@@ -1041,7 +1137,7 @@ def decode_operation_result(value: object) -> OperationResultRecord:
     record = _record(value, "operation result")
     status = record.get("status")
     kind = record.get("kind")
-    if kind not in {"run", "compaction"} or status not in {
+    if kind not in {"run", "compaction", "navigation"} or status not in {
         "completed",
         "declined",
         "aborted",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeIs
 
 from omh.agent.agent_harness import CurrentOperationInfo
 from omh.agent.context import Context
@@ -10,6 +10,18 @@ from omh.agent.runtime.codec import (
     decode_lane_state,
     decode_operation_meta,
     decode_operation_state,
+)
+from omh.agent.runtime.types import (
+    CompactionIntent,
+    NavigationIntent,
+    NavigationReadyToCommitOperation,
+    OperationIntent,
+    OperationState,
+    RunIntent,
+    SummaryDecidingOperation,
+    SummaryEffectPendingOperation,
+    SummaryReadyOperation,
+    SummaryRetryWaitOperation,
 )
 from omh.agent.session.session import SessionInvariantError
 from omh.agent.session.types import Session, SessionMutator
@@ -45,6 +57,52 @@ class CompleteLaneStorage:
 
 
 type ClassifiedLaneStorage = AbsentLaneStorage | BranchLaneStorage | CompleteLaneStorage
+
+type SummaryOperation = (
+    SummaryDecidingOperation
+    | SummaryReadyOperation
+    | SummaryEffectPendingOperation
+    | SummaryRetryWaitOperation
+)
+
+
+def _is_summary_state(state: OperationState) -> TypeIs[SummaryOperation]:
+    return isinstance(
+        state,
+        SummaryDecidingOperation
+        | SummaryReadyOperation
+        | SummaryEffectPendingOperation
+        | SummaryRetryWaitOperation,
+    )
+
+
+def _state_matches_intent(intent: OperationIntent, state: OperationState) -> bool:
+    if isinstance(intent, CompactionIntent):
+        return (
+            _is_summary_state(state)
+            and state.task.navigation_target_id is None
+            and state.task.resume_continuation is None
+        )
+    if isinstance(intent, NavigationIntent):
+        if isinstance(state, NavigationReadyToCommitOperation):
+            return (
+                not intent.summarize
+                and state.target_id == intent.target_id
+                and state.label == intent.label
+            )
+        return (
+            intent.summarize
+            and _is_summary_state(state)
+            and state.task.navigation_target_id == intent.target_id
+            and state.task.navigation_label == intent.label
+            and state.task.custom_instructions == intent.custom_instructions
+        )
+    if not isinstance(intent, RunIntent):
+        return False
+    return not isinstance(state, NavigationReadyToCommitOperation) and (
+        not _is_summary_state(state)
+        or state.task.resume_continuation is not None
+    )
 
 
 def classify_lane_storage(
@@ -155,6 +213,10 @@ async def restore_session(
             if durable_meta.operation_id != operation_id or durable_meta.lane != name:
                 raise SessionInvariantError(
                     f"Operation {operation_id!r} has inconsistent durable state"
+                )
+            if not _state_matches_intent(durable_meta.intent, durable_state):
+                raise SessionInvariantError(
+                    f"Operation {operation_id!r} intent does not match its state"
                 )
             restored[name] = CurrentOperationInfo(
                 operation_id=operation_id,

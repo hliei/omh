@@ -24,6 +24,8 @@ type EventType = Literal[
     "run_end",
     "compaction_start",
     "compaction_end",
+    "navigation_start",
+    "navigation_end",
     "operation_abort",
     "turn_start",
     "turn_end",
@@ -105,6 +107,27 @@ class CompactionEndEvent:
     entry_id: str | None = None
     error: OperationError | None = None
     type: Literal["compaction_end"] = "compaction_end"
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationStartEvent:
+    lane: str
+    run_id: str
+    target_id: str | None
+    started_at: int
+    type: Literal["navigation_start"] = "navigation_start"
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationEndEvent:
+    lane: str
+    run_id: str
+    status: Literal["completed", "declined", "aborted", "failed"]
+    from_tip_id: str | None
+    tip_id: str | None
+    ended_at: int
+    error: OperationError | None = None
+    type: Literal["navigation_end"] = "navigation_end"
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +311,8 @@ type HarnessEvent = (
     | MessageEndEvent
     | MessageStartEvent
     | MessageUpdateEvent
+    | NavigationEndEvent
+    | NavigationStartEvent
     | OperationAbortEvent
     | QueueUpdateEvent
     | RetryEndEvent

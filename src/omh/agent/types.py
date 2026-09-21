@@ -14,5 +14,13 @@ class CompactionSummaryMessage:
     role: Literal["compactionSummary"] = "compactionSummary"
 
 
-AgentMessage: TypeAlias = Message | CompactionSummaryMessage
+@dataclass(slots=True)
+class BranchSummaryMessage:
+    summary: str
+    from_id: str | None
+    timestamp: int
+    role: Literal["branchSummary"] = "branchSummary"
+
+
+AgentMessage: TypeAlias = Message | CompactionSummaryMessage | BranchSummaryMessage
 ThinkingLevel: TypeAlias = ModelThinkingLevel
