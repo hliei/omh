@@ -15,8 +15,10 @@ from omh.agent import (
     BranchScan,
     BranchSummaryEntry,
     BranchSummaryResult,
+    Context,
     DriveOptions,
     HarnessClosed,
+    HarnessFault,
     InvalidNavigation,
     MemorySessionRepo,
     NavigateOptions,
@@ -26,8 +28,11 @@ from omh.agent import (
     RetryPolicy,
     RetryScheduledEvent,
     SessionCreateOptions,
+    SessionMutator,
     UnknownTarget,
+    set_value,
 )
+from omh.agent.session.values import operation_state
 from omh.llm import (
     AssistantMessage,
     AssistantMessageEventStream,
@@ -592,4 +597,53 @@ async def test_interrupted_navigation_summary_recovers_after_reopen(
     assert recovered_entry.parent_id == target_id
 
     await reopened.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_reopen_rejects_navigation_intent_state_mismatch() -> None:
+    repo = MemorySessionRepo()
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    metadata = session.metadata
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=UnusedModels(), model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    branch = await session.branch("main", BACKGROUND_CONTEXT)
+    assert branch is not None
+    target_id = await branch.append_message(
+        UserMessage(content="target", timestamp=1), BACKGROUND_CONTEXT
+    )
+    await branch.append_message(
+        UserMessage(content="source", timestamp=2), BACKGROUND_CONTEXT
+    )
+    admitted = await lane.accept(
+        NavigationRequest(target_id=target_id), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+
+    async def corrupt(mutator: SessionMutator, context: Context) -> None:
+        stored = await mutator.get_value(
+            operation_state(admitted.value.operation_id), context
+        )
+        assert stored is not None
+        value = dict(stored.value)
+        value["targetId"] = "different"
+        await mutator.commit(
+            [set_value(operation_state(admitted.value.operation_id), value)], context
+        )
+
+    await session.mutate(corrupt, BACKGROUND_CONTEXT)
+    await created.harness.close(BACKGROUND_CONTEXT)
+    reopened_session = await repo.open(metadata, BACKGROUND_CONTEXT)
+
+    with pytest.raises(HarnessFault):
+        await AgentHarness.create(
+            AgentHarnessOptions(
+                session=reopened_session, models=UnusedModels(), model=MODEL
+            ),
+            BACKGROUND_CONTEXT,
+        )
+
+    await reopened_session.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)

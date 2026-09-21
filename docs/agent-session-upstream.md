@@ -153,7 +153,7 @@
 ## T13 对话树导航与分支摘要
 
 - `AgentLane.accept(NavigationRequest(...))` 与 `navigate_tree` 对应上游 navigation 接纳和便捷组合：目标必须存在且不同于当前 tip；root 不能设置 label；摘要导航要求源和目标均非 root。接纳在同一 Session mutation 中保存 intent、完整结构状态和可选 preparation，不创建或复制 Session。
-- 无摘要导航从 `navigation.ready_to_commit` 原子移动 lane tip、写可选目标 label 并终结 operation。有摘要导航复用 T12 的 `summary.deciding → summary.ready → summary.effect_pending ↔ summary.retry_wait` 状态与恢复边界；branch summary entry 以目标为 parent，并记录被离开 tip 的 `from_id`、文件明细和 hook 来源，原分支仍保留在不可变树中。
+- 无摘要导航从 `navigation.ready_to_commit` 原子移动 lane tip、写可选目标 label 并终结 operation。有摘要导航复用 T12 的 `summary.deciding → summary.ready → summary.effect_pending ↔ summary.retry_wait` 状态与恢复边界；重开时校验 navigation intent 的目标、摘要模式和选项与 durable state 一致。branch summary entry 以目标为 parent，并记录被离开 tip 的 `from_id`、文件明细和 hook 来源，原分支仍保留在不可变树中。
 - 分支 preparation 只包含旧 tip 到两条路径最近公共祖先之间的废弃路径，跳过 tool result，并投影既有 compaction/branch summary。生成后的 branch summary 作为用户可见上下文注入目标路径；后续 compaction 也把该条目视为可见消息和 turn 边界。
 - `before_navigation` 可拒绝或直接提供 `BranchSummaryResult`；模型路径为每次重试调用 `before_request(step="branch_summary")`。`navigation_start` 在接纳后发布，终结发布 entry/usage 与 `navigation_end`；abort 保留源 tip并删除 preparation，close 则保留 effect-pending 状态供重开后的显式 `resume` 按未知结果规则重试。
 - `navigate_tree` 结束 navigation 后仅在 lane 队列可用空 prompt 接纳时创建独立 run，因此排队的 `next_run` 会在新 operation 中从导航后的上下文继续；被 abort 的 navigation 不消费该队列。Python 继续沿用 `stream_simple(...).result()` 的结构请求边界，不发布 assistant message frame/lifecycle；跨 Session fork 仍不属于本票。
