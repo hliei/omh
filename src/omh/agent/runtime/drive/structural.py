@@ -183,14 +183,20 @@ async def run_structural_decision(
     preparation = await _read_preparation(
         lane, operation_id, state.task.task_id, context
     )
-    hook = await lane.hooks.run(
-        "before_compaction",
-        BeforeCompactionHook(
-            lane=lane.name,
-            run_id=operation_id,
-            reason=state.task.reason,
-            preparation=preparation,
-            custom_instructions=state.task.custom_instructions,
+    hook = await cancel_on_context(
+        lane.admit_effect(
+            operation_id,
+            lambda: lane.hooks.run(
+                "before_compaction",
+                BeforeCompactionHook(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    reason=state.task.reason,
+                    preparation=preparation,
+                    custom_instructions=state.task.custom_instructions,
+                ),
+                context,
+            ),
         ),
         context,
     )
@@ -382,14 +388,20 @@ async def run_structural_generation(
         request_context: Context,
     ) -> AssistantMessage:
         nonlocal effect, request_index, last_response
-        await lane.hooks.run(
-            "before_request",
-            BeforeRequestHook(
-                lane=lane.name,
-                run_id=operation_id,
-                model=model,
-                step="compaction",
-                attempt=effect.attempt,
+        await cancel_on_context(
+            lane.admit_effect(
+                operation_id,
+                lambda: lane.hooks.run(
+                    "before_request",
+                    BeforeRequestHook(
+                        lane=lane.name,
+                        run_id=operation_id,
+                        model=model,
+                        step="compaction",
+                        attempt=effect.attempt,
+                    ),
+                    request_context,
+                ),
             ),
             request_context,
         )
@@ -517,7 +529,13 @@ async def run_structural_retry_wait(
             not_before=retry.not_before,
         )
     if retry.not_before > lane.now_ms():
-        await cancel_on_context(wait_until(retry.not_before, lane.now_ms), context)
+        await cancel_on_context(
+            lane.admit_effect(
+                options.operation_id,
+                lambda: wait_until(retry.not_before, lane.now_ms),
+            ),
+            context,
+        )
     ready = SummaryReadyOperation(
         latest_assistant_entry_id=retry.latest_assistant_entry_id,
         task=retry.task,

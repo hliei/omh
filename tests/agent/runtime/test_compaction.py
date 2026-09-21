@@ -15,18 +15,25 @@ from omh.agent import (
     BeforeRunEndHook,
     BranchScan,
     CompactionEntry,
+    CompactionRequest,
     CompactionSettings,
     CompactResult,
+    Context,
     DriveOptions,
     HandlerErrorEvent,
     HarnessClosed,
     MemorySessionRepo,
+    MemoryStorage,
     PromptRequest,
     RetryPolicy,
     RetryScheduledEvent,
     RetryStartEvent,
     SessionCreateOptions,
+    SessionMetadata,
+    StorageBackedSession,
+    StoredValue,
     UsageScan,
+    Value,
 )
 from omh.llm import (
     AssistantMessage,
@@ -669,6 +676,106 @@ async def test_queued_steer_skips_before_run_end_hook() -> None:
 
     await created.harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_queued_follow_up_skips_before_run_end_hook() -> None:
+    repo = MemorySessionRepo()
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    models = GatedConversationModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(session=session, models=models, model=MODEL),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    hook_calls: list[BeforeRunEndHook] = []
+    created.harness.hooks.on(
+        "before_run_end", lambda event, _: hook_calls.append(event)
+    )
+    admitted = await lane.accept(PromptRequest(prompt="initial"), BACKGROUND_CONTEXT)
+    assert admitted.ok
+    driving = asyncio.create_task(
+        lane.drive(
+            DriveOptions(operation_id=admitted.value.operation_id, wait_for_retry=True),
+            BACKGROUND_CONTEXT,
+        )
+    )
+    await models.conversation_started.wait()
+    assert (await lane.follow_up("follow up first", BACKGROUND_CONTEXT)).ok
+    models.release_conversation.set()
+
+    driven = await driving
+
+    assert driven.ok
+    assert len(hook_calls) == 1
+    assert len(models.conversation_contexts) == 2
+    assert _text(models.conversation_contexts[1].messages[-1]) == "follow up first"
+
+    await created.harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_abort_seals_before_compaction_hook_admission() -> None:
+    class BlockingPreparationStorage(MemoryStorage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.block_preparation = False
+            self.preparation_started = asyncio.Event()
+            self.release_preparation = asyncio.Event()
+
+        async def get_value[T](
+            self, address: Value[T], context: Context
+        ) -> StoredValue[T] | None:
+            if self.block_preparation and address.namespace == "omh.op.preparation":
+                self.block_preparation = False
+                self.preparation_started.set()
+                await self.release_preparation.wait()
+            return await super().get_value(address, context)
+
+    storage = BlockingPreparationStorage()
+    session = StorageBackedSession(
+        SessionMetadata(id="session", created_at=1, storage_version=1), storage
+    )
+    models = CompactionModels()
+    created = await AgentHarness.create(
+        AgentHarnessOptions(
+            session=session,
+            models=models,
+            model=MODEL,
+            compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=3),
+        ),
+        BACKGROUND_CONTEXT,
+    )
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    assert (await lane.prompt("first", BACKGROUND_CONTEXT)).ok
+    assert (await lane.prompt("second", BACKGROUND_CONTEXT)).ok
+    hook_calls: list[BeforeCompactionHook] = []
+    created.harness.hooks.on(
+        "before_compaction", lambda event, _: hook_calls.append(event)
+    )
+    admitted = await lane.accept(
+        CompactionRequest(operation_id="compact"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+    storage.block_preparation = True
+    driving = asyncio.create_task(
+        lane.drive(
+            DriveOptions(operation_id="compact", wait_for_retry=True),
+            BACKGROUND_CONTEXT,
+        )
+    )
+    await storage.preparation_started.wait()
+
+    requested = await lane.request_abort("compact", BACKGROUND_CONTEXT)
+    storage.release_preparation.set()
+    driven = await driving
+
+    assert requested.ok
+    assert driven.ok
+    assert driven.value.kind == "settled"
+    assert driven.value.outcome.status == "aborted"
+    assert hook_calls == []
+
+    await created.harness.close(BACKGROUND_CONTEXT)
 
 
 async def test_threshold_publication_places_steer_before_abort_race() -> None:

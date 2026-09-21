@@ -179,7 +179,10 @@ async def run_checkpoint(
         return (
             isinstance(snapshot.state, CheckpointOperation)
             and isinstance(snapshot.state.continuation, MayFinish)
-            and not any(item.kind == "steer" for item in snapshot.lane.inbox)
+            and not any(
+                item.kind in {"steer", "followUp"}
+                for item in snapshot.lane.inbox
+            )
         )
 
     finish_candidate = await lane._options.session.mutate(
