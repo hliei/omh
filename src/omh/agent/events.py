@@ -46,7 +46,9 @@ type EventType = Literal[
     "fault",
     "handler_error",
 ]
-type ConfigProperty = Literal["model", "thinking_level", "active_tools", "tools"]
+type ConfigProperty = Literal[
+    "model", "thinking_level", "active_tools", "tools", "resources"
+]
 
 
 @dataclass(frozen=True, slots=True)

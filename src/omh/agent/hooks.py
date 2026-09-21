@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal, cast
 
+from omh.agent.agent_harness import AgentHarnessResources
 from omh.agent.compaction import (
     BranchPreparation,
     BranchSummaryResult,
@@ -53,6 +54,7 @@ class BeforeDriveHook(HookInvocation):
 @dataclass(frozen=True, slots=True)
 class BeforeRunHook(HookInvocation):
     prompt: tuple[AgentMessage, ...] = ()
+    resources: AgentHarnessResources = field(default_factory=AgentHarnessResources)
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,6 +21,34 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
+class Skill:
+    """Skill loaded from a ``SKILL.md`` file or registered by an application."""
+
+    name: str
+    description: str
+    content: str
+    file_path: str
+    disable_model_invocation: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PromptTemplate:
+    """Prompt template formatted into a prompt for explicit invocation."""
+
+    name: str
+    content: str
+    description: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentHarnessResources:
+    """Resources available to explicit invocation methods and hooks."""
+
+    prompt_templates: tuple[PromptTemplate, ...] = ()
+    skills: tuple[Skill, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class AgentToolResult:
     content: list[ToolResultContent]
     details: JsonValue = None
@@ -120,6 +148,7 @@ class AgentHarnessOptions:
     model: Model
     thinking_level: ThinkingLevel = "off"
     retry: RetryPolicy = field(default_factory=RetryPolicy)
+    resources: AgentHarnessResources = field(default_factory=AgentHarnessResources)
     tools: tuple[AgentHarnessTool, ...] = ()
     active_tool_names: tuple[str, ...] | None = None
     tool_context: ToolContextSource = None
@@ -145,6 +174,22 @@ class PromptRequest:
     prompt: str | AgentMessage | list[AgentMessage]
     operation_id: str | None = None
     kind: Literal["prompt"] = "prompt"
+
+
+@dataclass(frozen=True, slots=True)
+class SkillRequest:
+    name: str
+    additional_instructions: str | None = None
+    operation_id: str | None = None
+    kind: Literal["skill"] = "skill"
+
+
+@dataclass(frozen=True, slots=True)
+class PromptTemplateRequest:
+    name: str
+    args: tuple[str, ...] | None = None
+    operation_id: str | None = None
+    kind: Literal["prompt_template"] = "prompt_template"
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,7 +219,13 @@ class NavigationRequest:
     kind: Literal["navigation"] = "navigation"
 
 
-type OperationRequest = PromptRequest | CompactionRequest | NavigationRequest
+type OperationRequest = (
+    PromptRequest
+    | SkillRequest
+    | PromptTemplateRequest
+    | CompactionRequest
+    | NavigationRequest
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +246,16 @@ class InvalidMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class UnknownSkill:
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class UnknownTemplate:
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
 class NothingToCompact:
     pass
 
@@ -205,7 +266,13 @@ class InvalidNavigation:
 
 
 type OperationAdmissionError = (
-    LaneBusy | InvalidMessage | NothingToCompact | InvalidNavigation | UnknownTarget
+    LaneBusy
+    | InvalidMessage
+    | UnknownSkill
+    | UnknownTemplate
+    | NothingToCompact
+    | InvalidNavigation
+    | UnknownTarget
 )
 type OperationAdmissionResult = Result[OperationAdmission, OperationAdmissionError]
 
@@ -293,7 +360,8 @@ class NothingToResume:
 
 type ResumeResult = Result[DriveOutcome, NothingToResume | OperationMismatch]
 type RunResult = Result[
-    OperationResultRecord, LaneBusy | InvalidMessage | OperationMismatch
+    OperationResultRecord,
+    LaneBusy | InvalidMessage | UnknownSkill | UnknownTemplate | OperationMismatch,
 ]
 
 
@@ -458,6 +526,12 @@ class AgentHarness(Protocol):
 
     async def set_tools(
         self, tools: tuple[AgentHarnessTool, ...], context: Context
+    ) -> None: ...
+
+    async def get_resources(self, context: Context) -> AgentHarnessResources: ...
+
+    async def set_resources(
+        self, resources: AgentHarnessResources, context: Context
     ) -> None: ...
 
     async def close(self, context: Context) -> None: ...

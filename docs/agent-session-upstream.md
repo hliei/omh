@@ -52,6 +52,11 @@
 | `packages/agent/src/harness/messages.ts` | `src/omh/agent/messages.py` |
 | `packages/agent/src/harness/compaction/compaction.ts` 与 `utils.ts` | `src/omh/agent/compaction/compaction.py` |
 | `packages/agent/src/harness/compaction/branch-summarization.ts` | `src/omh/agent/compaction/branch_summarization.py` |
+| `packages/agent/src/harness/skills.ts` | `src/omh/agent/skills.py` |
+| `packages/agent/src/harness/prompt-templates.ts` | `src/omh/agent/prompt_templates.py` |
+| `skills.ts` 与 `prompt-templates.ts` 共用的 frontmatter 解析（上游 `yaml` 包） | `src/omh/agent/frontmatter.py`（Python 内部 YAML 子集解析） |
+| `harness/types.ts` 的 `Skill`/`PromptTemplate`/`AgentHarnessResources`、`agent-harness.ts` 的 skill/template 便捷方法与资源查询 | `src/omh/agent/agent_harness.py` |
+| harness-global 资源 registry（对应 `config.ts` 的进程内配置） | `src/omh/agent/runtime/resource_registry.py`（新增） |
 
 主要公开能力：`MemorySessionRepo.create/open/list/delete`、`StorageBackedSession.begin_mutation/mutate`、`create_branch`、`branch`、Branch 的 `append_message`/`append_custom_entry` 与历史查询、绑定值和列表读写、usage 查询及统计。`Session`、`SessionMutation`、`SessionMutator` 和 `SessionRepo` Protocol 描述这些公开边界。
 
@@ -157,3 +162,10 @@
 - 分支 preparation 只包含旧 tip 到两条路径最近公共祖先之间的废弃路径，跳过 tool result，并投影既有 compaction/branch summary。生成后的 branch summary 作为用户可见上下文注入目标路径；后续 compaction 也把该条目视为可见消息和 turn 边界。
 - `before_navigation` 可拒绝或直接提供 `BranchSummaryResult`；模型路径为每次重试调用 `before_request(step="branch_summary")`。`navigation_start` 在接纳后发布，终结发布 entry/usage 与 `navigation_end`；abort 保留源 tip并删除 preparation，close 则保留 effect-pending 状态供重开后的显式 `resume` 按未知结果规则重试。
 - `navigate_tree` 结束 navigation 后仅在 lane 队列可用空 prompt 接纳时创建独立 run，因此排队的 `next_run` 会在新 operation 中从导航后的上下文继续；被 abort 的 navigation 不消费该队列。Python 继续沿用 `stream_simple(...).result()` 的结构请求边界，不发布 assistant message frame/lifecycle；跨 Session fork 仍不属于本票。
+
+## T14 skills/templates 资源与便捷运行
+
+- `skills.py` 与 `prompt_templates.py` 对应上游同名文件，只从调用方显式给出的路径加载，不扫描用户默认目录。`load_skills` 递归读取 `SKILL.md`、根目录带 frontmatter 的 `.md`，并遵循 `.gitignore`/`.ignore`/`.fdignore`；`load_prompt_templates` 读取目录直接 `.md` 子项或显式 `.md` 文件。`format_skill_invocation`、`parse_command_args`、`substitute_args` 与 `format_prompt_template_invocation` 的输出与上游一致。
+- `Skill`、`PromptTemplate`、`AgentHarnessResources` 与 harness-global 资源 registry 对应上游 `harness/types.ts` 与进程内配置；`AgentHarnessOptions.resources` 缺省为空，`get_resources`/`set_resources` 提供与 `tools` 相同的读取/替换边界，替换发布 `config_update(property="resources")`。
+- `SkillRequest`/`PromptTemplateRequest` 在 `accept` 中解析为普通用户消息（未知名字返回 `UnknownSkill`/`UnknownTemplate`），因此复用既有 accept/drive、终态清理与恢复路径；`skill`/`prompt_from_template` 与 `prompt` 共用 `_drive_run_request` 便捷组合。空模板内容与上游一致地产生空 prompt，从而按普通空接纳规则返回 `InvalidMessage`。`before_run` hook 事件携带当前 `resources`，与上游 `lane.readConfig().resources` 对应。
+- 明确差异：Python 不引入 YAML 依赖，`frontmatter.py` 只解析这些加载器消费的 YAML 子集（顶层标量、引号、布尔/null、字面/折叠块），嵌套映射/序列不被解释而得到 `None`；ignore 过滤按上游的前缀化后路径语义实现，未复制 npm `ignore` 的全部 gitignore 边界。目录枚举按代码点排序而非 `localeCompare`。`load_sourced_*` 把 source 与 diagnostic 以组合 dataclass 返回，而不是上游的字段展开对象。

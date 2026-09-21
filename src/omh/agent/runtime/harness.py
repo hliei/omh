@@ -7,6 +7,7 @@ from omh.agent.agent_harness import (
     AgentHarness,
     AgentHarnessCreateResult,
     AgentHarnessOptions,
+    AgentHarnessResources,
     AgentHarnessTool,
     LaneInfo,
     OpenOperation,
@@ -27,6 +28,7 @@ from omh.agent.runtime.codec import (
     encode_lane_state,
 )
 from omh.agent.runtime.lane import AgentLane
+from omh.agent.runtime.resource_registry import ResourceRegistry
 from omh.agent.runtime.restore import attachment_tip, read_lane_storage, restore_session
 from omh.agent.runtime.tool_registry import ToolRegistry, validate_active_tool_names
 from omh.agent.runtime.types import LaneConfiguration, LaneState, ModelIdentity
@@ -44,6 +46,7 @@ class Harness(AgentHarness):
     def __init__(self, options: AgentHarnessOptions) -> None:
         self._options = options
         self._tool_registry = ToolRegistry(options.tools)
+        self._resource_registry = ResourceRegistry(options.resources)
         self.events = HarnessEventBus()
         self.hooks = HookRegistry(self._report_hook_error)
         self._active_tool_seed = (
@@ -127,6 +130,7 @@ class Harness(AgentHarness):
                         name,
                         self._options,
                         self._tool_registry,
+                        self._resource_registry,
                         self.events,
                         self.hooks,
                         self._fault,
@@ -164,6 +168,7 @@ class Harness(AgentHarness):
                     name,
                     self._options,
                     self._tool_registry,
+                    self._resource_registry,
                     self.events,
                     self.hooks,
                     self._fault,
@@ -203,6 +208,18 @@ class Harness(AgentHarness):
         await self._tool_registry.replace(tools)
         await self.events.emit(ConfigUpdateEvent(property="tools"), context)
 
+    async def get_resources(self, context: Context) -> AgentHarnessResources:
+        del context
+        self._assert_open()
+        return self._resource_registry.get()
+
+    async def set_resources(
+        self, resources: AgentHarnessResources, context: Context
+    ) -> None:
+        self._assert_open()
+        self._resource_registry.replace(resources)
+        await self.events.emit(ConfigUpdateEvent(property="resources"), context)
+
     async def _finish_close(self, error: HarnessClosed, context: Context) -> None:
         for lane in self._lanes.values():
             await lane.close(error)
@@ -217,6 +234,7 @@ class Harness(AgentHarness):
                 name,
                 self._options,
                 self._tool_registry,
+                self._resource_registry,
                 self.events,
                 self.hooks,
                 self._fault,
