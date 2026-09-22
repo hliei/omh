@@ -18,7 +18,7 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def test_format_skill_invocation_matches_the_pi_shape() -> None:
+def test_format_skill_invocation_wraps_content_with_name_and_location() -> None:
     skill = Skill(
         name="greet",
         description="Say hello",
@@ -121,14 +121,14 @@ async def test_ignore_file_variants_and_hidden_entries_are_skipped(
     assert [skill.name for skill in result.skills] == ["keep"]
 
 
-async def test_root_anchored_patterns_follow_upstream_prefix_semantics(
+async def test_root_directory_ignore_patterns_match_at_any_depth(
     tmp_path: Path,
 ) -> None:
     """A root ``/name/`` rule matches at any depth.
 
-    Pinned pi strips the leading ``/`` before prefixing the pattern, so the
-    resulting npm-``ignore`` pattern has no separator and applies at any level.
-    This test pins that correspondence rather than git's root-anchored reading.
+    The loader strips the leading ``/`` before matching the pattern, so the
+    directory name applies at any level. This differs from Git's root-anchored
+    interpretation and is part of the loader's supported ignore behavior.
     """
     root = tmp_path / "skills"
     _write(root / ".gitignore", "/vendored/\n")

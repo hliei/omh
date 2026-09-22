@@ -1,9 +1,3 @@
-"""SQLite session backend: one session per container file by default.
-
-Correspondence with the pinned pi baseline is recorded in
-``docs/sqlite-session-upstream.md``.
-"""
-
 from omh.session_backends.sqlite.migrations import apply_initial_schema
 from omh.session_backends.sqlite.repo import (
     SQLITE_SESSION_EXTENSION,

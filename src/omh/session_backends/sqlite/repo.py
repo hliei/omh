@@ -65,7 +65,7 @@ class SqliteSessionRepo:
 
     Host ownership is not enforced by the storage layer: this repository rejects
     a second writable handle for a Session *it* already owns, which is the
-    host-lifecycle rule upstream states. A second process, or a second repository
+    host-lifecycle state. A second process, or a second repository
     instance, is not detected; there is no lease, fence, or automatic takeover.
     """
 

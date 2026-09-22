@@ -1,15 +1,3 @@
-"""Local macOS/Linux execution environment for the built-in tools.
-
-Corresponds to ``packages/agent/src/harness/env/nodejs.ts``. The Node baseline
-also handles Windows and WSL bash discovery; this first version supports the
-declared macOS/Linux platforms only.
-
-Differences from the baseline are recorded in ``docs/agent-session-upstream.md``:
-filesystem calls run inline on the event loop instead of through asynchronous
-Node APIs, and shell output spilling writes synchronously once truncation is
-reached.
-"""
-
 from __future__ import annotations
 
 import asyncio

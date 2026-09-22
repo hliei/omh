@@ -1,8 +1,3 @@
-"""Filesystem and shell context required by the built-in execution tools.
-
-Corresponds to ``packages/agent/src/harness/tools/tool-context.ts``.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

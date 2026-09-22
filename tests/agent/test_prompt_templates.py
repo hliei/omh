@@ -28,7 +28,7 @@ def test_parse_command_args_handles_quotes_and_whitespace() -> None:
     assert parse_command_args("") == []
 
 
-def test_substitute_args_supports_pi_placeholders() -> None:
+def test_substitute_args_supports_positional_and_slice_placeholders() -> None:
     args = ["a", "b", "c"]
     assert substitute_args("$1-$2", args) == "a-b"
     assert substitute_args("$9", args) == ""
@@ -38,7 +38,7 @@ def test_substitute_args_supports_pi_placeholders() -> None:
     assert substitute_args("${@:2:1}", args) == "b"
     assert substitute_args("${@:0}", args) == "a b c"
     assert substitute_args("$10", [str(index) for index in range(1, 11)]) == "10"
-    # Pinned pi applies $N before ${@:N}, so a "$N" introduced by an argument is
+    # Substitution applies $N before ${@:N}, so a "$N" introduced by an argument is
     # not re-substituted afterwards.
     assert substitute_args("${@:1}", ["$2", "x"]) == "$2 x"
 

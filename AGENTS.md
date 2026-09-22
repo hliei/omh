@@ -2,13 +2,15 @@
 
 ## Project knowledge
 
-`CONTEXT.md` defines the project's domain vocabulary; `docs/adr/` records important architecture decisions. Read [domain documentation](docs/agents/domain.md) when exploring domain concepts or changing a design. These documents are created as terms and decisions become concrete.
+Read [the harness overview](docs/harness.md) and the relevant chapter before changing runtime, Session, or recovery behavior; read [the LLM contract](docs/llm.md) for provider and streaming work. [The documentation index](docs/README.md) lists the reading paths.
+
+`CONTEXT.md` defines the project's domain vocabulary; [architecture decisions](docs/adr/README.md) record important trade-offs. Read [domain documentation](docs/agents/domain.md) when exploring domain concepts or changing a design.
 
 Keep this guide focused on the project's module responsibilities, stable boundaries, and development commands as implementation takes shape. General-purpose skills belong in the developer's personal environment.
 
 ## SDK layout
 
-The installable package lives in `src/omh/`. `omh.llm` is independently usable and must not import `omh.agent`. File-to-file correspondence and recorded differences with the pinned pi baseline are in [docs/llm-upstream.md](docs/llm-upstream.md), [docs/agent-session-upstream.md](docs/agent-session-upstream.md), and [docs/sqlite-session-upstream.md](docs/sqlite-session-upstream.md).
+The installable package lives in `src/omh/`. `omh.llm` owns provider inputs and streams, is independently usable, and must not import `omh.agent`. `omh.agent` owns Session contracts, conversation execution, recovery, tools, and observation. `omh.session_backends.sqlite` implements persistent storage against the Session contract. Applications consume the SDK; the SDK does not depend on applications.
 
 ## Development commands
 
@@ -22,6 +24,8 @@ ruff check src tests
 mypy
 pytest
 ```
+
+Tests use offline providers and controlled tools. For behavior changes, verify the relevant public behavior and interruption boundaries; persistence changes need reopen coverage. Update the owning contract chapter alongside changes, and record significant trade-offs in an ADR. For documentation-only changes, check content, relative links, and code references. Run the full checks before pushing Python changes as specified in the Git workflow.
 
 ## Tasks and changes
 

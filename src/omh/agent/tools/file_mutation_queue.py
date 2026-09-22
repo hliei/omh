@@ -1,8 +1,3 @@
-"""Serialize file mutations targeting the same environment and canonical path.
-
-Corresponds to ``packages/agent/src/harness/tools/file-mutation-queue.ts``.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +20,7 @@ _states: weakref.WeakKeyDictionary[object, _MutationQueueState] = (
 )
 
 # Keying the queue state on the environment requires a weak-referenceable,
-# hashable environment object (the Python counterpart of the upstream WeakMap).
+# hashable environment object without retaining environments after they are unused.
 # ``LocalExecutionEnv`` satisfies this; a custom implementation must too.
 
 

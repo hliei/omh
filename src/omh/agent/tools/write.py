@@ -1,8 +1,3 @@
-"""The built-in write tool.
-
-Corresponds to ``packages/agent/src/harness/tools/write.ts``.
-"""
-
 from __future__ import annotations
 
 from omh.agent.agent_harness import (

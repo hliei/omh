@@ -1,14 +1,3 @@
-"""Admission-counted Session facade shared by the session backends.
-
-A backend repo hands out this wrapper instead of the raw
-:class:`~omh.agent.session.session.StorageBackedSession` so that closing a Session
-stops admitting new work, drains what was already admitted, and then runs the
-backend's own close action exactly once. Upstream keeps an equivalent wrapper in
-each backend (``MemorySessionFacade`` in memory.ts, ``SqliteOpenSession`` in
-sqlite/session.ts); Python shares one implementation because both live in the
-same distribution and the drain rule is subtle enough to own one copy.
-"""
-
 from __future__ import annotations
 
 from asyncio import Condition, Task, create_task, shield

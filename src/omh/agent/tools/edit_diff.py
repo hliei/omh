@@ -1,10 +1,3 @@
-"""Shared diff computation utilities for the edit and similar tools.
-
-Corresponds to ``packages/agent/src/harness/tools/edit-diff.ts``. Fuzzy
-matching mirrors the upstream progressive normalization: trailing whitespace is
-stripped per line, then Unicode quotes, dashes, and spaces are normalized.
-"""
-
 from __future__ import annotations
 
 import difflib

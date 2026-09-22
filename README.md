@@ -1,35 +1,38 @@
-# oh-my-harness
+# Omh Agent Harness
 
-Python SDK imported as `omh`. The llm layer configures DeepSeek through Models/Provider and exposes unified text, thinking, and tool-call streams. The agent layer provides durable Sessions with named Branch history, current values/lists, and an append-only usage ledger; Sessions run in memory or in a SQLite file that survives closing and reopening.
+A Python SDK for durable agent conversations.
 
-The supported platforms are macOS and Linux, using standard CPython 3.14 and asyncio. Ubuntu 24.04 x86_64 is the Linux CI baseline; other Linux distributions and architectures are not separately validated. Offline pytest is the implementation check; it does not call a live provider.
+omh (oh-my-harness) combines streamed model responses, tool execution, and persistent conversation state. Build agents with named conversation branches, queued inputs, hooks, and explicit recovery after interruption. Sessions can run in memory or persist to SQLite. The built-in model provider is DeepSeek.
 
-```python
-from omh.agent import BACKGROUND_CONTEXT, MemorySessionRepo, SessionCreateOptions
-from omh.llm import UserMessage
+The Python distribution and import name are both `omh`.
 
-repo = MemorySessionRepo()
-session = await repo.create(SessionCreateOptions(), BACKGROUND_CONTEXT)
-main = await session.create_branch("main", None, BACKGROUND_CONTEXT)
-await main.append_message(UserMessage(content="hello", timestamp=0), BACKGROUND_CONTEXT)
-history = await main.find_entries(None, BACKGROUND_CONTEXT)
-```
+- [Getting started](docs/getting-started.md) — source installation and runnable Session examples
+- [Documentation](docs/README.md) — contracts, architecture decisions, and development guides
+- [Harness design](docs/harness.md) — execution, persistence, and recovery
 
-```python
-from pathlib import Path
+## Modules
 
-from omh.agent import BACKGROUND_CONTEXT, SessionCreateOptions
-from omh.session_backends.sqlite import SqliteSessionRepo
+All modules ship in the same SDK distribution.
 
-repo = SqliteSessionRepo(Path("sessions"))
-session = await repo.create(SessionCreateOptions(id="chat"), BACKGROUND_CONTEXT)
-await session.close(BACKGROUND_CONTEXT)
-await repo.close(BACKGROUND_CONTEXT)
+| Module | Description |
+| --- | --- |
+| [`omh.llm`](docs/llm.md) | Independently usable model/provider layer with text, thinking, and tool-call streams |
+| [`omh.agent`](docs/harness.md) | Durable conversation runtime with tools, queues, hooks, observation, and recovery |
+| [`omh.session_backends.sqlite`](docs/harness/storage.md) | SQLite-backed Session storage for persistent history and execution state |
 
-# A later process reopens the same durable history and state.
-repo = SqliteSessionRepo(Path("sessions"))
-session = await repo.open(session.metadata, BACKGROUND_CONTEXT)
-```
+## Execution & Permissions
+
+Built-in tools operate on the host filesystem and launch local processes with the permissions of the application. The configured working directory is not a sandbox. Applications are responsible for permission controls and any process or container isolation they require.
+
+See [tools and execution environments](docs/harness/public-api.md#tools-and-execution-environments) for the execution boundary.
+
+## Contributing
+
+Read [AGENTS.md](AGENTS.md) for project conventions and the [Git workflow](docs/agents/git-workflow.md) for changes, validation, and pull requests.
+
+## Development
+
+Use standard CPython 3.14 with asyncio on macOS or Linux. From the repository root:
 
 ```bash
 python3.14 -m venv .venv
@@ -40,4 +43,8 @@ mypy
 pytest
 ```
 
-Before pushing code changes, run Ruff, mypy, and pytest as shown above. CI repeats these checks on macOS and Ubuntu 24.04. See [the Git workflow](docs/agents/git-workflow.md) for local checks and handling CI failures.
+Tests run offline without live provider calls. CI runs the checks on macOS and Ubuntu 24.04 x86_64; other Linux distributions and architectures are not separately validated.
+
+## License
+
+To be determined.

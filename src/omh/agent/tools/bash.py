@@ -1,8 +1,3 @@
-"""The built-in bash tool.
-
-Corresponds to ``packages/agent/src/harness/tools/bash.ts``.
-"""
-
 from __future__ import annotations
 
 import json

@@ -441,24 +441,24 @@ class HookRegistry:
                     and result.block is not None
                 )
                 span.set_attributes(
-                    {"pi.hook.outcome": "blocked" if blocked else "completed"}
+                    {"omh.hook.outcome": "blocked" if blocked else "completed"}
                 )
                 return result
             except Exception:
-                span.set_attributes({"pi.hook.outcome": "failed"})
+                span.set_attributes({"omh.hook.outcome": "failed"})
                 span.set_status("error")
                 raise
 
         return await start_harness_span(
-            "pi.harness.hook",
+            "omh.harness.hook",
             {
-                "pi.lane.name": event.lane,
-                "pi.operation.id": event.run_id,
-                "pi.hook.name": name,
+                "omh.lane.name": event.lane,
+                "omh.operation.id": event.run_id,
+                "omh.hook.name": name,
                 **(
                     {}
                     if registration.id is None
-                    else {"pi.hook.registration_id": registration.id}
+                    else {"omh.hook.registration_id": registration.id}
                 ),
             },
             invoke,

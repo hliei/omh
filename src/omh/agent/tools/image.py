@@ -1,8 +1,3 @@
-"""Image content detection for the read tool.
-
-Corresponds to ``packages/agent/src/harness/tools/image.ts``.
-"""
-
 from __future__ import annotations
 
 import base64

@@ -1,8 +1,3 @@
-"""Path normalization shared by the built-in execution tools.
-
-Corresponds to ``packages/agent/src/harness/tools/path-utils.ts``.
-"""
-
 from __future__ import annotations
 
 import re

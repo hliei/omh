@@ -25,8 +25,7 @@ from omh.agent.session.values import (
 class CommittedStateWrite:
     """One value or list write with its assigned sequence.
 
-    Covers the four upstream committed state-write interfaces; ``value`` is only
-    meaningful for ``set`` and ``append``.
+    ``value`` is only meaningful for ``set`` and ``append``.
     """
 
     namespace: str
