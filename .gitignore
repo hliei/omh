@@ -3,7 +3,6 @@
 
 # Personal skills and local tool integration.
 /.agents/
-/.pi/
 /skills-lock.json
 
 # Local credentials and machine files.

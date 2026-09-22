@@ -1,6 +1,6 @@
 # Durable Agent SDK
 
-本项目提供 Python SDK，用于构建可持久化、可恢复的 agent 对话。核心领域概念与 pi 对齐。
+本项目提供 Python SDK，用于构建可持久化、可恢复的 agent 对话。
 
 ## Language
 

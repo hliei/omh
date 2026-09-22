@@ -68,7 +68,7 @@ def test_tail_truncation_respects_multibyte_boundaries() -> None:
     assert utf8_byte_length(result.content) == 6
 
 
-def test_truncation_json_uses_upstream_field_names() -> None:
+def test_truncation_json_uses_camel_case_field_names() -> None:
     result = truncate_head("a\nb", max_lines=1, max_bytes=1024)
     payload = truncation_json(result.without_content())
     assert payload["truncated"] is True

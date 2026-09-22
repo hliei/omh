@@ -4,6 +4,8 @@ Python SDK imported as `omh`. The llm layer configures DeepSeek through Models/P
 
 The supported platforms are macOS and Linux, using standard CPython 3.14 and asyncio. Ubuntu 24.04 x86_64 is the Linux CI baseline; other Linux distributions and architectures are not separately validated. Offline pytest is the implementation check; it does not call a live provider.
 
+See [the documentation index](docs/README.md) for the [harness design and execution model](docs/harness.md), [LLM contract](docs/llm.md), and [architecture decisions](docs/adr/README.md).
+
 ```python
 from omh.agent import BACKGROUND_CONTEXT, MemorySessionRepo, SessionCreateOptions
 from omh.llm import UserMessage
