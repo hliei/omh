@@ -1,14 +1,3 @@
-"""Standard-library ``sqlite3`` adapter for the SQLite session backend.
-
-This is the Python counterpart of upstream's ``node:sqlite`` adapter: it maps the
-capability interfaces in :mod:`omh.session_backends.sqlite.types` onto the
-standard library driver. Like the upstream adapter, statements run
-synchronously; ``transaction`` therefore owns an explicit ``BEGIN IMMEDIATE``
-and rejects callbacks that would await inside it. Upstream's single ``exec`` runs
-either, because ``node:sqlite`` can; ``sqlite3`` cannot, so the capability keeps
-one method per case instead of sniffing the SQL text.
-"""
-
 from __future__ import annotations
 
 import inspect

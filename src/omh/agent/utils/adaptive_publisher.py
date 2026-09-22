@@ -1,8 +1,3 @@
-"""Rate-limited publication of the latest state for streamed output.
-
-Corresponds to ``packages/agent/src/harness/utils/adaptive-publisher.ts``.
-"""
-
 from __future__ import annotations
 
 import asyncio

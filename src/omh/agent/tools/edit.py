@@ -1,11 +1,3 @@
-"""The built-in edit tool.
-
-Corresponds to ``packages/agent/src/harness/tools/edit.ts``. The Python tool
-accepts the documented ``edits`` array directly; the upstream legacy
-``oldText``/``newText`` and JSON-string argument normalization is not applied
-because tool declarations have no prepare-arguments hook in this first version.
-"""
-
 from __future__ import annotations
 
 from typing import cast

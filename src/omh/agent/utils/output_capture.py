@@ -1,8 +1,3 @@
-"""Bounded shell output capture with adaptive publication.
-
-Corresponds to ``packages/agent/src/harness/utils/output-capture.ts``.
-"""
-
 from __future__ import annotations
 
 import re

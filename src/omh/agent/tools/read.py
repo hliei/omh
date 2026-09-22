@@ -1,8 +1,3 @@
-"""The built-in read tool.
-
-Corresponds to ``packages/agent/src/harness/tools/read.ts``.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable

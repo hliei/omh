@@ -629,13 +629,13 @@ async def test_tool_hooks_progress_usage_and_terminal_events_are_observable() ->
     terminal = next(event for event in observed if isinstance(event, RunEndEvent))
     assert terminal.status == "completed"
     assert [item[0] for item in telemetry.started] == [
-        "pi.harness.hook",
-        "pi.harness.hook",
-        "pi.harness.hook",
-        "pi.harness.hook",
+        "omh.harness.hook",
+        "omh.harness.hook",
+        "omh.harness.hook",
+        "omh.harness.hook",
     ]
-    assert telemetry.started[0][1]["pi.hook.registration_id"] == "before-one"
-    assert [item[2].attributes["pi.hook.outcome"] for item in telemetry.started] == [
+    assert telemetry.started[0][1]["omh.hook.registration_id"] == "before-one"
+    assert [item[2].attributes["omh.hook.outcome"] for item in telemetry.started] == [
         "completed",
         "completed",
         "completed",

@@ -1,13 +1,3 @@
-"""Shared truncation utilities for tool outputs.
-
-Truncation is based on two independent limits - whichever is hit first wins:
-a line limit (default 2000 lines) and a byte limit (default 50KB). Head
-truncation never returns partial lines. Tail truncation may return a partial
-first line when a single line exceeds the byte limit.
-
-Corresponds to ``packages/agent/src/harness/utils/truncate.ts``.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,11 +1,3 @@
-"""Skill loading and invocation formatting.
-
-Python counterpart of ``packages/agent/src/harness/skills.ts`` in the pinned pi
-baseline. Loading requires an explicit path list; the harness never scans user
-default directories. Necessary differences (YAML subset, ignore matching,
-locale-independent ordering) are recorded in ``docs/agent-session-upstream.md``.
-"""
-
 from __future__ import annotations
 
 import re

@@ -1,14 +1,3 @@
-"""Minimal YAML frontmatter parsing for skill and prompt-template loaders.
-
-The pinned pi baseline parses frontmatter with the JavaScript ``yaml`` package
-(``packages/agent/src/harness/skills.ts`` and ``prompt-templates.ts``). This
-SDK avoids a runtime YAML dependency and parses only the scalar subset those
-loaders consume: top-level ``key: value`` entries, plain and quoted scalars,
-booleans, null, and literal/folded block scalars. Nested mappings and sequences
-are not interpreted; such a key receives ``None``. The difference is recorded
-in ``docs/agent-session-upstream.md``.
-"""
-
 from __future__ import annotations
 
 import re
@@ -40,7 +29,7 @@ def parse_frontmatter(content: str) -> tuple[dict[str, object], str]:
     """Split ``content`` into frontmatter values and body.
 
     Returns an empty mapping and the unchanged content when no ``---`` block is
-    present, matching the upstream helper.
+    present.
     """
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     if not normalized.startswith("---"):

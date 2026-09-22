@@ -1,12 +1,3 @@
-"""Explicit JSON codec for durable session payloads.
-
-Upstream TypeScript stores messages by serializing the plain object it already
-holds. Python holds typed dataclasses, so the on-disk shape is written and read
-here instead: keys keep the upstream names so a stored payload stays comparable
-with pi's storage format. Decoding validates the payload it reads, because a
-stored row is read back from a file rather than from live memory.
-"""
-
 from __future__ import annotations
 
 from typing import cast

@@ -1,11 +1,3 @@
-"""Prompt-template loading and argument formatting.
-
-Python counterpart of ``packages/agent/src/harness/prompt-templates.ts`` in the
-pinned pi baseline. Loading requires an explicit path list; the harness never
-scans user default directories. Differences are recorded in
-``docs/agent-session-upstream.md``.
-"""
-
 from __future__ import annotations
 
 import re

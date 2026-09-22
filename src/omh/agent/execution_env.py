@@ -1,12 +1,3 @@
-"""Filesystem and process execution interfaces used by harness tools.
-
-This is the Python counterpart of the ``ExecutionEnv`` section of
-``packages/agent/src/harness/types.ts``. Operation methods never raise for
-expected filesystem or process failures: every failure, including unexpected
-backend failures, is encoded in a returned :data:`Result`. Callers that want an
-exception use :func:`get_or_throw` at the adapter boundary.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
