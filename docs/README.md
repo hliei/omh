@@ -1,6 +1,6 @@
 # Documentation
 
-Start with [Getting started](getting-started.md) for source installation and runnable Session examples, or the [harness overview](harness.md) for the runtime model and an execution trace. The [project README](../README.md) introduces the SDK and development workflow.
+Start with [Getting started](getting-started.md) for source installation, runnable agents, streaming, tools, and Session persistence, or the [harness overview](harness.md) for the runtime model and an execution trace. The [project README](../README.md) introduces the SDK and development workflow.
 
 ## Implementation contracts
 

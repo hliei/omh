@@ -6,9 +6,23 @@ omh (oh-my-harness) combines streamed model responses, tool execution, and persi
 
 The Python distribution and import name are both `omh`.
 
-- [Getting started](docs/getting-started.md) — source installation and runnable Session examples
+- [Getting started](docs/getting-started.md) — source installation, runnable agents, streaming, tools, and Session persistence
 - [Documentation](docs/README.md) — contracts, architecture decisions, and development guides
 - [Harness design](docs/harness.md) — execution, persistence, and recovery
+
+## Run an agent
+
+With Python 3.14 and a DeepSeek API key, run these commands from the repository root:
+
+```bash
+python3.14 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+export DEEPSEEK_API_KEY="your-api-key"
+python examples/minimal_agent.py
+```
+
+For streamed text, run [streaming_agent.py](examples/streaming_agent.py). For a model–tool–model round trip, run [tool_agent.py](examples/tool_agent.py). Each script is self-contained; [Getting started](docs/getting-started.md) explains the API and how to configure a system prompt.
 
 ## Modules
 
