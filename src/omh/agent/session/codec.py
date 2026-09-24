@@ -338,3 +338,4 @@ def decode_message(value: JsonValue) -> AgentMessage:
             usage=None if usage is None else decode_usage(usage),
         )
     raise ValueError(f"message.role is not a known message role: {role!r}")
+

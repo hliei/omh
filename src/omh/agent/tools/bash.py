@@ -284,3 +284,4 @@ def _validate_timeout(timeout: float | None) -> None:
         raise ValueError(
             f"Invalid timeout: maximum is {_MAX_TIMEOUT_SECONDS} seconds"
         )
+

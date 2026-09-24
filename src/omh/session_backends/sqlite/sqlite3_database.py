@@ -97,3 +97,4 @@ class Sqlite3DatabaseFactory:
 
 def create_sqlite3_factory() -> SqliteDatabaseFactory:
     return Sqlite3DatabaseFactory()
+

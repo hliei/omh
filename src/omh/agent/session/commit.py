@@ -176,3 +176,4 @@ def validate_committed_writes(
                 raise ValueError(f"Missing parent entry: {write.parent_id}")
             transaction_entry_ids.add(write.id)
         transaction_ids.add(write.id)
+

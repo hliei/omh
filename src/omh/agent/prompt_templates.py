@@ -337,3 +337,4 @@ def format_prompt_template_invocation(
 ) -> str:
     """Format a prompt template invocation with positional arguments."""
     return substitute_args(template.content, args)
+

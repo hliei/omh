@@ -267,3 +267,4 @@ def truncation_json(truncation: ShellOutputTruncation) -> dict[str, object]:
         "maxLines": truncation.max_lines,
         "maxBytes": truncation.max_bytes,
     }
+

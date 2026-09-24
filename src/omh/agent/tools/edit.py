@@ -186,3 +186,4 @@ def _edit_access_error(path: str, error: FileError) -> ValueError:
     return ValueError(
         f"Could not edit file: {path}. Error code: {error.code}."
     )
+

@@ -700,3 +700,4 @@ def _shell_environment(
     if not inherit:
         return dict(extra or {})
     return {**os.environ, **(base or {}), **(extra or {})}
+

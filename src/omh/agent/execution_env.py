@@ -302,3 +302,4 @@ class Shell(Protocol):
 
 class ExecutionEnv(FileSystem, Shell, Protocol):
     """Filesystem and process execution environment used by the harness."""
+

@@ -459,3 +459,4 @@ def _diff_lines(
             parts.append(("removed", old_lines[i1:i2]))
             parts.append(("added", new_lines[j1:j2]))
     return parts
+

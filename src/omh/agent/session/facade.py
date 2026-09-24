@@ -223,3 +223,4 @@ class SessionFacade:
     def _assert_open(self) -> None:
         if self._state != "open":
             raise RuntimeError("Session is closed")
+

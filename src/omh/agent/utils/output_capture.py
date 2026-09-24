@@ -332,3 +332,4 @@ def _trim_to_first_utf8_bytes(text: str, max_bytes: int) -> str:
 
 def _ignore_error(error: BaseException) -> None:
     del error
+

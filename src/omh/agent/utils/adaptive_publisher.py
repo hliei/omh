@@ -92,3 +92,4 @@ class AdaptivePublisher[TValue, TUpdate]:
                 self._options.on_error(error)
 
         self._timer = self._loop.call_later(max(wait_ms, 0) / 1000, on_timer)
+

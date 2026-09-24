@@ -42,3 +42,4 @@ async def resolve_read_tool_path(
         if get_or_throw(await env.exists(variant, context)):
             return variant
     return resolved
+

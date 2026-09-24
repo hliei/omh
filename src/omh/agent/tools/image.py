@@ -101,3 +101,4 @@ def _starts_with_ascii(data: bytes, offset: int, text: str) -> bool:
     if len(data) < offset + len(text):
         return False
     return data[offset : offset + len(text)] == text.encode("ascii")
+

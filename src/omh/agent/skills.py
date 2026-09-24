@@ -607,3 +607,4 @@ def _glob_to_regex(pattern: str) -> str:
         out.append(re.escape(char))
         index += 1
     return "".join(out)
+

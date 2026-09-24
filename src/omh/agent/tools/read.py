@@ -240,3 +240,4 @@ def _read_text(
     return AgentToolResult(
         content=[TextContent(text=output_text)], details=details
     )
+

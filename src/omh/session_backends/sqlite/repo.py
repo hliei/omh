@@ -240,3 +240,4 @@ class SqliteSessionRepo:
     def _assert_open(self) -> None:
         if self._closed:
             raise RuntimeError("SqliteSessionRepo is closed")
+

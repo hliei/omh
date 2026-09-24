@@ -171,3 +171,4 @@ def _parse_single_quoted(value: str) -> str:
     if len(value) < 2 or not value.endswith("'"):
         raise FrontmatterError(f"unterminated single-quoted scalar: {value!r}")
     return value[1:-1].replace("''", "'")
+
