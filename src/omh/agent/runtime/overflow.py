@@ -1,6 +1,6 @@
 """Recognize assistant responses that indicate a context-window overflow.
 
-An overflow can surface in four ways:
+``is_context_overflow`` recognizes three overflow conditions:
 
 1. An ``error`` response whose message names a context-size failure.
 2. A ``stop`` response whose reported input tokens, including cache reads, exceed
@@ -9,8 +9,10 @@ An overflow can surface in four ways:
 3. A ``length`` response with zero output whose reported input tokens fill at least
    99% of the captured context window. The provider truncated the oversized input
    to fit the window and had no room left to generate.
-4. A ``length`` response whose output stopped below the intended output limit. This
-   is tracked separately because it does not require the input to be near the window.
+
+A fourth signal, a ``length`` response whose output stopped below the intended output
+limit, is tracked separately by ``is_recoverable_length`` because it does not require
+the input to be near the window.
 
 Everything else, including throttling and rate-limit errors that can share wording
 with overflow errors, is not an overflow.

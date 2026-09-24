@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from omh.agent.runtime.overflow import is_context_overflow, is_recoverable_length
-from omh.llm.types import AssistantMessage, UsageCost, empty_usage
+from omh.llm.types import AssistantMessage, empty_usage
 
 
 def _message(
@@ -19,7 +19,6 @@ def _message(
     usage.output = output_tokens
     usage.cache_read = cache_read
     usage.total_tokens = input_tokens + output_tokens + cache_read
-    usage.cost = UsageCost()
     return AssistantMessage(
         api="openai-completions",
         provider="test-provider",
