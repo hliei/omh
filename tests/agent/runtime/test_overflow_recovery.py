@@ -286,6 +286,22 @@ async def _harness(
     return created.harness, lane, repo, session
 
 
+async def _drive_with_queued_follow_up(
+    lane: object, prompt: str, operation_id: str
+) -> tuple[object, str]:
+    admitted = await lane.accept(
+        PromptRequest(prompt=prompt, operation_id=operation_id), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+    queued = await lane.follow_up("queued follow up", BACKGROUND_CONTEXT)
+    assert queued.ok
+    driven = await lane.drive(
+        DriveOptions(operation_id=operation_id, wait_for_retry=True), BACKGROUND_CONTEXT
+    )
+    assert driven.ok
+    return driven, queued.value.entry_id
+
+
 async def test_first_overflow_compacts_settles_and_resumes_same_run() -> None:
     models = ScriptedModels()
     models.conversation = [
@@ -485,16 +501,17 @@ async def test_repeated_overflow_for_same_trigger_fails_without_retry() -> None:
     harness.events.on("compaction_start", lambda event, _: starts.append(event))
 
     assert (await lane.prompt("first", BACKGROUND_CONTEXT)).ok
-    result = await lane.prompt("second", BACKGROUND_CONTEXT)
+    driven, queued_id = await _drive_with_queued_follow_up(lane, "second", "second-run")
+    outcome = driven.value.outcome
 
-    assert result.ok
-    assert result.value.status == "failed"
-    assert result.value.error is not None
-    assert result.value.error.code == "assistant_error"
-    assert result.value.error.message == "Assistant request exceeded the context window"
+    assert outcome.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.code == "assistant_error"
+    assert outcome.error.message == "Assistant request exceeded the context window"
     assert len(models.summary_contexts) == 1
     assert len(starts) == 1
     assert retries == []
+    assert await session.get_value(pending_entry(queued_id), BACKGROUND_CONTEXT) is not None
     history = await lane.find_entries(BranchScan(order="oldest_first"), BACKGROUND_CONTEXT)
     overflow_errors = [
         entry
@@ -524,12 +541,15 @@ async def test_unavailable_preparation_fails_with_settled_usage() -> None:
         compaction=CompactionSettings(reserve_tokens=8, keep_recent_tokens=1),
     )
 
-    result = await lane.prompt("compact automatically", BACKGROUND_CONTEXT)
+    driven, queued_id = await _drive_with_queued_follow_up(
+        lane, "compact automatically", "run"
+    )
+    outcome = driven.value.outcome
 
-    assert result.ok
-    assert result.value.status == "failed"
-    assert result.value.error is not None
-    assert result.value.error.code == "assistant_error"
+    assert outcome.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.code == "assistant_error"
+    assert await session.get_value(pending_entry(queued_id), BACKGROUND_CONTEXT) is not None
     assert len(models.summary_contexts) == 1
     history = await lane.find_entries(BranchScan(order="oldest_first"), BACKGROUND_CONTEXT)
     errors = [
@@ -604,12 +624,13 @@ async def test_exhausted_summary_retries_fail_the_run_once() -> None:
     )
 
     assert (await lane.prompt("first", BACKGROUND_CONTEXT)).ok
-    result = await lane.prompt("second", BACKGROUND_CONTEXT)
+    driven, queued_id = await _drive_with_queued_follow_up(lane, "second", "second-run")
+    outcome = driven.value.outcome
 
-    assert result.ok
-    assert result.value.status == "failed"
-    assert result.value.error is not None
-    assert result.value.error.code == "summarization_failed"
+    assert outcome.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.code == "summarization_failed"
+    assert await session.get_value(pending_entry(queued_id), BACKGROUND_CONTEXT) is not None
     assert len(models.summary_contexts) == 2
     history = await lane.find_entries(BranchScan(order="oldest_first"), BACKGROUND_CONTEXT)
     assert not any(isinstance(entry, CompactionEntry) for entry in history)

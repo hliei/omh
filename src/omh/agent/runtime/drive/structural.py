@@ -892,9 +892,9 @@ async def _publish_outcome(
             trigger_entry_id = capability.task.resume_trigger_entry_id
             resume_continuation = capability.task.resume_continuation
             if trigger_entry_id is None:
-                raise RuntimeError("Threshold compaction is missing its resume trigger")
+                raise RuntimeError("Compaction task is missing its resume trigger")
             if resume_continuation is None:
-                raise RuntimeError("Threshold compaction is missing its continuation")
+                raise RuntimeError("Compaction task is missing its continuation")
             placement = await plan_boundary_inbox(
                 mutator,
                 lane.name,
