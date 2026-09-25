@@ -14,6 +14,7 @@ These guarantees connect the [harness contract](../harness.md) to executable che
 | Pending inputs move atomically into history; cancellation races have one outcome | [Queued inputs](../../tests/agent/runtime/test_queued_inputs.py) |
 | Watch snapshot/event boundaries avoid gaps; handler errors do not roll back commits | [Observation](../../tests/agent/runtime/test_observation.py) |
 | Compaction retains history; steer/abort races respect atomic publication | [Compaction](../../tests/agent/runtime/test_compaction.py) |
+| Overflow recovery commits the normalized response, usage, preparation, and summary decision atomically; one allowance per trigger | [Overflow recovery](../../tests/agent/runtime/test_overflow_recovery.py) |
 | Navigation preserves abandoned history; interrupted summaries recover from saved intent | [Navigation](../../tests/agent/runtime/test_navigation.py) |
 | Tool environment cleanup, edits, truncation, and resource invocation preserve their contracts | [Local environment](../../tests/agent/env/test_local_env.py), [tools](../../tests/agent/tools/), [resources](../../tests/agent/runtime/test_resources.py) |
 

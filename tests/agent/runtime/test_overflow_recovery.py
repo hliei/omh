@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 from omh.agent import (
     BACKGROUND_CONTEXT,
@@ -19,14 +22,17 @@ from omh.agent import (
     CompactionSettings,
     CompactionStartEvent,
     DriveOptions,
+    HarnessClosed,
     MemorySessionRepo,
     PromptRequest,
     RetryPolicy,
     SessionCreateOptions,
     TurnStartEvent,
     UsageScan,
+    operation_tool_args_prefix,
     pending_entry,
 )
+from omh.agent.session.values import operation_preparation
 from omh.llm import (
     AssistantMessage,
     AssistantMessageEventStream,
@@ -41,6 +47,7 @@ from omh.llm import (
     UsageCost,
 )
 from omh.llm import Context as LlmContext
+from omh.session_backends.sqlite import SqliteSessionRepo
 
 MODEL = Model(
     id="test-model",
@@ -218,10 +225,11 @@ class GatedSummaryModels(ScriptedModels):
 
 
 class GatedConversationModels(ScriptedModels):
-    """Block only the first conversation request until the test releases it."""
+    """Block one conversation request until the test releases it."""
 
-    def __init__(self, model: Model = MODEL) -> None:
+    def __init__(self, model: Model = MODEL, gate_index: int = 0) -> None:
         super().__init__(model)
+        self.gate_index = gate_index
         self.conversation_started = asyncio.Event()
         self.conversation_cancelled = asyncio.Event()
         self.release_conversation = asyncio.Event()
@@ -229,7 +237,10 @@ class GatedConversationModels(ScriptedModels):
     def stream_simple(
         self, model: Model, context: LlmContext, options: object
     ) -> object:
-        if context.system_prompt is None and len(self.conversation_contexts) == 0:
+        if (
+            context.system_prompt is None
+            and len(self.conversation_contexts) == self.gate_index
+        ):
             self.conversation_contexts.append(context)
             self.conversation_started.set()
             release = self.release_conversation
@@ -300,6 +311,89 @@ async def _drive_with_queued_follow_up(
     )
     assert driven.ok
     return driven, queued.value.entry_id
+
+
+class InterruptingSummaryModels(ScriptedModels):
+    """Block the first overflow summary request and record its abort signal."""
+
+    def __init__(self, model: Model = MODEL) -> None:
+        super().__init__(model)
+        self.summary_started = asyncio.Event()
+        self.summary_cancelled = asyncio.Event()
+        self.summary_signal: object | None = None
+
+    def stream_simple(
+        self, model: Model, context: LlmContext, options: object
+    ) -> object:
+        if context.system_prompt and SUMMARY_MARKER in context.system_prompt:
+            self.summary_contexts.append(context)
+            self.summary_signal = getattr(options, "signal", None)
+            self.summary_started.set()
+            cancelled = self.summary_cancelled
+
+            class InterruptedSummary:
+                async def result(self) -> AssistantMessage:
+                    try:
+                        await asyncio.Future[None]()
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                        raise
+                    raise AssertionError("unreachable")
+
+            return InterruptedSummary()
+        return super().stream_simple(model, context, options)
+
+
+async def _attach_harness(
+    session: object,
+    models: object,
+    *,
+    model: Model = MODEL,
+    compaction: CompactionSettings | None = None,
+    retry: RetryPolicy | None = None,
+    tools: tuple[AgentHarnessTool, ...] = (),
+) -> tuple[object, object]:
+    options = AgentHarnessOptions(
+        session=session,  # type: ignore[arg-type]
+        models=models,  # type: ignore[arg-type]
+        model=model,
+        tools=tools,
+    )
+    if compaction is not None:
+        options = replace(options, compaction=compaction)
+    if retry is not None:
+        options = replace(options, retry=retry)
+    created = await AgentHarness.create(options, BACKGROUND_CONTEXT)
+    lane = await created.harness.lane("main", BACKGROUND_CONTEXT)
+    return created.harness, lane, created.open
+
+
+async def _sqlite_harness(
+    tmp_path: Path,
+    models: object,
+    *,
+    model: Model = MODEL,
+    compaction: CompactionSettings | None = None,
+    retry: RetryPolicy | None = None,
+    tools: tuple[AgentHarnessTool, ...] = (),
+) -> tuple[object, object, object, object]:
+    repo = SqliteSessionRepo(tmp_path)
+    session = await repo.create(SessionCreateOptions(id="session"), BACKGROUND_CONTEXT)
+    harness, lane, _ = await _attach_harness(
+        session, models, model=model, compaction=compaction, retry=retry, tools=tools
+    )
+    return harness, lane, repo, session
+
+
+async def _assistant_entries(lane: object) -> list[AssistantMessage]:
+    history = await lane.find_entries(  # type: ignore[attr-defined]
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    return [
+        entry.message
+        for entry in history
+        if entry.type == "message" and isinstance(entry.message, AssistantMessage)
+    ]
 
 
 async def test_first_overflow_compacts_settles_and_resumes_same_run() -> None:
@@ -767,6 +861,580 @@ async def test_abort_before_settlement_does_not_start_overflow_compaction() -> N
     assert driven.value.outcome.status == "aborted"
     assert starts == []
     assert models.summary_contexts == []
+    assert (
+        await session.scan_values(operation_preparation("run", ""), BACKGROUND_CONTEXT)
+        == []
+    )
+
+    await harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_reopen_uncommitted_assistant_effect_recovers_as_unknown_outcome(
+    tmp_path: Path,
+) -> None:
+    models = GatedConversationModels()
+    harness, lane, repo, session = await _sqlite_harness(
+        tmp_path, models, retry=RetryPolicy(max_retries=1, base_delay_ms=0)
+    )
+    metadata = session.metadata
+    admitted = await lane.accept(
+        PromptRequest(prompt="hello", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await models.conversation_started.wait()
+
+    await harness.close(BACKGROUND_CONTEXT)
+    with pytest.raises(HarnessClosed):
+        await driving
+    recovery = ScriptedModels()
+    recovery.conversation = [_assistant("recovered answer", _usage(4))]
+    reopened_session = await repo.open(metadata, BACKGROUND_CONTEXT)
+    reopened, reopened_lane, opened = await _attach_harness(
+        reopened_session,
+        recovery,
+        retry=RetryPolicy(max_retries=1, base_delay_ms=0),
+    )
+
+    assert [(item.lane, item.operation_id) for item in opened] == [("main", "run")]
+    execution = await reopened_lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "assistant.effect_pending"
+    assert recovery.conversation_contexts == []
+    assert recovery.summary_contexts == []
+
+    resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
+
+    assert resumed.ok
+    assert resumed.value.kind == "settled"
+    assert resumed.value.outcome.status == "completed"
+    assistant_messages = await _assistant_entries(reopened_lane)
+    assert [message.stop_reason for message in assistant_messages] == ["error", "stop"]
+    assert assistant_messages[0].error_message is not None
+    assert "external outcome is unknown" in assistant_messages[0].error_message
+    assert assistant_messages[0].usage.total_tokens == 0
+    assert assistant_messages[1].content[0].text == "recovered answer"
+    history = await reopened_lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assert not any(isinstance(entry, CompactionEntry) for entry in history)
+    assert recovery.summary_contexts == []
+    usage = await reopened_session.scan_usage(UsageScan(), BACKGROUND_CONTEXT)
+    assert sorted(row.usage.total_tokens for row in usage) == [
+        0,
+        _usage(4).total_tokens,
+    ]
+
+    await reopened.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_reopen_committed_overflow_decision_resumes_compaction(
+    tmp_path: Path,
+) -> None:
+    models = ScriptedModels()
+    models.conversation = [_overflow()]
+    harness, lane, repo, session = await _sqlite_harness(
+        tmp_path,
+        models,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+    )
+    metadata = session.metadata
+    decision_started = asyncio.Event()
+    release_decision = asyncio.Event()
+    decision_cancelled = asyncio.Event()
+
+    async def hold_decision(_event: object, _context: object) -> None:
+        decision_started.set()
+        try:
+            await release_decision.wait()
+        except asyncio.CancelledError:
+            decision_cancelled.set()
+            raise
+
+    harness.hooks.on("before_compaction", hold_decision)
+    admitted = await lane.accept(
+        PromptRequest(prompt="overflow me", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await decision_started.wait()
+    execution = await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "summary.deciding"
+
+    await harness.close(BACKGROUND_CONTEXT)
+    with pytest.raises(HarnessClosed):
+        await driving
+    await decision_cancelled.wait()
+    assert models.summary_contexts == []
+
+    recovery = ScriptedModels()
+    recovery.conversation = [_assistant("recovered answer", _usage(4))]
+    recovery.summaries = [_assistant("overflow summary", _usage(7))]
+    reopened_session = await repo.open(metadata, BACKGROUND_CONTEXT)
+    reopened, reopened_lane, opened = await _attach_harness(
+        reopened_session,
+        recovery,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+    )
+
+    assert [(item.lane, item.operation_id) for item in opened] == [("main", "run")]
+    execution = await reopened_lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "summary.deciding"
+    assert recovery.conversation_contexts == []
+    assert recovery.summary_contexts == []
+
+    resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
+
+    assert resumed.ok
+    assert resumed.value.kind == "settled"
+    assert resumed.value.outcome.status == "completed"
+    assert len(recovery.summary_contexts) == 1
+    history = await reopened_lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assert [type(entry) for entry in history].count(CompactionEntry) == 1
+    resumed_context = recovery.conversation_contexts[-1].messages
+    assert "overflow summary" in _llm_text(resumed_context[0])
+    assert "overflow content" not in [_llm_text(message) for message in resumed_context]
+    usage = await reopened_session.scan_usage(UsageScan(), BACKGROUND_CONTEXT)
+    assert sorted(row.usage.total_tokens for row in usage) == sorted(
+        [_overflow().usage.total_tokens, _usage(7).total_tokens, _usage(4).total_tokens]
+    )
+
+    await reopened.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_reopen_summary_ready_resumes_compaction_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omh.agent.runtime.drive import structural as structural_module
+
+    original = structural_module._read_preparation
+    ready_started = asyncio.Event()
+    release_ready = asyncio.Event()
+    calls = 0
+
+    async def blocking_read_preparation(
+        lane: object, operation_id: str, task_id: str, context: object
+    ) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            ready_started.set()
+            await release_ready.wait()
+        return await original(lane, operation_id, task_id, context)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        structural_module, "_read_preparation", blocking_read_preparation
+    )
+
+    models = ScriptedModels()
+    models.conversation = [_overflow()]
+    harness, lane, repo, session = await _sqlite_harness(
+        tmp_path,
+        models,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+    )
+    metadata = session.metadata
+    admitted = await lane.accept(
+        PromptRequest(prompt="overflow me", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await ready_started.wait()
+    execution = await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "summary.ready"
+
+    await harness.close(BACKGROUND_CONTEXT)
+    with pytest.raises(HarnessClosed):
+        await driving
+
+    recovery = ScriptedModels()
+    recovery.conversation = [_assistant("recovered answer", _usage(4))]
+    recovery.summaries = [_assistant("overflow summary", _usage(7))]
+    reopened_session = await repo.open(metadata, BACKGROUND_CONTEXT)
+    reopened, reopened_lane, opened = await _attach_harness(
+        reopened_session,
+        recovery,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+    )
+
+    assert [(item.lane, item.operation_id) for item in opened] == [("main", "run")]
+    execution = await reopened_lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "summary.ready"
+    assert recovery.summary_contexts == []
+
+    resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
+
+    assert resumed.ok
+    assert resumed.value.outcome.status == "completed"
+    assert len(recovery.summary_contexts) == 1
+    history = await reopened_lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assert [type(entry) for entry in history].count(CompactionEntry) == 1
+
+    await reopened.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_reopen_summary_effect_pending_retries_unknown_summary(
+    tmp_path: Path,
+) -> None:
+    models = GatedSummaryModels()
+    models.conversation = [_overflow()]
+    harness, lane, repo, session = await _sqlite_harness(
+        tmp_path,
+        models,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+        retry=RetryPolicy(max_retries=1, base_delay_ms=0),
+    )
+    metadata = session.metadata
+    admitted = await lane.accept(
+        PromptRequest(prompt="overflow me", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await models.summary_started.wait()
+    execution = await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "summary.effect_pending"
+
+    await harness.close(BACKGROUND_CONTEXT)
+    with pytest.raises(HarnessClosed):
+        await driving
+
+    recovery = ScriptedModels()
+    recovery.summaries = [_assistant("recovered summary", _usage(7))]
+    recovery.conversation = [_assistant("recovered answer", _usage(4))]
+    reopened_session = await repo.open(metadata, BACKGROUND_CONTEXT)
+    reopened, reopened_lane, opened = await _attach_harness(
+        reopened_session,
+        recovery,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+        retry=RetryPolicy(max_retries=1, base_delay_ms=0),
+    )
+    retries: list[object] = []
+    reopened.events.on("retry_scheduled", lambda event, _: retries.append(event))
+
+    assert [(item.lane, item.operation_id) for item in opened] == [("main", "run")]
+    execution = await reopened_lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "summary.effect_pending"
+    assert recovery.summary_contexts == []
+
+    resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
+
+    assert resumed.ok
+    assert resumed.value.outcome.status == "completed"
+    assert len(recovery.summary_contexts) == 1
+    assert [event.recovery for event in retries] == [True]
+    history = await reopened_lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assert [type(entry) for entry in history].count(CompactionEntry) == 1
+    usage = await reopened_session.scan_usage(UsageScan(), BACKGROUND_CONTEXT)
+    assert sorted(row.usage.total_tokens for row in usage) == sorted(
+        [_overflow().usage.total_tokens, _usage(7).total_tokens, _usage(4).total_tokens]
+    )
+
+    await reopened.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_reopen_summary_retry_wait_resumes_after_deadline(tmp_path: Path) -> None:
+    models = FailingSummaryModels()
+    models.conversation = [_overflow()]
+    harness, lane, repo, session = await _sqlite_harness(
+        tmp_path,
+        models,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+        retry=RetryPolicy(max_retries=1, base_delay_ms=500),
+    )
+    metadata = session.metadata
+    admitted = await lane.accept(
+        PromptRequest(prompt="overflow me", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+
+    driven = await lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+
+    assert driven.ok
+    assert driven.value.kind == "waiting"
+    assert driven.value.reason == "retry"
+    assert driven.value.not_before > 0
+    execution = await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "summary.retry_wait"
+
+    await harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+    recovery = ScriptedModels()
+    recovery.summaries = [_assistant("recovered summary", _usage(7))]
+    recovery.conversation = [_assistant("recovered answer", _usage(4))]
+    reopened_repo = SqliteSessionRepo(tmp_path)
+    reopened_session = await reopened_repo.open(metadata, BACKGROUND_CONTEXT)
+    reopened, reopened_lane, opened = await _attach_harness(
+        reopened_session,
+        recovery,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+        retry=RetryPolicy(max_retries=1, base_delay_ms=500),
+    )
+
+    assert [(item.lane, item.operation_id) for item in opened] == [("main", "run")]
+    execution = await reopened_lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "summary.retry_wait"
+    assert recovery.summary_contexts == []
+
+    resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
+
+    assert resumed.ok
+    assert resumed.value.outcome.status == "completed"
+    assert len(recovery.summary_contexts) == 1
+    history = await reopened_lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assert [type(entry) for entry in history].count(CompactionEntry) == 1
+    usage = await reopened_session.scan_usage(UsageScan(), BACKGROUND_CONTEXT)
+    # The first summary request settled as a known retryable error and keeps its usage;
+    # the retried request records its own row once.
+    assert sorted(row.usage.total_tokens for row in usage) == sorted(
+        [
+            _overflow().usage.total_tokens,
+            _usage(5).total_tokens,
+            _usage(7).total_tokens,
+            _usage(4).total_tokens,
+        ]
+    )
+
+    await reopened.close(BACKGROUND_CONTEXT)
+    await reopened_repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_reopen_resumed_assistant_generation_after_overflow(
+    tmp_path: Path,
+) -> None:
+    models = GatedConversationModels(gate_index=1)
+    models.conversation = [_overflow()]
+    models.summaries = [_assistant("overflow summary", _usage(7))]
+    harness, lane, repo, session = await _sqlite_harness(
+        tmp_path,
+        models,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+        retry=RetryPolicy(max_retries=1, base_delay_ms=0),
+    )
+    metadata = session.metadata
+    admitted = await lane.accept(
+        PromptRequest(prompt="overflow me", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await models.conversation_started.wait()
+    execution = await lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "assistant.effect_pending"
+    assert len(models.summary_contexts) == 1
+
+    await harness.close(BACKGROUND_CONTEXT)
+    with pytest.raises(HarnessClosed):
+        await driving
+    recovery = ScriptedModels()
+    recovery.conversation = [_assistant("resumed answer", _usage(4))]
+    reopened_session = await repo.open(metadata, BACKGROUND_CONTEXT)
+    reopened, reopened_lane, opened = await _attach_harness(
+        reopened_session,
+        recovery,
+        compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1),
+        retry=RetryPolicy(max_retries=1, base_delay_ms=0),
+    )
+
+    assert [(item.lane, item.operation_id) for item in opened] == [("main", "run")]
+    execution = await reopened_lane.inspect_execution(BACKGROUND_CONTEXT)
+    assert execution.current is not None
+    assert execution.current.at == "assistant.effect_pending"
+    assert recovery.conversation_contexts == []
+
+    resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
+
+    assert resumed.ok
+    assert resumed.value.outcome.status == "completed"
+    history = await reopened_lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    # The durable overflow allowance prevents a second compaction; the interrupted
+    # resumed generation follows ordinary unknown-outcome assistant retry.
+    assert [type(entry) for entry in history].count(CompactionEntry) == 1
+    assistant_messages = await _assistant_entries(reopened_lane)
+    assert assistant_messages[-2].stop_reason == "error"
+    assert assistant_messages[-2].error_message is not None
+    assert "external outcome is unknown" in assistant_messages[-2].error_message
+    assert _llm_text(assistant_messages[-1]) == "resumed answer"
+    usage = await reopened_session.scan_usage(UsageScan(), BACKGROUND_CONTEXT)
+    assert sorted(row.usage.total_tokens for row in usage) == sorted(
+        [
+            _overflow().usage.total_tokens,
+            _usage(7).total_tokens,
+            0,
+            _usage(4).total_tokens,
+        ]
+    )
+
+    await reopened.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_abort_during_overflow_summary_decision_cleans_preparation() -> None:
+    models = ScriptedModels()
+    models.conversation = [_overflow()]
+    harness, lane, repo, session = await _harness(
+        models, compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1)
+    )
+    decision_started = asyncio.Event()
+    decision_cancelled = asyncio.Event()
+    block = asyncio.Event()
+
+    async def hold_decision(_event: object, _context: object) -> None:
+        decision_started.set()
+        try:
+            await block.wait()
+        except asyncio.CancelledError:
+            decision_cancelled.set()
+            raise
+
+    harness.hooks.on("before_compaction", hold_decision)
+    admitted = await lane.accept(
+        PromptRequest(prompt="overflow me", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await decision_started.wait()
+
+    requested = await lane.request_abort("run", BACKGROUND_CONTEXT)
+    await decision_cancelled.wait()
+    driven = await driving
+
+    assert requested.ok
+    assert driven.ok
+    assert driven.value.kind == "settled"
+    assert driven.value.outcome.status == "aborted"
+    assert models.summary_contexts == []
+    assert (
+        await session.scan_values(operation_preparation("run", ""), BACKGROUND_CONTEXT)
+        == []
+    )
+    assert (
+        await session.scan_values(operation_tool_args_prefix("run"), BACKGROUND_CONTEXT)
+        == []
+    )
+    history = await lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assert not any(isinstance(entry, CompactionEntry) for entry in history)
+    assert any(
+        entry.type == "message"
+        and isinstance(entry.message, AssistantMessage)
+        and entry.message.stop_reason == "error"
+        for entry in history
+    )
+
+    await harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_abort_during_overflow_summary_effect_cleans_pending_state() -> None:
+    models = InterruptingSummaryModels()
+    models.conversation = [_overflow()]
+    harness, lane, repo, session = await _harness(
+        models, compaction=CompactionSettings(reserve_tokens=128, keep_recent_tokens=1)
+    )
+    retries: list[object] = []
+    harness.events.on("retry_scheduled", lambda event, _: retries.append(event))
+    admitted = await lane.accept(
+        PromptRequest(prompt="overflow me", operation_id="run"), BACKGROUND_CONTEXT
+    )
+    assert admitted.ok
+    driving = asyncio.create_task(
+        lane.drive(DriveOptions(operation_id="run"), BACKGROUND_CONTEXT)
+    )
+    await models.summary_started.wait()
+
+    requested = await lane.request_abort("run", BACKGROUND_CONTEXT)
+    await models.summary_cancelled.wait()
+    driven = await driving
+
+    assert requested.ok
+    assert driven.ok
+    assert driven.value.kind == "settled"
+    assert driven.value.outcome.status == "aborted"
+    assert models.summary_signal is not None
+    assert models.summary_signal.aborted
+    assert len(models.summary_contexts) == 1
+    assert retries == []
+    assert (
+        await session.scan_values(operation_preparation("run", ""), BACKGROUND_CONTEXT)
+        == []
+    )
+    history = await lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    assert not any(isinstance(entry, CompactionEntry) for entry in history)
+
+    await harness.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+
+
+async def test_split_turn_overflow_summary_records_each_request_usage_once() -> None:
+    models = ScriptedModels()
+    models.conversation = [
+        _assistant("answer 1", _usage(3)),
+        _assistant("answer 2", _usage(3)),
+        _overflow(),
+        _assistant("recovered answer", _usage(4)),
+    ]
+    models.summaries = [
+        _assistant("history summary", _usage(7)),
+        _assistant("turn prefix summary", _usage(9)),
+    ]
+    harness, lane, repo, session = await _harness(
+        models, compaction=CompactionSettings(reserve_tokens=16, keep_recent_tokens=3)
+    )
+
+    assert (await lane.prompt("first", BACKGROUND_CONTEXT)).ok
+    assert (await lane.prompt("second", BACKGROUND_CONTEXT)).ok
+    result = await lane.prompt("third", BACKGROUND_CONTEXT)
+
+    assert result.ok
+    assert result.value.status == "completed"
+    assert len(models.summary_contexts) == 2
+    history = await lane.find_entries(
+        BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
+    )
+    compactions = [entry for entry in history if isinstance(entry, CompactionEntry)]
+    assert len(compactions) == 1
+    assert "Turn Context (split turn)" in compactions[0].summary
+    usage = await session.scan_usage(UsageScan(), BACKGROUND_CONTEXT)
+    assert sorted(row.usage.input for row in usage) == sorted([3, 3, 9_000, 7, 9, 4])
 
     await harness.close(BACKGROUND_CONTEXT)
     await repo.close(BACKGROUND_CONTEXT)

@@ -21,10 +21,13 @@ The first abort marker drains existing steer/follow-up inputs, retaining next-ru
 | Tool effect pending, either declaration not safe | Stage an interrupted error result, including the latest committed checkpoint when available |
 | Tool outcome ready | Materialize the staged result without invoking the tool |
 | Summary effect pending | Treat the lost response as unknown and retry with a new attempt under summary retry rules |
+| Overflow summary decision/ready/effect pending/retry wait | Resume the committed overflow compaction through the shared summary states; a decline, missing preparation, or exhausted retry budget terminal-fails the run and retains queued lane input |
 | Retry wait | Respect the saved not-before boundary |
 | Terminal result | Read the completed record; do not rerun the operation |
 
 Assistant recovery never reconnects to the old provider stream. Zero usage in an unknown response means no confirmed usage is available, not that the provider billed nothing. Partial tool calls in an interrupted assistant response do not cause tool execution.
+
+A recovered uncommitted assistant effect settles as an unknown-outcome error with zero confirmed usage and follows the ordinary assistant retry rule; the harness never infers context overflow from that synthetic message. A committed overflow response and each settled structural request record their reported usage once, including both requests of a split-turn summary. Overflow recovery is bounded to one compaction per generation trigger: a second overflow for the same trigger terminal-fails the run without another compaction or ordinary error retry. Reopening at the overflow decision or any summary state discovers the operation without driving it; explicit resume continues or terminal-fails it.
 
 Safe tool replay requires both declarations; a newly relaxed declaration cannot retroactively make an old unsafe effect replayable. Before a new effect, discard the old checkpoint so another interruption cannot present stale progress as new. Complete staged results remain authoritative even when the current tool registry changes.
 
@@ -39,4 +42,4 @@ A failed durable commit or invalid required state faults the harness with `Harne
 ## Implementation and checks
 
 - [Drive ownership and abort](../../src/omh/agent/runtime/lane.py), [restore](../../src/omh/agent/runtime/restore.py), [assistant recovery](../../src/omh/agent/runtime/drive/recovery.py), [tool reconciliation](../../src/omh/agent/runtime/drive/reconcile.py), [harness lifecycle](../../src/omh/agent/runtime/harness.py).
-- [Model/cancellation/fault tests](../../tests/agent/runtime/test_model_conversation.py), [tool replay/fencing tests](../../tests/agent/runtime/test_tool_execution.py), [summary recovery tests](../../tests/agent/runtime/test_compaction.py), [navigation recovery tests](../../tests/agent/runtime/test_navigation.py).
+- [Model/cancellation/fault tests](../../tests/agent/runtime/test_model_conversation.py), [tool replay/fencing tests](../../tests/agent/runtime/test_tool_execution.py), [summary recovery tests](../../tests/agent/runtime/test_compaction.py), [navigation recovery tests](../../tests/agent/runtime/test_navigation.py), [overflow recovery tests](../../tests/agent/runtime/test_overflow_recovery.py).

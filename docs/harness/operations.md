@@ -50,7 +50,22 @@ Steer and follow-up each support `all` or `one-at-a-time`, captured at acceptanc
 
 `compact` accepts a structural operation; a normal run can also compact when its configured context threshold is reached. Preparation captures summary inputs, retained history, and file information. Summary execution uses `summary.deciding → summary.ready → summary.effect_pending ↔ summary.retry_wait`. Each structural request has its own intent and usage settlement; split-turn summarization can require two requests.
 
-Steer takes precedence over threshold compaction. Once a threshold summary is ready, publishing the compaction entry, consuming queued steer, and setting the continuing assistant state occur together. A declined threshold decision is not repeatedly reconsidered in that run. If reserved tokens leave no summary budget, automatic compaction is skipped. Provider context-overflow recovery is not implemented.
+Steer takes precedence over threshold compaction. Once a threshold summary is ready, publishing the compaction entry, consuming queued steer, and setting the continuing assistant state occur together. A declined threshold decision is not repeatedly reconsidered in that run. If reserved tokens leave no summary budget, automatic compaction is skipped.
+
+### Context-overflow recovery
+
+A normal run also attempts one durable compaction when the assistant response settled after `after_response` is classified as context overflow. Classification runs after the durable cancellation check and before ordinary error retry. The final post-hook message matches when it is:
+
+- an `error` response with a recognized context-size message, excluding throttling and rate-limit text;
+- a `stop` response whose reported input plus cache-read usage exceeds the captured model context window;
+- a `length` response with zero reported output and input plus cache-read usage at least 99% of a captured positive context window; or
+- a `length` response whose reported output is below the captured positive intended output limit.
+
+For any match, settlement normalizes the final post-hook response to `stop_reason="error"` while keeping its content and usage and preserving an existing error message. One transaction persists the normalized error entry, its usage, the branch tip, deletion of the pending assistant frames, the prepared compaction inputs, and the next `summary.deciding` state. The error entry stays in history but is excluded from later model context, and any tool calls in it never execute.
+
+Overflow compaction reuses the shared summary states with `reason="overflow"` and the captured compaction settings; it ignores `enabled` and the threshold estimate, so it runs even when threshold compaction is disabled. Its events publish after the corresponding commits. On success it appends the compaction entry without erasing history and continues the same operation at a fresh assistant generation.
+
+Each generation trigger has one recovery allowance, recorded durably. New lane-owned input or a tool-result generation resets it; an ordinary retry or the same-trigger continuation does not. An overflow while the allowance is used terminal-fails the run without a second compaction or ordinary error retry. If preparation is unavailable, `before_compaction` declines, or summary generation exhausts its bounded retries, the run terminal-fails with the normalized response and known usage settled, cleans operation-owned temporary state, and retains queued lane input.
 
 Navigation requires an existing target different from the current tip. Root cannot receive a label; summary navigation requires non-root source and target. Without a summary, `navigation.ready_to_commit` atomically moves the tip, writes an optional label, and terminates. With a summary, the shared summary states lead to a branch-summary entry under the target. Abort preserves the source tip. Restore validates intent/state agreement.
 
@@ -63,4 +78,4 @@ The terminal transaction writes a result record, deletes operation metadata/stat
 ## Implementation and checks
 
 - [Lane acceptance and queues](../../src/omh/agent/runtime/lane.py), [drive transitions](../../src/omh/agent/runtime/drive/), [runtime codec](../../src/omh/agent/runtime/codec.py).
-- [Model runs](../../tests/agent/runtime/test_model_conversation.py), [tool execution](../../tests/agent/runtime/test_tool_execution.py), [queues](../../tests/agent/runtime/test_queued_inputs.py), [compaction](../../tests/agent/runtime/test_compaction.py), [navigation](../../tests/agent/runtime/test_navigation.py).
+- [Model runs](../../tests/agent/runtime/test_model_conversation.py), [tool execution](../../tests/agent/runtime/test_tool_execution.py), [queues](../../tests/agent/runtime/test_queued_inputs.py), [compaction](../../tests/agent/runtime/test_compaction.py), [navigation](../../tests/agent/runtime/test_navigation.py), [overflow recovery](../../tests/agent/runtime/test_overflow_recovery.py).
