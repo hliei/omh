@@ -32,7 +32,8 @@ from omh.agent import (
     operation_tool_args_prefix,
     pending_entry,
 )
-from omh.agent.session.values import operation_preparation
+from omh.agent.runtime.codec import decode_operation_state
+from omh.agent.session.values import operation_preparation, operation_state
 from omh.llm import (
     AssistantMessage,
     AssistantMessageEventStream,
@@ -1144,6 +1145,9 @@ async def test_reopen_summary_effect_pending_retries_unknown_summary(
     assert resumed.value.outcome.status == "completed"
     assert len(recovery.summary_contexts) == 1
     assert [event.recovery for event in retries] == [True]
+    assert [event.error_message for event in retries] == [
+        "Structural summary attempt was interrupted and its external outcome is unknown"
+    ]
     history = await reopened_lane.find_entries(
         BranchScan(order="oldest_first"), BACKGROUND_CONTEXT
     )
@@ -1177,7 +1181,8 @@ async def test_reopen_summary_retry_wait_resumes_after_deadline(tmp_path: Path) 
     assert driven.ok
     assert driven.value.kind == "waiting"
     assert driven.value.reason == "retry"
-    assert driven.value.not_before > 0
+    not_before = driven.value.not_before
+    assert not_before > 0
     execution = await lane.inspect_execution(BACKGROUND_CONTEXT)
     assert execution.current is not None
     assert execution.current.at == "summary.retry_wait"
@@ -1202,6 +1207,13 @@ async def test_reopen_summary_retry_wait_resumes_after_deadline(tmp_path: Path) 
     assert execution.current is not None
     assert execution.current.at == "summary.retry_wait"
     assert recovery.summary_contexts == []
+    stored_retry = await reopened_session.get_value(
+        operation_state("run"), BACKGROUND_CONTEXT
+    )
+    assert stored_retry is not None
+    durable_retry = decode_operation_state(stored_retry.value)
+    assert durable_retry.at == "summary.retry_wait"
+    assert durable_retry.not_before == not_before
 
     resumed = await reopened_lane.resume(BACKGROUND_CONTEXT)
 
