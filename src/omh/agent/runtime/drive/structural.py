@@ -54,6 +54,7 @@ from omh.agent.runtime.retry import (
 from omh.agent.runtime.state import read_operation
 from omh.agent.runtime.transcript import committed_message_events, read_lane_queue
 from omh.agent.runtime.types import (
+    AssistantEffectPendingOperation,
     AssistantReadyOperation,
     CheckpointOperation,
     GenerationContext,
@@ -73,6 +74,7 @@ from omh.agent.session.commit import commit_write, insert_entry, insert_usage
 from omh.agent.session.types import (
     BranchSummaryEntry,
     CompactionEntry,
+    Entry,
     NewBranchSummaryEntry,
     NewCompactionEntry,
     SessionMutator,
@@ -149,6 +151,60 @@ class CompactionThreshold:
     preparation: CompactionPreparation
 
 
+@dataclass(frozen=True, slots=True)
+class OverflowPreparation:
+    task_id: str
+    preparation: CompactionPreparation
+
+
+async def _read_bounded_path(
+    reader: SessionMutator, lane_name: str, context: Context
+) -> list[Entry]:
+    """Read the pre-settlement path without crossing the newest compaction."""
+    stored_tip = await reader.get_value(branch_tip(lane_name), context)
+    if stored_tip is None:
+        raise RuntimeError(f"Lane {lane_name!r} is missing branch state")
+    if stored_tip.value is None:
+        return []
+    return list(
+        reversed(
+            await reader.scan_branch(
+                StorageBranchScan(
+                    start=stored_tip.value,
+                    stop_at_type="compaction",
+                    order="newest_first",
+                ),
+                context,
+            )
+        )
+    )
+
+
+async def prepare_overflow_compaction(
+    lane: AgentLane,
+    reader: SessionMutator,
+    operation_id: str,
+    intent: AssistantEffectPendingOperation,
+    context: Context,
+) -> OverflowPreparation | None:
+    """Prepare overflow compaction from the bounded path before settlement.
+
+    Overflow compaction ignores ``settings.enabled`` and the threshold estimate; the
+    captured settings supply only the summarization shape. Returning ``None`` means no
+    preparation is available.
+    """
+    if intent.generation_context.overflow_recovery_used:
+        return None
+    path = await _read_bounded_path(reader, lane.name, context)
+    preparation = prepare_compaction(path, intent.settings.compaction)
+    if preparation is None:
+        return None
+    return OverflowPreparation(
+        task_id=lane._options.session.id_generator.next(),
+        preparation=preparation,
+    )
+
+
 async def prepare_compaction_threshold(
     lane: AgentLane,
     operation_id: str,
@@ -181,25 +237,7 @@ async def prepare_compaction_threshold(
         )
         if snapshot.state != checkpoint:
             return None
-        stored_tip = await mutator.get_value(branch_tip(lane.name), mutation_context)
-        if stored_tip is None:
-            raise RuntimeError(f"Lane {lane.name!r} is missing branch state")
-        path = (
-            []
-            if stored_tip.value is None
-            else list(
-                reversed(
-                    await mutator.scan_branch(
-                        StorageBranchScan(
-                            start=stored_tip.value,
-                            stop_at_type="compaction",
-                            order="newest_first",
-                        ),
-                        mutation_context,
-                    )
-                )
-            )
-        )
+        path = await _read_bounded_path(mutator, lane.name, mutation_context)
         preparation = prepare_compaction(path, settings)
         if preparation is None or not should_compact(
             preparation.tokens_before, model.context_window, settings
@@ -842,15 +880,21 @@ async def _publish_outcome(
             else "completed"
         )
         error = outcome if isinstance(outcome, OperationError) else None
+        run_error = error
+        if outcome is None and capability.task.reason == "overflow":
+            run_error = OperationError(
+                code="compaction_declined",
+                message="Overflow compaction was declined",
+            )
         resumes_run = capability.task.resume_continuation is not None
         placed_inbox = snapshot.lane.inbox
-        if resumes_run and error is None:
+        if resumes_run and run_error is None:
             trigger_entry_id = capability.task.resume_trigger_entry_id
             resume_continuation = capability.task.resume_continuation
             if trigger_entry_id is None:
-                raise RuntimeError("Threshold compaction is missing its resume trigger")
+                raise RuntimeError("Compaction task is missing its resume trigger")
             if resume_continuation is None:
-                raise RuntimeError("Threshold compaction is missing its continuation")
+                raise RuntimeError("Compaction task is missing its continuation")
             placement = await plan_boundary_inbox(
                 mutator,
                 lane.name,
@@ -938,7 +982,12 @@ async def _publish_outcome(
             record = None
             ended_at = 0
         else:
-            record = result_record(snapshot.meta, status, tip_id, error)
+            record = result_record(
+                snapshot.meta,
+                "failed" if run_error is not None else status,
+                tip_id,
+                run_error,
+            )
             writes.extend(terminal_writes(lane.name, snapshot, record))
             ended_at = record.ended_at
         commit = await mutator.commit(writes, mutation_context)
@@ -1034,7 +1083,7 @@ async def _publish_outcome(
                     error=error,
                 )
             )
-        if resumes_run and error is not None:
+        if resumes_run and run_error is not None:
             assert record is not None
             events.append(
                 RunEndEvent(
@@ -1044,7 +1093,7 @@ async def _publish_outcome(
                     from_tip_id=record.from_tip_id,
                     tip_id=record.tip_id,
                     ended_at=record.ended_at,
-                    error=error,
+                    error=run_error,
                 )
             )
         events.extend(boundary_events)

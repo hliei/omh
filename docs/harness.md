@@ -44,6 +44,6 @@ A crash after tool staging but before materialization does not rerun the tool: r
 
 ## Supported scope
 
-The SDK includes Memory and SQLite Sessions, named lanes, streamed model runs, custom and built-in local tools, durable queues, observation/hooks, compaction, tree navigation, and explicit skill/template invocation. The built-in provider is DeepSeek Chat Completions. Standard CPython 3.14 with asyncio is the execution baseline; macOS and Ubuntu 24.04 are CI targets.
+The SDK includes Memory and SQLite Sessions, named lanes, streamed model runs, custom and built-in local tools, durable queues, observation/hooks, compaction (explicit, threshold, and context-overflow recovery), tree navigation, and explicit skill/template invocation. The built-in provider is DeepSeek Chat Completions. Standard CPython 3.14 with asyncio is the execution baseline; macOS and Ubuntu 24.04 are CI targets.
 
 The current implementation does not provide cross-Session fork, remote Session transport, JSONL storage, distributed leases or automatic ownership takeover, deferred provider execution, provider-stream reattachment, or a general schema upgrade mechanism. It does not promise exactly-once external effects. Compaction changes future model context and preserves stored history; it is not data erasure. Live-provider validation, packaging validation, and performance claims require their own evidence.
