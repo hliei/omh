@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from omh.agent.agent_harness import OperationError
 from omh.agent.context import Context
 from omh.agent.events import (
+    CompactionStartEvent,
     EntryAddedEvent,
     HarnessEvent,
     MessageEndEvent,
@@ -14,8 +16,17 @@ from omh.agent.events import (
     TurnEndEvent,
     UsageEvent,
 )
-from omh.agent.runtime.codec import encode_lane_state, encode_operation_state
+from omh.agent.runtime.codec import (
+    encode_compaction_preparation,
+    encode_lane_state,
+    encode_operation_state,
+)
+from omh.agent.runtime.drive.structural import (
+    OverflowPreparation,
+    prepare_overflow_compaction,
+)
 from omh.agent.runtime.drive.terminal import result_record, terminal_writes
+from omh.agent.runtime.overflow import is_context_overflow, is_recoverable_length
 from omh.agent.runtime.retry import (
     is_retryable_assistant_error,
     retry_delay_ms,
@@ -25,10 +36,14 @@ from omh.agent.runtime.state import read_operation
 from omh.agent.runtime.types import (
     AssistantEffectPendingOperation,
     AssistantRetryWaitOperation,
+    CancelRequestedControl,
     CheckpointOperation,
     LaneState,
     MayFinish,
+    NeedAssistant,
     PlannedToolCall,
+    SummaryDecidingOperation,
+    SummaryTask,
     ToolBatch,
     ToolsOperation,
 )
@@ -44,6 +59,7 @@ from omh.agent.session.values import (
     branch_tip,
     delete_list,
     lane_state,
+    operation_preparation,
     operation_state,
     pending_assistant_frames,
     set_value,
@@ -63,6 +79,10 @@ async def settle_response(
     *,
     recovery: bool = False,
 ) -> None:
+    overflow = is_context_overflow(
+        response, intent.context_window
+    ) or is_recoverable_length(response, intent.intended_output_limit)
+
     async def settle(
         mutator: SessionMutator, mutation_context: Context
     ) -> tuple[HarnessEvent, ...]:
@@ -78,10 +98,49 @@ async def settle_response(
         if stored_tip is None:
             raise RuntimeError(f"Lane {lane.name!r} is missing branch state")
         next_state: (
-            CheckpointOperation | AssistantRetryWaitOperation | ToolsOperation | None
+            CheckpointOperation
+            | AssistantRetryWaitOperation
+            | SummaryDecidingOperation
+            | ToolsOperation
+            | None
         ) = None
         failure: OperationError | None = None
-        if response.stop_reason == "error":
+        committed = response
+        overflow_preparation: OverflowPreparation | None = None
+        if overflow and not isinstance(state.control, CancelRequestedControl):
+            committed = replace(
+                response,
+                stop_reason="error",
+                error_message=(
+                    response.error_message
+                    or "Assistant request exceeded the context window"
+                ),
+            )
+            if not state.generation_context.overflow_recovery_used:
+                overflow_preparation = await prepare_overflow_compaction(
+                    lane, mutator, operation_id, state, mutation_context
+                )
+            if (
+                state.generation_context.overflow_recovery_used
+                or overflow_preparation is None
+            ):
+                failure = OperationError(
+                    code="assistant_error",
+                    message=committed.error_message or "Assistant request failed",
+                )
+            else:
+                next_state = SummaryDecidingOperation(
+                    latest_assistant_entry_id=state.response_entry_id,
+                    task=SummaryTask(
+                        task_id=overflow_preparation.task_id,
+                        reason="overflow",
+                        resume_continuation=NeedAssistant(overflow_recovery_used=True),
+                        resume_trigger_entry_id=state.generation_context.trigger_entry_id,
+                    ),
+                    control=state.control,
+                    settings=state.settings,
+                )
+        elif response.stop_reason == "error":
             policy = state.generation_context.retry_policy
             if (
                 recovery or is_retryable_assistant_error(response)
@@ -152,13 +211,13 @@ async def settle_response(
                 NewMessageEntry(
                     id=state.response_entry_id,
                     parent_id=stored_tip.value,
-                    message=response,
+                    message=committed,
                 )
             ),
             insert_usage(
                 UsageRow(
                     id=state.usage_id,
-                    usage=response.usage,
+                    usage=committed.usage,
                     adjustment=False,
                     entry_id=state.response_entry_id,
                 )
@@ -168,6 +227,19 @@ async def settle_response(
                 pending_assistant_frames(operation_id, state.response_entry_id)
             ),
         ]
+        if isinstance(next_state, SummaryDecidingOperation) and (
+            overflow_preparation is not None
+        ):
+            writes.append(
+                set_value(
+                    operation_preparation(
+                        operation_id, overflow_preparation.task_id
+                    ),
+                    encode_compaction_preparation(
+                        overflow_preparation.preparation
+                    ),
+                )
+            )
         if failure is None:
             if next_state is None:
                 raise RuntimeError("Assistant settlement has no successor")
@@ -216,7 +288,7 @@ async def settle_response(
             MessageEndEvent(
                 lane=lane.name,
                 run_id=operation_id,
-                message=response,
+                message=committed,
                 entry_id=entry.id,
                 recovery=recovery,
             ),
@@ -254,10 +326,10 @@ async def settle_response(
                         run_id=operation_id,
                         step=state.generation_context.step_id,
                         attempt=state.attempt,
-                        success=response.stop_reason not in {"error", "aborted"},
+                        success=committed.stop_reason not in {"error", "aborted"},
                         final_error=(
-                            response.error_message
-                            if response.stop_reason in {"error", "aborted"}
+                            committed.error_message
+                            if committed.stop_reason in {"error", "aborted"}
                             else None
                         ),
                     )
@@ -268,10 +340,19 @@ async def settle_response(
                         lane=lane.name,
                         run_id=operation_id,
                         turn_id=state.generation_context.step_id,
-                        message=response,
+                        message=committed,
                         tool_results=(),
                     )
                 )
+        if isinstance(next_state, SummaryDecidingOperation):
+            events.append(
+                CompactionStartEvent(
+                    lane=lane.name,
+                    run_id=operation_id,
+                    reason="overflow",
+                    started_at=commit.timestamp,
+                )
+            )
         if terminal is not None:
             events.append(terminal)
         return tuple(events)
