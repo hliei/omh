@@ -4,6 +4,10 @@
 
 ## Language
 
+**Agent**:
+持有对话消息、配置、输入队列与运行状态的进程内执行单元，不要求 Session 存储。应用层负责其会话保存与运行策略；Agent 本身不提供跨进程中断恢复保证。
+_Avoid_: AgentHarness、AgentLane
+
 **AgentHarness**:
 管理 agent 对话执行及中断恢复的持久化运行时。已持久化确认的执行结果在恢复后不会重复执行；外部结果未知的调用遵循明确的恢复规则。
 _Avoid_: 工作流调度平台
