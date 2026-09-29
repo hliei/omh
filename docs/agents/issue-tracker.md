@@ -25,8 +25,8 @@ Use ticket status `todo`, `in-progress`, `in-review`, `done`, or `cancelled`. Re
 
 1. Select a ticket or cohesive group whose external blockers are `done`. Work internal dependencies in order when several tickets share a branch.
 2. Follow [the Git workflow](git-workflow.md) to define a reviewable delivery and create its branch. Mark selected tickets `in-progress`.
-3. Verify acceptance criteria and record results. Mark tickets `in-review` when their PR is ready.
-4. Mark tickets `done` after their acceptance criteria are met and the changes merge. Complete a parent specification only when its full scope is delivered.
+3. Verify acceptance criteria and record results in the ticket's acceptance-criteria checkboxes (`- [x]` for met criteria; leave an unmet criterion unchecked with a short note). Mark tickets `in-review` when their PR is ready.
+4. Mark tickets `done` after their acceptance criteria are met and the changes merge. A `done` ticket has every acceptance-criteria box checked; complete a parent specification only when its full scope is delivered.
 
 A closed historical GitHub issue does not imply its migrated local ticket is done. Migration closes records administratively; implementation status stays local.
 
