@@ -6,9 +6,9 @@ import platform
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from inspect import isawaitable
-from typing import Any
+from typing import Any, Callable
 
 from omh.llm.api.simple_options import build_base_options
 from omh.llm.api.transform_messages import transform_messages
@@ -55,6 +55,7 @@ from omh.llm.utils.json_parse import parse_streaming_json
 from omh.llm.utils.text import get_system_message_text, render_system_message_update
 from omh.llm.utils.transcript import (
     get_current_tools,
+    get_initial_system_message,
     resolve_transcript,
 )
 
@@ -85,23 +86,12 @@ class OpenAICompletionsApi:
         context: TranscriptContext,
         options: OpenAICompletionsOptions | StreamOptions | None = None,
     ) -> AssistantMessageEventStream:
-        completions_options = options if isinstance(options, OpenAICompletionsOptions) or options is None else OpenAICompletionsOptions(
-            signal=options.signal,
-            api_key=options.api_key,
-            fetch=options.fetch,
-            env=options.env,
-            headers=options.headers,
-            temperature=options.temperature,
-            sampling_params=options.sampling_params,
-            max_tokens=options.max_tokens,
-            timeout_ms=options.timeout_ms,
-            on_payload=options.on_payload,
-            on_response=options.on_response,
-            on_provider_stream_event=options.on_provider_stream_event,
-            transport=options.transport,
-            session_id=options.session_id,
-            thinking_budgets=options.thinking_budgets,
-            max_retry_delay_ms=options.max_retry_delay_ms,
+        completions_options = (
+            options
+            if isinstance(options, OpenAICompletionsOptions) or options is None
+            else OpenAICompletionsOptions(
+                **{field.name: getattr(options, field.name) for field in fields(StreamOptions)}
+            )
         )
         return stream(model, context, completions_options)
 
@@ -255,6 +245,7 @@ def convert_messages(
     normalized = resolve_transcript(context, compat.supports_mid_convo_system_messages)
     params: list[dict[str, object]] = []
     transformed = transform_messages(normalized.messages, model)
+    leading_system = get_initial_system_message(normalized.messages)
     instruction_role = "developer" if model.reasoning and compat.supports_developer_role else "system"
 
     last_role: str | None = None
@@ -263,7 +254,7 @@ def convert_messages(
         if compat.requires_assistant_after_tool_result and last_role == "toolResult" and message.role == "user":
             params.append({"role": "assistant", "content": "I have processed the tool results."})
         if isinstance(message, SystemMessage):
-            text = get_system_message_text(message) if message_index == 0 else render_system_message_update(message)
+            text = get_system_message_text(message) if message is leading_system else render_system_message_update(message)
             if text:
                 params.append({"role": instruction_role, "content": text})
         elif message.role == "user":
@@ -498,8 +489,8 @@ def _format_error(error: object) -> str:
     return str(error)
 
 
-async def _invoke_callback(callback: object, *args: object) -> None:
-    result = callback(*args)  # type: ignore[operator]
+async def _invoke_callback(callback: Callable[..., object], *args: object) -> None:
+    result = callback(*args)
     if isawaitable(result):
         await result
 
@@ -548,14 +539,14 @@ def stream(
                 timeout_ms=options.timeout_ms if options else None,
             )
             async with _fetch_response(request, options.fetch if options else None) as response:
-                if response.status >= 400:
-                    raise RuntimeError(f"HTTP {response.status}: {response.text}")
                 if options and options.on_response:
                     await _invoke_callback(
                         options.on_response,
                         ProviderResponse(status=response.status, headers=dict(response.headers)),
                         model,
                     )
+                if response.status >= 400:
+                    raise RuntimeError(f"HTTP {response.status}: {response.text}")
                 events.push(StartEvent(partial=output))
 
                 text_block: TextContent | None = None
@@ -743,22 +734,7 @@ def stream_simple(
         model,
         context,
         OpenAICompletionsOptions(
-            temperature=base.temperature,
-            sampling_params=base.sampling_params,
-            max_tokens=base.max_tokens,
-            signal=base.signal,
-            api_key=base.api_key,
-            fetch=base.fetch,
-            headers=base.headers,
-            on_payload=base.on_payload,
-            on_response=base.on_response,
-            on_provider_stream_event=base.on_provider_stream_event,
-            transport=base.transport,
-            session_id=base.session_id,
-            thinking_budgets=base.thinking_budgets,
-            max_retry_delay_ms=base.max_retry_delay_ms,
-            timeout_ms=base.timeout_ms,
-            env=base.env,
+            **{field.name: getattr(base, field.name) for field in fields(StreamOptions)},
             tool_choice=options.tool_choice if options else None,
             reasoning_effort=reasoning_effort,
         ),

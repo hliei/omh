@@ -133,11 +133,6 @@ def get_current_system_prompt(messages: Sequence[object]) -> str:
     return get_system_message_text(message) if message is not None else ""
 
 
-def without_initial_system_message(messages: list[Message]) -> list[Message]:
-    """Drop the leading system message for APIs that carry the prompt outside the message list."""
-    return messages[1:] if get_initial_system_message(messages) is not None else messages
-
-
 def collapse_system_messages(context: TranscriptContext) -> TranscriptContext:
     """Rebuild a transcript for APIs without mid-conversation system messages.
 

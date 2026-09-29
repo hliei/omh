@@ -253,3 +253,81 @@ async def test_session_and_thinking_options_survive_auth_resolution() -> None:
     assert captured[0].transport == "sse"
     assert captured[0].max_retry_delay_ms == 500
     assert captured[0].api_key == "test-key"
+
+
+def _mid_convo_models() -> tuple[Any, Model]:
+    from omh.llm.api.openai_completions import openai_completions_api
+    from omh.llm.types import OpenAICompletionsCompat
+
+    provider = create_provider(
+        CreateProviderOptions(
+            id="midconvo",
+            auth=ProviderAuth(api_key=env_api_key_auth("Midconvo API key", ("MIDCONVO_API_KEY",))),
+            models=[
+                Model(
+                    id="midconvo-model",
+                    name="Midconvo",
+                    api="openai-completions",
+                    provider="midconvo",
+                    base_url="https://example.invalid",
+                    reasoning=False,
+                    input=("text",),
+                    cost=ModelCost(input=0, output=0, cache_read=0, cache_write=0),
+                    context_window=1000,
+                    max_tokens=100,
+                    compat=OpenAICompletionsCompat(supports_mid_convo_system_messages=True),
+                )
+            ],
+            api=openai_completions_api(),
+        )
+    )
+    models = create_models()
+    models.set_provider(provider)
+    model = models.get_model("midconvo", "midconvo-model")
+    assert model is not None
+    return models, model
+
+
+@pytest.mark.asyncio
+async def test_mid_conversation_system_messages_are_retained_when_supported() -> None:
+    models, model = _mid_convo_models()
+    fetch = RecordingFetch(sse_response({"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}))
+
+    context = Context(
+        messages=[
+            SystemMessage(content="Base", timestamp=0, sections={"style": "concise"}),
+            UserMessage(content="Hello", timestamp=1),
+            SystemMessage(content="Added later", timestamp=2, sections={"style": None}),
+        ]
+    )
+
+    await models.stream_simple(model, context, SimpleStreamOptions(api_key="test-key", fetch=fetch)).result()
+
+    system_messages = [message for message in fetch.body["messages"] if message["role"] == "system"]
+    assert len(system_messages) == 2
+    assert system_messages[0]["content"] == "Base\n\nconcise"
+    assert system_messages[1]["content"] == 'Added later\n\nRemoved system prompt section "style".'
+    assert [message["role"] for message in fetch.body["messages"]] == ["system", "user", "system"]
+
+
+@pytest.mark.asyncio
+async def test_on_response_fires_for_http_error_responses() -> None:
+    from .http_samples import json_error_response
+
+    models, model = _deepseek()
+    fetch = RecordingFetch(json_error_response(401, {"error": "unauthorized"}))
+    responses: list[ProviderResponse] = []
+
+    result = await models.stream_simple(
+        model,
+        Context(messages=[]),
+        SimpleStreamOptions(
+            api_key="test-key",
+            fetch=fetch,
+            on_response=lambda response, request_model: responses.append(response),
+        ),
+    ).result()
+
+    assert result.stop_reason == "error"
+    assert len(responses) == 1
+    assert responses[0].status == 401

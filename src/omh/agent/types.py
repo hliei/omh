@@ -15,7 +15,6 @@ from omh.llm.types import (
     Model,
     ModelCost,
     ModelThinkingLevel,
-    ProviderResponse,
     SimpleStreamOptions,
     TextContent,
     ThinkingBudgets,
@@ -25,6 +24,15 @@ from omh.llm.types import (
     TranscriptContext,
     Transport,
     Usage,
+)
+from omh.llm.types import (
+    OnPayload as OnPayload,
+)
+from omh.llm.types import (
+    OnProviderStreamEvent as OnProviderStreamEvent,
+)
+from omh.llm.types import (
+    OnResponse as OnResponse,
 )
 from omh.llm.utils.event_stream import AssistantMessageEventStream
 from omh.llm.utils.transcript import (
@@ -76,10 +84,6 @@ TransformContext = Callable[
 #: Resolves a provider API key per request. Returning a falsey value keeps the
 #: static fallback configured on the request options.
 GetApiKey = Callable[[str], str | None | Awaitable[str | None]]
-
-OnPayload = Callable[[dict[str, object], Model], Awaitable[dict[str, object] | None] | dict[str, object] | None]
-OnResponse = Callable[[ProviderResponse, Model], Awaitable[None] | None]
-OnProviderStreamEvent = Callable[[object, Model], Awaitable[None] | None]
 
 #: A single tool call emitted by an assistant message.
 AgentToolCall = ToolCall

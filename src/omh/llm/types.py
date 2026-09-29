@@ -322,6 +322,14 @@ class Model:
     compat: OpenAICompletionsCompat | None = None
 
 
+#: Inspects or replaces a provider payload before it is sent. ``None`` keeps it.
+OnPayload = Callable[[dict[str, object], Model], Awaitable[dict[str, object] | None] | dict[str, object] | None]
+#: Invoked after an HTTP response is received, before its body is consumed.
+OnResponse = Callable[[ProviderResponse, Model], Awaitable[None] | None]
+#: Observes each parsed provider stream event before Pi normalization.
+OnProviderStreamEvent = Callable[[object, Model], Awaitable[None] | None]
+
+
 @dataclass(slots=True)
 class StartEvent:
     partial: AssistantMessage
@@ -438,15 +446,13 @@ class StreamOptions:
     sampling_params: dict[str, object] | None = None
     max_tokens: int | None = None
     timeout_ms: float | None = None
-    on_payload: Callable[[dict[str, object], Model], Awaitable[dict[str, object] | None] | dict[str, object] | None] | None = (
-        None
-    )
+    on_payload: OnPayload | None = None
     #: Invoked after an HTTP response is received, before its body stream is consumed.
-    on_response: Callable[[ProviderResponse, Model], Awaitable[None] | None] | None = None
+    on_response: OnResponse | None = None
     #: Observer for each parsed provider stream event before Pi normalization. The
     #: payload is adapter-owned and must be treated as read-only. Adapters that do
     #: not parse a provider stream do not invoke it.
-    on_provider_stream_event: Callable[[object, Model], Awaitable[None] | None] | None = None
+    on_provider_stream_event: OnProviderStreamEvent | None = None
     #: Preferred transport for providers that support more than one. Ignored when unsupported.
     transport: Transport | None = None
     #: Opaque session identifier forwarded to providers that support session-based caching.

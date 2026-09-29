@@ -6,6 +6,7 @@ from omh.llm.types import (
     AssistantMessage,
     ImageContent,
     Message,
+    SystemMessage,
     TextContent,
     TranscriptContext,
     Usage,
@@ -54,6 +55,8 @@ def estimate_context_tokens(context: TranscriptContext) -> int:
     system = get_current_system_message(context.messages)
     chars = len(get_system_message_text(system)) if system is not None else 0
     for message in context.messages:
+        if isinstance(message, SystemMessage):
+            continue
         chars += estimate_message_chars(message)
     for tool in get_current_tools(context.messages):
         chars += len(tool.name) + len(tool.description) + len(str(tool.parameters))
