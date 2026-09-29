@@ -7,6 +7,7 @@ from typing import Literal
 
 from omh.llm.types import (
     AbortSignal,
+    AssistantMessage,
     AssistantMessageEvent,
     ImageContent,
     JsonValue,
@@ -33,6 +34,15 @@ from omh.llm.utils.transcript import (
 
 #: Requested reasoning level for a turn. ``off`` disables reasoning.
 ThinkingLevel = ModelThinkingLevel
+
+#: How the tool calls of one assistant message are executed.
+#:
+#: - ``sequential``: each call is prepared, executed, and finalized before the
+#:   next one starts.
+#: - ``parallel``: calls are prepared in source order, then the allowed calls
+#:   execute concurrently. ``tool_execution_end`` is emitted in completion
+#:   order, while result messages keep assistant source order.
+ToolExecutionMode = Literal["sequential", "parallel"]
 
 #: Application message union. The traditional Agent starts with the standard LLM
 #: message roles; application-specific roles are added by the conversion boundary.
@@ -72,9 +82,17 @@ class AgentToolResult:
     content: list[TextContent | ImageContent]
     details: JsonValue = None
     usage: Usage | None = None
+    terminate: bool | None = None
 
 
-AgentToolExecute = Callable[[str, dict[str, object], AbortSignal | None], Awaitable[AgentToolResult] | AgentToolResult]
+#: Progress callback for one ``execute`` invocation. Calls made after the tool
+#: settles are ignored. The loop settles accepted progress before finalizing.
+AgentToolUpdateCallback = Callable[[AgentToolResult], None]
+
+AgentToolExecute = Callable[
+    [str, dict[str, object], AbortSignal | None, AgentToolUpdateCallback],
+    Awaitable[AgentToolResult] | AgentToolResult,
+]
 
 #: Optional compatibility shim applied to raw tool-call arguments before schema
 #: conversion and validation. It must return the argument object to validate.
@@ -86,8 +104,8 @@ class AgentTool:
     """Executable tool held by the Agent.
 
     The declaration sent to the model is derived from ``name``, ``description``
-    and ``parameters`` only; ``label``, ``execute`` and ``prepare_arguments`` stay
-    on the execution side.
+    and ``parameters`` only; ``label``, ``execute``, ``prepare_arguments`` and
+    ``execution_mode`` stay on the execution side.
     """
 
     name: str
@@ -96,6 +114,7 @@ class AgentTool:
     label: str
     execute: AgentToolExecute
     prepare_arguments: AgentToolPrepareArguments | None = None
+    execution_mode: ToolExecutionMode | None = None
 
 
 def to_tool_declaration(tool: AgentTool) -> Tool:
@@ -111,6 +130,67 @@ class AgentContext:
 
     messages: list[AgentMessage]
     tools: list[AgentTool]
+
+
+@dataclass(slots=True)
+class BeforeToolCallResult:
+    """Result returned from a ``before_tool_call`` hook.
+
+    ``block=True`` prevents execution and produces an error tool result whose
+    text is ``reason`` (or a default message). ``terminate=True`` participates in
+    the batch early-termination rule when this call is blocked.
+    """
+
+    block: bool = False
+    reason: str | None = None
+    terminate: bool | None = None
+
+
+@dataclass(slots=True)
+class BeforeToolCallContext:
+    """Context passed to a ``before_tool_call`` hook after argument validation."""
+
+    assistant_message: AssistantMessage
+    tool_call: ToolCall
+    args: dict[str, object]
+    context: AgentContext
+
+
+@dataclass(slots=True)
+class AfterToolCallResult:
+    """Field-by-field override returned from an ``after_tool_call`` hook.
+
+    Omitted or ``None`` fields keep the executed result's values. Provided
+    values replace the corresponding field in full; there is no deep merge.
+    """
+
+    content: list[TextContent | ImageContent] | None = None
+    details: JsonValue = None
+    is_error: bool | None = None
+    usage: Usage | None = None
+    terminate: bool | None = None
+
+
+@dataclass(slots=True)
+class AfterToolCallContext:
+    """Context passed to an ``after_tool_call`` hook before result finalization."""
+
+    assistant_message: AssistantMessage
+    tool_call: ToolCall
+    args: dict[str, object]
+    result: AgentToolResult
+    is_error: bool
+    context: AgentContext
+
+
+BeforeToolCall = Callable[
+    [BeforeToolCallContext, AbortSignal | None],
+    Awaitable[BeforeToolCallResult | None] | BeforeToolCallResult | None,
+]
+AfterToolCall = Callable[
+    [AfterToolCallContext, AbortSignal | None],
+    Awaitable[AfterToolCallResult | None] | AfterToolCallResult | None,
+]
 
 
 @dataclass(slots=True)
@@ -175,6 +255,15 @@ class ToolExecutionStartEvent:
 
 
 @dataclass(slots=True)
+class ToolExecutionUpdateEvent:
+    tool_call_id: str
+    tool_name: str
+    args: dict[str, object]
+    partial_result: AgentToolResult
+    type: Literal["tool_execution_update"] = "tool_execution_update"
+
+
+@dataclass(slots=True)
 class ToolExecutionEndEvent:
     tool_call_id: str
     tool_name: str
@@ -192,6 +281,7 @@ AgentEvent = (
     | MessageUpdateEvent
     | MessageEndEvent
     | ToolExecutionStartEvent
+    | ToolExecutionUpdateEvent
     | ToolExecutionEndEvent
 )
 
@@ -222,10 +312,25 @@ class AgentState:
         self.is_streaming: bool = False
         self.streaming_message: AgentMessage | None = None
         self.error_message: str | None = None
+        self._pending_tool_calls: set[str] = set()
 
     @property
     def system_prompt(self) -> str:
         return get_current_system_prompt(self._messages)
+
+    @property
+    def pending_tool_calls(self) -> frozenset[str]:
+        """Tool call ids currently executing, tracked from tool execution events."""
+        return frozenset(self._pending_tool_calls)
+
+    def _add_pending_tool_call(self, tool_call_id: str) -> None:
+        self._pending_tool_calls.add(tool_call_id)
+
+    def _remove_pending_tool_call(self, tool_call_id: str) -> None:
+        self._pending_tool_calls.discard(tool_call_id)
+
+    def _clear_pending_tool_calls(self) -> None:
+        self._pending_tool_calls.clear()
 
     @property
     def tools(self) -> list[AgentTool]:
@@ -250,3 +355,6 @@ class AgentOptions:
 
     stream_fn: StreamFn
     initial_state: AgentInitialState | None = None
+    tool_execution: ToolExecutionMode = "parallel"
+    before_tool_call: BeforeToolCall | None = None
+    after_tool_call: AfterToolCall | None = None
