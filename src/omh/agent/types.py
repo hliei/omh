@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 from omh.llm.types import (
     AbortSignal,
@@ -15,12 +15,15 @@ from omh.llm.types import (
     Model,
     ModelCost,
     ModelThinkingLevel,
+    ProviderResponse,
     SimpleStreamOptions,
     TextContent,
+    ThinkingBudgets,
     Tool,
     ToolCall,
     ToolResultMessage,
     TranscriptContext,
+    Transport,
     Usage,
 )
 from omh.llm.utils.event_stream import AssistantMessageEventStream
@@ -45,8 +48,38 @@ ThinkingLevel = ModelThinkingLevel
 ToolExecutionMode = Literal["sequential", "parallel"]
 
 #: Application message union. The traditional Agent starts with the standard LLM
-#: message roles; application-specific roles are added by the conversion boundary.
-AgentMessage = Message
+#: message roles; applications add their own roles by extending the conversion
+#: boundary rather than by widening the LLM message union.
+@runtime_checkable
+class CustomAgentMessage(Protocol):
+    """A message recognised by its ``role`` but outside the standard LLM roles.
+
+    Custom messages live in the application history. The default model conversion
+    filters them out; applications that want them in a request provide
+    ``AgentOptions.convert_to_llm``.
+    """
+
+    role: str
+
+
+AgentMessage = Message | CustomAgentMessage
+
+#: Converts application messages to LLM messages before transcript normalization.
+ConvertToLlm = Callable[[list[AgentMessage]], list[Message] | Awaitable[list[Message]]]
+
+#: Transforms application history before conversion; runs before ``convert_to_llm``.
+TransformContext = Callable[
+    [list[AgentMessage], AbortSignal | None],
+    list[AgentMessage] | Awaitable[list[AgentMessage]],
+]
+
+#: Resolves a provider API key per request. Returning a falsey value keeps the
+#: static fallback configured on the request options.
+GetApiKey = Callable[[str], str | None | Awaitable[str | None]]
+
+OnPayload = Callable[[dict[str, object], Model], Awaitable[dict[str, object] | None] | dict[str, object] | None]
+OnResponse = Callable[[ProviderResponse, Model], Awaitable[None] | None]
+OnProviderStreamEvent = Callable[[object, Model], Awaitable[None] | None]
 
 #: A single tool call emitted by an assistant message.
 AgentToolCall = ToolCall
@@ -351,10 +384,25 @@ class AgentState:
 
 @dataclass(slots=True)
 class AgentOptions:
-    """Options for constructing a traditional :class:`~omh.agent.agent.Agent`."""
+    """Options for constructing a traditional :class:`~omh.agent.agent.Agent`.
 
-    stream_fn: StreamFn
+    ``stream_fn`` is optional: when omitted the host-installed default is used,
+    and construction fails clearly if the host has not installed one.
+    """
+
+    stream_fn: StreamFn | None = None
     initial_state: AgentInitialState | None = None
     tool_execution: ToolExecutionMode = "parallel"
     before_tool_call: BeforeToolCall | None = None
     after_tool_call: AfterToolCall | None = None
+    convert_to_llm: ConvertToLlm | None = None
+    transform_context: TransformContext | None = None
+    get_api_key: GetApiKey | None = None
+    api_key: str | None = None
+    on_payload: OnPayload | None = None
+    on_response: OnResponse | None = None
+    on_provider_stream_event: OnProviderStreamEvent | None = None
+    session_id: str | None = None
+    thinking_budgets: ThinkingBudgets | None = None
+    transport: Transport | None = None
+    max_retry_delay_ms: float | None = None

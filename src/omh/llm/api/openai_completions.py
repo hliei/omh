@@ -15,7 +15,6 @@ from omh.llm.api.transform_messages import transform_messages
 from omh.llm.models import calculate_cost, clamp_thinking_level
 from omh.llm.types import (
     AssistantMessage,
-    Context,
     DoneEvent,
     ErrorEvent,
     FetchFunction,
@@ -26,10 +25,12 @@ from omh.llm.types import (
     Model,
     OpenAICompletionsOptions,
     ProviderHeaders,
+    ProviderResponse,
     SimpleStreamOptions,
     StartEvent,
     StopReason,
     StreamOptions,
+    SystemMessage,
     TextContent,
     TextDeltaEvent,
     TextEndEvent,
@@ -45,11 +46,17 @@ from omh.llm.types import (
     ToolCallEndEvent,
     ToolCallStartEvent,
     ToolResultMessage,
+    TranscriptContext,
     Usage,
     empty_usage,
 )
 from omh.llm.utils.event_stream import AssistantMessageEventStream
 from omh.llm.utils.json_parse import parse_streaming_json
+from omh.llm.utils.text import get_system_message_text, render_system_message_update
+from omh.llm.utils.transcript import (
+    get_current_tools,
+    resolve_transcript,
+)
 
 _REASONING_FIELDS = ("reasoning_content", "reasoning", "reasoning_text")
 
@@ -68,13 +75,14 @@ class ResolvedOpenAICompletionsCompat:
     requires_reasoning_content_on_assistant_messages: bool
     thinking_format: ThinkingFormat
     supports_strict_mode: bool
+    supports_mid_convo_system_messages: bool
 
 
 class OpenAICompletionsApi:
     def stream(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: OpenAICompletionsOptions | StreamOptions | None = None,
     ) -> AssistantMessageEventStream:
         completions_options = options if isinstance(options, OpenAICompletionsOptions) or options is None else OpenAICompletionsOptions(
@@ -88,13 +96,19 @@ class OpenAICompletionsApi:
             max_tokens=options.max_tokens,
             timeout_ms=options.timeout_ms,
             on_payload=options.on_payload,
+            on_response=options.on_response,
+            on_provider_stream_event=options.on_provider_stream_event,
+            transport=options.transport,
+            session_id=options.session_id,
+            thinking_budgets=options.thinking_budgets,
+            max_retry_delay_ms=options.max_retry_delay_ms,
         )
         return stream(model, context, completions_options)
 
     def stream_simple(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: SimpleStreamOptions | None = None,
     ) -> AssistantMessageEventStream:
         return stream_simple(model, context, options)
@@ -148,6 +162,7 @@ def detect_compat(model: Model) -> ResolvedOpenAICompletionsCompat:
         requires_reasoning_content_on_assistant_messages=is_deepseek,
         thinking_format="deepseek" if is_deepseek else "openai",
         supports_strict_mode=True,
+        supports_mid_convo_system_messages=False,
     )
 
 
@@ -201,6 +216,11 @@ def get_compat(model: Model) -> ResolvedOpenAICompletionsCompat:
         supports_strict_mode=(
             detected.supports_strict_mode if compat.supports_strict_mode is None else compat.supports_strict_mode
         ),
+        supports_mid_convo_system_messages=(
+            detected.supports_mid_convo_system_messages
+            if compat.supports_mid_convo_system_messages is None
+            else compat.supports_mid_convo_system_messages
+        ),
     )
 
 
@@ -229,21 +249,24 @@ def _has_tool_history(messages: list[Message]) -> bool:
 
 def convert_messages(
     model: Model,
-    context: Context,
+    context: TranscriptContext,
     compat: ResolvedOpenAICompletionsCompat,
 ) -> list[dict[str, object]]:
+    normalized = resolve_transcript(context, compat.supports_mid_convo_system_messages)
     params: list[dict[str, object]] = []
-    transformed = transform_messages(context.messages, model)
-    if context.system_prompt:
-        role = "developer" if model.reasoning and compat.supports_developer_role else "system"
-        params.append({"role": role, "content": context.system_prompt})
+    transformed = transform_messages(normalized.messages, model)
+    instruction_role = "developer" if model.reasoning and compat.supports_developer_role else "system"
 
     last_role: str | None = None
     tool_images: list[dict[str, object]] = []
     for message_index, message in enumerate(transformed):
         if compat.requires_assistant_after_tool_result and last_role == "toolResult" and message.role == "user":
             params.append({"role": "assistant", "content": "I have processed the tool results."})
-        if message.role == "user":
+        if isinstance(message, SystemMessage):
+            text = get_system_message_text(message) if message_index == 0 else render_system_message_update(message)
+            if text:
+                params.append({"role": instruction_role, "content": text})
+        elif message.role == "user":
             if isinstance(message.content, str):
                 params.append({"role": "user", "content": message.content})
             else:
@@ -350,10 +373,11 @@ def convert_messages(
 
 def build_params(
     model: Model,
-    context: Context,
+    context: TranscriptContext,
     options: OpenAICompletionsOptions | None,
     compat: ResolvedOpenAICompletionsCompat,
 ) -> dict[str, object]:
+    tools = get_current_tools(context.messages)
     params: dict[str, object] = {
         "model": model.id,
         "messages": convert_messages(model, context, compat),
@@ -367,8 +391,8 @@ def build_params(
         params[compat.max_tokens_field] = options.max_tokens
     if options and options.temperature is not None:
         params["temperature"] = options.temperature
-    if context.tools:
-        params["tools"] = _convert_tools(context.tools, compat)
+    if tools:
+        params["tools"] = _convert_tools(tools, compat)
     elif _has_tool_history(context.messages):
         params["tools"] = []
     if options and options.tool_choice:
@@ -474,9 +498,15 @@ def _format_error(error: object) -> str:
     return str(error)
 
 
+async def _invoke_callback(callback: object, *args: object) -> None:
+    result = callback(*args)  # type: ignore[operator]
+    if isawaitable(result):
+        await result
+
+
 def stream(
     model: Model,
-    context: Context,
+    context: TranscriptContext,
     options: OpenAICompletionsOptions | None = None,
 ) -> AssistantMessageEventStream:
     events = AssistantMessageEventStream()
@@ -520,6 +550,12 @@ def stream(
             async with _fetch_response(request, options.fetch if options else None) as response:
                 if response.status >= 400:
                     raise RuntimeError(f"HTTP {response.status}: {response.text}")
+                if options and options.on_response:
+                    await _invoke_callback(
+                        options.on_response,
+                        ProviderResponse(status=response.status, headers=dict(response.headers)),
+                        model,
+                    )
                 events.push(StartEvent(partial=output))
 
                 text_block: TextContent | None = None
@@ -600,6 +636,8 @@ def stream(
                         continue
                     if not isinstance(chunk, dict):
                         continue
+                    if options and options.on_provider_stream_event:
+                        await _invoke_callback(options.on_provider_stream_event, chunk, model)
                     chunk_id = chunk.get("id")
                     if isinstance(chunk_id, str) and chunk_id and not output.response_id:
                         output.response_id = chunk_id
@@ -694,7 +732,7 @@ def stream(
 
 def stream_simple(
     model: Model,
-    context: Context,
+    context: TranscriptContext,
     options: SimpleStreamOptions | None = None,
 ) -> AssistantMessageEventStream:
     _client_api_key(model.provider, options.api_key if options else None, options.headers if options else None)
@@ -713,6 +751,12 @@ def stream_simple(
             fetch=base.fetch,
             headers=base.headers,
             on_payload=base.on_payload,
+            on_response=base.on_response,
+            on_provider_stream_event=base.on_provider_stream_event,
+            transport=base.transport,
+            session_id=base.session_id,
+            thinking_budgets=base.thinking_budgets,
+            max_retry_delay_ms=base.max_retry_delay_ms,
             timeout_ms=base.timeout_ms,
             env=base.env,
             tool_choice=options.tool_choice if options else None,

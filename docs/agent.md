@@ -4,14 +4,23 @@
 
 ## Creating an Agent
 
-The Agent requires an explicit `StreamFn` and model; nothing binds a provider implicitly:
+The Agent needs a `StreamFn` and a model. A host installs a fallback with
+`set_default_stream_fn`; an explicit `AgentOptions.stream_fn` always wins. If
+neither is present, construction fails with a clear error and the Agent never
+binds a provider implicitly:
 
 ```python
-from omh.agent import Agent, AgentInitialState, AgentOptions
+from omh.agent import (
+    Agent,
+    AgentInitialState,
+    AgentOptions,
+    set_default_stream_fn,
+)
+
+set_default_stream_fn(my_stream_fn)  # host-installed fallback
 
 agent = Agent(
     AgentOptions(
-        stream_fn=my_stream_fn,
         initial_state=AgentInitialState(
             system_prompt="You are concise.",
             model=my_model,
@@ -23,7 +32,46 @@ agent = Agent(
 )
 ```
 
-`initial_state.system_prompt` and `initial_state.tools` seed a leading `SystemMessage` unless `initial_state.messages` already starts with one. `StreamFn` receives a normalized `TranscriptContext`: the prompt and tool declarations are carried by system messages, not by a separate field.
+`clear_default_stream_fn()` removes the fallback and `get_default_stream_fn()`
+reads it, failing when it is unset. `initial_state.system_prompt` and
+`initial_state.tools` seed a leading `SystemMessage` unless
+`initial_state.messages` already starts with one. `StreamFn` receives a
+normalized `TranscriptContext`: the prompt and tool declarations are carried by
+system messages, not by a separate field.
+
+## Application messages and context conversion
+
+`AgentMessage` is the standard LLM message union plus `CustomAgentMessage`, a
+message that is recognised by its `role` attribute. Custom messages stay in
+`Agent.state.messages`; the default conversion filters them out. Set
+`AgentOptions.convert_to_llm` to map them into model messages, and
+`AgentOptions.transform_context` to prune or inject history first. Each request
+runs `transform_context`, then `convert_to_llm`, then transcript normalization,
+so the original application history is never overwritten by a projection.
+
+System messages carry the prompt and tool declarations. Text appends in order,
+named `sections` replace or remove entries by name, and `tools_added`/
+`tools_removed` replay in declaration order so a same-name redefinition is a
+removal followed by an addition. `Agent.state.system_prompt` is the replayed
+prompt. The Agent forwards the full system-message transcript to `StreamFn` and
+lets the provider projection fold or keep mid-conversation system messages.
+
+When `Agent.state.tools` differs from the tools declared in the transcript, the
+loop announces the delta in a `SystemMessage` before the request, emitted
+through the normal message lifecycle. A pending system message passed with a
+prompt has its tool fields coordinated with that delta, so replaying the
+transcript always yields exactly the executable tool set.
+
+## Credentials and request options
+
+`AgentOptions.get_api_key(provider)` resolves a credential for every request,
+which supports short-lived tokens. A falsey result keeps the static
+`AgentOptions.api_key` fallback. `on_payload`, `on_response`, and
+`on_provider_stream_event` are forwarded to the stream function at the transport
+points it supports. `session_id`, `thinking_budgets`, `transport`, and
+`max_retry_delay_ms` are forwarded with their baseline meaning; `session_id` is
+never interpreted as a durable Session, and the built-in transport does not add
+client-side caching, WebSocket, or retry behavior.
 
 ## State and ownership
 
@@ -143,6 +191,8 @@ The Agent owns its run. Cancelling a caller awaiting `prompt`, `continue_`, or `
 
 ## Not yet delivered
 
-Tool input queues, request/turn hooks, custom message conversion, and provider
-integration are planned in later slices. This document describes the delivered
-conversation, tool-batch, and tool-policy path only.
+Tool input queues and request/turn hooks (`prepare_request`, `prepare_next_turn`,
+`finish_turn`) are planned in later slices. The four public loop entry points and
+their message-ownership and cancellation rules are also planned later; this
+document describes the delivered conversation, tool-batch, tool-policy, and
+model-integration path.

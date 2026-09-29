@@ -131,3 +131,31 @@ def get_current_system_prompt(messages: Sequence[object]) -> str:
     """Render the current system prompt text after replaying every system message."""
     message = get_current_system_message(messages)
     return get_system_message_text(message) if message is not None else ""
+
+
+def without_initial_system_message(messages: list[Message]) -> list[Message]:
+    """Drop the leading system message for APIs that carry the prompt outside the message list."""
+    return messages[1:] if get_initial_system_message(messages) is not None else messages
+
+
+def collapse_system_messages(context: TranscriptContext) -> TranscriptContext:
+    """Rebuild a transcript for APIs without mid-conversation system messages.
+
+    The replayed system message leads and every later system message is dropped,
+    so the prompt and tool declarations are expressed exactly once.
+    """
+    head = get_current_system_message(context.messages)
+    messages: list[Message] = [message for message in context.messages if not isinstance(message, SystemMessage)]
+    if head is not None:
+        messages = [head, *messages]
+    return TranscriptContext(messages=messages)
+
+
+def resolve_transcript(
+    context: TranscriptContext,
+    supports_mid_convo_system_messages: bool | None,
+) -> TranscriptContext:
+    """Keep later system messages when the model accepts them; otherwise collapse them."""
+    if supports_mid_convo_system_messages:
+        return context
+    return collapse_system_messages(context)

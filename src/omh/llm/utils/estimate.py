@@ -4,12 +4,14 @@ from collections.abc import Sequence
 
 from omh.llm.types import (
     AssistantMessage,
-    Context,
     ImageContent,
     Message,
     TextContent,
+    TranscriptContext,
     Usage,
 )
+from omh.llm.utils.text import get_system_message_text
+from omh.llm.utils.transcript import get_current_system_message, get_current_tools
 
 CHARS_PER_TOKEN = 4
 ESTIMATED_IMAGE_CHARS = 4800
@@ -48,13 +50,13 @@ def estimate_message_chars(message: Message) -> int:
     return _content_chars(message.content)
 
 
-def estimate_context_tokens(context: Context) -> int:
-    chars = len(context.system_prompt or "")
+def estimate_context_tokens(context: TranscriptContext) -> int:
+    system = get_current_system_message(context.messages)
+    chars = len(get_system_message_text(system)) if system is not None else 0
     for message in context.messages:
         chars += estimate_message_chars(message)
-    if context.tools:
-        for tool in context.tools:
-            chars += len(tool.name) + len(tool.description) + len(str(tool.parameters))
+    for tool in get_current_tools(context.messages):
+        chars += len(tool.name) + len(tool.description) + len(str(tool.parameters))
     tokens = estimate_text_tokens("x" * chars) if chars else 0
     for message in reversed(context.messages):
         if isinstance(message, AssistantMessage) and message.usage.total_tokens:

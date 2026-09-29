@@ -26,3 +26,21 @@ def get_system_message_text(message: SystemMessage) -> str:
         if text is not None:
             parts.append(text)
     return "\n\n".join(part for part in parts if part)
+
+
+def render_system_message_update(message: SystemMessage) -> str:
+    """Render a later system message for APIs that accept system messages mid-conversation.
+
+    Section changes are framed by name so the model can relate them to the leading
+    prompt. This framing is request-time only and may change between versions.
+    """
+    parts: list[str] = []
+    text = content_text(message.content)
+    if text:
+        parts.append(text)
+    for name, value in (message.sections or {}).items():
+        if value is None:
+            parts.append(f'Removed system prompt section "{name}".')
+        else:
+            parts.append(f'Updated system prompt section "{name}":\n\n{value}')
+    return "\n\n".join(parts)

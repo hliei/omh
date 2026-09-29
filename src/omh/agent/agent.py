@@ -17,6 +17,7 @@ from omh.agent.agent_loop import (
     run_agent_loop,
     run_agent_loop_continue,
 )
+from omh.agent.stream_fn import get_default_stream_fn
 from omh.agent.types import (
     AfterToolCall,
     AgentContext,
@@ -26,12 +27,18 @@ from omh.agent.types import (
     AgentOptions,
     AgentState,
     BeforeToolCall,
+    ConvertToLlm,
+    GetApiKey,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
+    OnPayload,
+    OnProviderStreamEvent,
+    OnResponse,
     ToolExecutionEndEvent,
     ToolExecutionMode,
     ToolExecutionStartEvent,
+    TransformContext,
     TurnEndEvent,
 )
 from omh.llm.types import (
@@ -40,6 +47,8 @@ from omh.llm.types import (
     AssistantMessage,
     ImageContent,
     TextContent,
+    ThinkingBudgets,
+    Transport,
     UserMessage,
     empty_usage,
 )
@@ -76,10 +85,21 @@ class Agent:
         self._state = AgentState(options.initial_state)
         self._listeners: list[AgentListener] = []
         self._active_run: _ActiveRun | None = None
-        self.stream_fn = options.stream_fn
+        self.stream_fn = options.stream_fn if options.stream_fn is not None else get_default_stream_fn()
         self.tool_execution: ToolExecutionMode = options.tool_execution
         self.before_tool_call: BeforeToolCall | None = options.before_tool_call
         self.after_tool_call: AfterToolCall | None = options.after_tool_call
+        self.convert_to_llm: ConvertToLlm | None = options.convert_to_llm
+        self.transform_context: TransformContext | None = options.transform_context
+        self.get_api_key: GetApiKey | None = options.get_api_key
+        self.api_key: str | None = options.api_key
+        self.on_payload: OnPayload | None = options.on_payload
+        self.on_response: OnResponse | None = options.on_response
+        self.on_provider_stream_event: OnProviderStreamEvent | None = options.on_provider_stream_event
+        self.session_id: str | None = options.session_id
+        self.thinking_budgets: ThinkingBudgets | None = options.thinking_budgets
+        self.transport: Transport | None = options.transport
+        self.max_retry_delay_ms: float | None = options.max_retry_delay_ms
 
     @property
     def state(self) -> AgentState:
@@ -223,6 +243,17 @@ class Agent:
             tool_execution=self.tool_execution,
             before_tool_call=self.before_tool_call,
             after_tool_call=self.after_tool_call,
+            convert_to_llm=self.convert_to_llm,
+            transform_context=self.transform_context,
+            get_api_key=self.get_api_key,
+            api_key=self.api_key,
+            on_payload=self.on_payload,
+            on_response=self.on_response,
+            on_provider_stream_event=self.on_provider_stream_event,
+            session_id=self.session_id,
+            thinking_budgets=self.thinking_budgets,
+            transport=self.transport,
+            max_retry_delay_ms=self.max_retry_delay_ms,
         )
 
     async def _run_prompt_messages(self, messages: list[AgentMessage], signal: AbortSignal) -> None:
