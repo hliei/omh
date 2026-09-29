@@ -187,6 +187,7 @@ class AssistantMessage:
     response_model: str | None = None
     response_id: str | None = None
     provider_thinking_level: str | None = None
+    thinking_level: ModelThinkingLevel | None = None
     error_message: str | None = None
     raw_stop_reason: str | None = None
 
@@ -203,7 +204,9 @@ class ToolResultMessage:
     usage: Usage | None = None
 
 
-Message = UserMessage | AssistantMessage | ToolResultMessage
+@dataclass(frozen=True, slots=True)
+class ToolReference:
+    name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,10 +217,38 @@ class Tool:
 
 
 @dataclass(slots=True)
+class SystemMessage:
+    """System instructions and tool declarations at one point in the transcript.
+
+    The leading system message carries the base prompt and the initial tool
+    declarations. Later system messages append content, replace or remove named
+    sections, and add or remove tools. Replaying every system message in order
+    yields the current prompt and tool set.
+    """
+
+    content: str | list[TextContent]
+    timestamp: int
+    role: Literal["system"] = "system"
+    sections: dict[str, str | None] | None = None
+    tools_added: list[Tool] | None = None
+    tools_removed: list[ToolReference] | None = None
+
+
+Message = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage
+
+
+@dataclass(slots=True)
 class Context:
     messages: list[Message]
     system_prompt: str | None = None
     tools: list[Tool] | None = None
+
+
+@dataclass(slots=True)
+class TranscriptContext:
+    """Normalized request context whose prompt and tools live in system messages."""
+
+    messages: list[Message]
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from omh.llm.types import (
     AssistantMessage,
     Context,
@@ -21,7 +23,7 @@ def estimate_text_tokens(text: str) -> int:
     return (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN if text else 0
 
 
-def _content_chars(content: str | list[TextContent | ImageContent]) -> int:
+def _content_chars(content: str | Sequence[TextContent | ImageContent]) -> int:
     if isinstance(content, str):
         return len(content)
     chars = 0

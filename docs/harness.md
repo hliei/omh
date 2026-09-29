@@ -10,7 +10,7 @@ A Session owns a conversation tree, current values/lists, and an append-only usa
 
 The harness owns process-local execution tasks, registries, hooks, and observers. The host owns the writable Session lifecycle and decides when to resume work. Attaching a harness restores lane projections and discovers open operations without executing them.
 
-`omh.llm` is independently usable. `omh.agent` builds conversation execution on it; `omh.session_backends.sqlite` implements persistent storage. The LLM input `Context` carries messages and tools. The agent invocation `Context` carries cancellation and telemetry and is never persisted.
+`omh.llm` is independently usable. `omh.agent` provides the in-process Agent, and the experimental `omh.agent.durable` namespace builds durable conversation execution on the same LLM layer; `omh.session_backends.sqlite` implements persistent storage. The LLM input `Context` carries messages and tools. The agent invocation `Context` carries cancellation and telemetry and is never persisted.
 
 ## A run through the durable boundaries
 

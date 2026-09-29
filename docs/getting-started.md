@@ -1,6 +1,6 @@
 # Getting started
 
-omh provides durable agent execution with streaming, tools, and conversation history. Start with a DeepSeek agent below, then use the Session examples to explore storage without model credentials. For execution and recovery contracts, see the [harness overview](harness.md) and [public surface](harness/public-api.md).
+omh provides an in-process Agent for model conversations, streaming, and tools, plus an experimental durable AgentHarness for persistent, recoverable execution. Start with the in-process Agent below, then continue to the durable Session examples. For execution and recovery contracts, see the [harness overview](harness.md) and [public surface](harness/public-api.md).
 
 ## Install from source
 
@@ -14,9 +14,39 @@ pip install -e .
 
 The Python distribution and import name are both `omh`. For development dependencies and checks, see [Development](../README.md#development).
 
-## Run a minimal agent
+## Run an in-process Agent
 
-The agent examples call DeepSeek and require an API key in the process environment:
+The traditional API lives in `omh.agent` and needs no Session, Branch, or AgentLane. Provide an explicit `StreamFn` and model; nothing binds a provider implicitly:
+
+```bash
+python examples/agent_conversation.py
+```
+
+[Agent conversation source](../examples/agent_conversation.py):
+
+```python
+from omh.agent import Agent, AgentInitialState, AgentOptions
+
+agent = Agent(
+    AgentOptions(
+        stream_fn=my_stream_fn,
+        initial_state=AgentInitialState(system_prompt="You are concise.", model=my_model),
+    )
+)
+
+agent.subscribe(on_event)
+await agent.prompt("hello")
+await agent.prompt("and again")   # continues the same transcript
+agent.abort()                     # cooperatively stops an in-flight run
+```
+
+`Agent.state.messages` holds the transcript, `Agent.state.system_prompt` is replayed from its system messages, and `Agent.subscribe` listeners are awaited in subscription order after the public state updates. The run stays busy until the terminal listeners settle, so `wait_for_idle()` resolves only after `agent_end` handling completes. Cancelling a caller awaiting `prompt`, `continue_`, or `wait_for_idle` ends only that wait; use `abort()` to stop the run.
+
+The example uses a deterministic in-process `StreamFn`, so it runs without credentials. Provider integration and the system/tool replay boundary are covered in [LLM layer](llm.md).
+
+## Run a durable agent
+
+The durable harness examples call DeepSeek and require an API key in the process environment. Durable types are imported from the experimental `omh.agent.durable` namespace:
 
 ```bash
 export DEEPSEEK_API_KEY="your-api-key"
@@ -32,7 +62,7 @@ The built-in provider sends requests to `https://api.deepseek.com`. An HTTP 401 
 ```python
 import asyncio
 
-from omh.agent import (
+from omh.agent.durable import (
     BACKGROUND_CONTEXT,
     AgentHarness,
     AgentHarnessOptions,
@@ -102,7 +132,7 @@ def print_delta(event: HarnessEvent, context: Context) -> None:
 unsubscribe = harness.events.on("message_update", print_delta)
 ```
 
-Import `HarnessEvent` and `Context` from `omh.agent`. Events arrive while `lane.prompt` is awaiting completion. Call `unsubscribe()` when finished, and still check the terminal operation status: streamed text may belong to an attempt that later fails or retries. For an initial snapshot plus subsequent events, use `lane.watch()`.
+Import `HarnessEvent` and `Context` from `omh.agent.durable`. Events arrive while `lane.prompt` is awaiting completion. Call `unsubscribe()` when finished, and still check the terminal operation status: streamed text may belong to an attempt that later fails or retries. For an initial snapshot plus subsequent events, use `lane.watch()`.
 
 ## Give the agent a tool
 
@@ -125,7 +155,7 @@ The callable takes `(tool_call_id, arguments, on_update, tool_context, invocatio
 Register a context transformation before prompting:
 
 ```python
-from omh.agent import Context, TransformContextResult
+from omh.agent.durable import Context, TransformContextResult
 
 
 def assistant_instructions(event: object, context: Context) -> TransformContextResult:
@@ -146,7 +176,7 @@ A Session stores history; a named Branch selects a path through it. Save this ex
 ```python
 import asyncio
 
-from omh.agent import BACKGROUND_CONTEXT, MemorySessionRepo, SessionCreateOptions
+from omh.agent.durable import BACKGROUND_CONTEXT, MemorySessionRepo, SessionCreateOptions
 from omh.llm import UserMessage
 
 
@@ -178,7 +208,7 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from omh.agent import BACKGROUND_CONTEXT, SessionCreateOptions
+from omh.agent.durable import BACKGROUND_CONTEXT, SessionCreateOptions
 from omh.llm import UserMessage
 from omh.session_backends.sqlite import SqliteSessionRepo
 

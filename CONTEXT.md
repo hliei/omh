@@ -1,6 +1,6 @@
-# Durable Agent SDK
+# Agent SDK
 
-本项目提供 Python SDK，用于构建可持久化、可恢复的 agent 对话。
+本项目提供 Python SDK，用于构建进程内与可持久化、可恢复的 agent 对话。
 
 ## Language
 
@@ -33,6 +33,14 @@ _Avoid_: 无限重试、静默丢弃历史
 _Avoid_: 模型上下文、对话历史
 
 **Context（LLM 输入上下文）**:
-一次模型请求的输入，包含消息、系统提示与可用工具；与 harness 调用上下文是两个不同概念。
+一次模型请求的原始输入，包含消息、可选 system prompt 与可用工具；与 harness 调用上下文是两个不同概念。规范化后，prompt 与工具声明成为 transcript 中的 system message。
 _Avoid_: 调用取消上下文
+
+**SystemMessage**:
+transcript 中携带系统指令与工具声明的一条消息。首条声明基础 prompt 与初始工具；后续消息追加内容、按名称替换或删除 section，并增删工具。按序重放得到当前 prompt 与工具集合。
+_Avoid_: 最后一条系统消息（代替完整重放）
+
+**TranscriptContext**:
+规范化后的模型请求输入：prompt 与工具声明位于 system message，而不是独立的 system_prompt／tools 字段。由 `normalize_context` 从公开 Context 简写生成。
+_Avoid_: 未规范化的公开 Context
 

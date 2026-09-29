@@ -16,7 +16,7 @@ checkpoint ← tools ← settled tool-use response
 terminal ← final response / terminating tool / unrecoverable operation error
 ```
 
-This sketch omits hook and compaction branches. Concrete state variants are in [runtime types](../../src/omh/agent/runtime/types.py); transitions and state-directed reads must handle each supported variant explicitly.
+This sketch omits hook and compaction branches. Concrete state variants are in [runtime types](../../src/omh/agent/durable/runtime/types.py); transitions and state-directed reads must handle each supported variant explicitly.
 
 Before a model call, persist intent with reserved response and usage ids. Append assistant stream frames to a durable list; the current implementation awaits each frame mutation and therefore adds storage backpressure. Settle the complete response, usage, branch tip, frame deletion, and next state in one transaction. A missing durable model identity fails the operation without inventing a response or usage record.
 
@@ -77,5 +77,5 @@ The terminal transaction writes a result record, deletes operation metadata/stat
 
 ## Implementation and checks
 
-- [Lane acceptance and queues](../../src/omh/agent/runtime/lane.py), [drive transitions](../../src/omh/agent/runtime/drive/), [runtime codec](../../src/omh/agent/runtime/codec.py).
-- [Model runs](../../tests/agent/runtime/test_model_conversation.py), [tool execution](../../tests/agent/runtime/test_tool_execution.py), [queues](../../tests/agent/runtime/test_queued_inputs.py), [compaction](../../tests/agent/runtime/test_compaction.py), [navigation](../../tests/agent/runtime/test_navigation.py), [overflow recovery](../../tests/agent/runtime/test_overflow_recovery.py).
+- [Lane acceptance and queues](../../src/omh/agent/durable/runtime/lane.py), [drive transitions](../../src/omh/agent/durable/runtime/drive/), [runtime codec](../../src/omh/agent/durable/runtime/codec.py).
+- [Model runs](../../tests/agent/durable/runtime/test_model_conversation.py), [tool execution](../../tests/agent/durable/runtime/test_tool_execution.py), [queues](../../tests/agent/durable/runtime/test_queued_inputs.py), [compaction](../../tests/agent/durable/runtime/test_compaction.py), [navigation](../../tests/agent/durable/runtime/test_navigation.py), [overflow recovery](../../tests/agent/durable/runtime/test_overflow_recovery.py).

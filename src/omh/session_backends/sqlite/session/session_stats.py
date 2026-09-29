@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from omh.agent.session.codec import decode_usage, encode_usage
-from omh.agent.session.types import SessionStats
-from omh.agent.utils.usage import add_usage
+from omh.agent.durable.session.codec import decode_usage, encode_usage
+from omh.agent.durable.session.types import SessionStats
+from omh.agent.durable.utils.usage import add_usage
 from omh.llm.types import Usage
 from omh.session_backends.sqlite.session.session_row import read_session_row
 from omh.session_backends.sqlite.sql import sql

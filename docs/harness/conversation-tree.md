@@ -26,5 +26,5 @@ When branches diverge, the latest relevant compaction bounds prefix copying. Wit
 
 ## Implementation and checks
 
-- [Session and Branch implementation](../../src/omh/agent/session/session.py), [context projection](../../src/omh/agent/session/context.py), [SQLite branch index](../../src/omh/session_backends/sqlite/session/branch_entries.py).
-- [Branch contract tests](../../tests/agent/session/test_branch_contract.py), [multi-lane tests](../../tests/agent/runtime/test_multi_lane.py), [compaction tests](../../tests/agent/runtime/test_compaction.py), [navigation tests](../../tests/agent/runtime/test_navigation.py).
+- [Session and Branch implementation](../../src/omh/agent/durable/session/session.py), [context projection](../../src/omh/agent/durable/session/context.py), [SQLite branch index](../../src/omh/session_backends/sqlite/session/branch_entries.py).
+- [Branch contract tests](../../tests/agent/durable/session/test_branch_contract.py), [multi-lane tests](../../tests/agent/durable/runtime/test_multi_lane.py), [compaction tests](../../tests/agent/durable/runtime/test_compaction.py), [navigation tests](../../tests/agent/durable/runtime/test_navigation.py).

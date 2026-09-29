@@ -35,6 +35,6 @@ The host must ensure one writable owner for a Session. A repository rejects dupl
 
 ## Implementation and checks
 
-- [Storage and Session declarations](../../src/omh/agent/session/types.py), [bound addresses](../../src/omh/agent/session/values.py), [commit preparation](../../src/omh/agent/session/commit.py), [codecs](../../src/omh/agent/session/codec.py).
-- [Session facade](../../src/omh/agent/session/facade.py), [SQLite repository](../../src/omh/session_backends/sqlite/repo.py), [schema](../../src/omh/session_backends/sqlite/migrations/001_initial.sql).
-- [Storage contract tests](../../tests/agent/session/test_storage_contract.py), [Memory tests](../../tests/agent/session/test_memory_session.py), [SQLite tests](../../tests/session_backends/sqlite/test_sqlite_session_repo.py).
+- [Storage and Session declarations](../../src/omh/agent/durable/session/types.py), [bound addresses](../../src/omh/agent/durable/session/values.py), [commit preparation](../../src/omh/agent/durable/session/commit.py), [codecs](../../src/omh/agent/durable/session/codec.py).
+- [Session facade](../../src/omh/agent/durable/session/facade.py), [SQLite repository](../../src/omh/session_backends/sqlite/repo.py), [schema](../../src/omh/session_backends/sqlite/migrations/001_initial.sql).
+- [Storage contract tests](../../tests/agent/durable/session/test_storage_contract.py), [Memory tests](../../tests/agent/durable/session/test_memory_session.py), [SQLite tests](../../tests/session_backends/sqlite/test_sqlite_session_repo.py).

@@ -1,8 +1,8 @@
 # Omh Agent Harness
 
-A Python SDK for durable agent conversations.
+A Python SDK for in-process and durable agent conversations.
 
-omh (oh-my-harness) combines streamed model responses, tool execution, and persistent conversation state. Build agents with named conversation branches, queued inputs, hooks, and explicit recovery after interruption. Sessions can run in memory or persist to SQLite. The built-in model provider is DeepSeek.
+omh (oh-my-harness) combines streamed model responses, tool execution, and conversation state. `omh.agent` provides an in-process, Session-free Agent; the experimental `omh.agent.durable` namespace adds persistent execution with named conversation branches, queued inputs, hooks, and explicit recovery after interruption. Sessions can run in memory or persist to SQLite. The built-in model provider is DeepSeek.
 
 The Python distribution and import name are both `omh`.
 
@@ -12,17 +12,23 @@ The Python distribution and import name are both `omh`.
 
 ## Run an agent
 
-With Python 3.14 and a DeepSeek API key, run these commands from the repository root:
+With Python 3.14, the in-process Agent example needs no credentials:
 
 ```bash
 python3.14 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+python examples/agent_conversation.py
+```
+
+For the durable runtime with a DeepSeek API key, set the environment variable and run one of the harness examples:
+
+```bash
 export DEEPSEEK_API_KEY="your-api-key"
 python examples/minimal_agent.py
 ```
 
-For streamed text, run [streaming_agent.py](examples/streaming_agent.py). For a model–tool–model round trip, run [tool_agent.py](examples/tool_agent.py). Each script is self-contained; [Getting started](docs/getting-started.md) explains the API and how to configure a system prompt.
+For streamed text, run [streaming_agent.py](examples/streaming_agent.py). For a model–tool–model round trip, run [tool_agent.py](examples/tool_agent.py). Each script is self-contained; [Getting started](docs/getting-started.md) explains the APIs.
 
 ## Modules
 
@@ -31,7 +37,8 @@ All modules ship in the same SDK distribution.
 | Module | Description |
 | --- | --- |
 | [`omh.llm`](docs/llm.md) | Independently usable model/provider layer with text, thinking, and tool-call streams |
-| [`omh.agent`](docs/harness.md) | Durable conversation runtime with tools, queues, hooks, observation, and recovery |
+| [`omh.agent`](docs/agent.md) | In-process, Session-free Agent with transcript state, events, and cancellation |
+| [`omh.agent.durable`](docs/harness.md) | Experimental durable runtime with tools, queues, hooks, observation, and recovery |
 | [`omh.session_backends.sqlite`](docs/harness/storage.md) | SQLite-backed Session storage for persistent history and execution state |
 
 ## Execution & Permissions
