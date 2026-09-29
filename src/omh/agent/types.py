@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -7,20 +8,27 @@ from typing import Literal
 from omh.llm.types import (
     AbortSignal,
     AssistantMessageEvent,
+    ImageContent,
+    JsonValue,
     Message,
     Model,
     ModelCost,
     ModelThinkingLevel,
     SimpleStreamOptions,
+    TextContent,
     Tool,
     ToolCall,
     ToolResultMessage,
     TranscriptContext,
+    Usage,
 )
 from omh.llm.utils.event_stream import AssistantMessageEventStream
 from omh.llm.utils.transcript import (
     create_initial_system_message,
     get_current_system_prompt,
+)
+from omh.llm.utils.transcript import (
+    to_tool_declaration as _to_llm_tool_declaration,
 )
 
 #: Requested reasoning level for a turn. ``off`` disables reasoning.
@@ -58,17 +66,43 @@ DEFAULT_MODEL = Model(
 
 
 @dataclass(slots=True)
-class AgentTool:
-    """Executable tool declaration held by the Agent.
+class AgentToolResult:
+    """Result returned by an :class:`AgentTool` execution."""
 
-    Ticket 01 only manages the tool list as state; execution is added by the
-    tool-roundtrip slice.
+    content: list[TextContent | ImageContent]
+    details: JsonValue = None
+    usage: Usage | None = None
+
+
+AgentToolExecute = Callable[[str, dict[str, object], AbortSignal | None], Awaitable[AgentToolResult] | AgentToolResult]
+
+#: Optional compatibility shim applied to raw tool-call arguments before schema
+#: conversion and validation. It must return the argument object to validate.
+AgentToolPrepareArguments = Callable[[dict[str, object]], dict[str, object]]
+
+
+@dataclass(slots=True)
+class AgentTool:
+    """Executable tool held by the Agent.
+
+    The declaration sent to the model is derived from ``name``, ``description``
+    and ``parameters`` only; ``label``, ``execute`` and ``prepare_arguments`` stay
+    on the execution side.
     """
 
     name: str
     description: str
     parameters: dict[str, object]
-    label: str = ""
+    label: str
+    execute: AgentToolExecute
+    prepare_arguments: AgentToolPrepareArguments | None = None
+
+
+def to_tool_declaration(tool: AgentTool) -> Tool:
+    """Build the model-facing declaration for an executable tool."""
+    return _to_llm_tool_declaration(
+        Tool(name=tool.name, description=tool.description, parameters=copy.deepcopy(tool.parameters))
+    )
 
 
 @dataclass(slots=True)
@@ -132,6 +166,23 @@ class MessageEndEvent:
     type: Literal["message_end"] = "message_end"
 
 
+@dataclass(slots=True)
+class ToolExecutionStartEvent:
+    tool_call_id: str
+    tool_name: str
+    args: dict[str, object]
+    type: Literal["tool_execution_start"] = "tool_execution_start"
+
+
+@dataclass(slots=True)
+class ToolExecutionEndEvent:
+    tool_call_id: str
+    tool_name: str
+    result: AgentToolResult
+    is_error: bool
+    type: Literal["tool_execution_end"] = "tool_execution_end"
+
+
 AgentEvent = (
     AgentStartEvent
     | AgentEndEvent
@@ -140,14 +191,12 @@ AgentEvent = (
     | MessageStartEvent
     | MessageUpdateEvent
     | MessageEndEvent
+    | ToolExecutionStartEvent
+    | ToolExecutionEndEvent
 )
 
 
 AgentEventListener = Callable[[AgentEvent, AbortSignal], Awaitable[None] | None]
-
-
-def _tool_declaration(tool: AgentTool) -> Tool:
-    return Tool(name=tool.name, description=tool.description, parameters=dict(tool.parameters))
 
 
 class AgentState:
@@ -164,7 +213,7 @@ class AgentState:
         self._messages: list[AgentMessage] = list(initial.messages or [])
         initial_message = create_initial_system_message(
             initial.system_prompt,
-            [_tool_declaration(tool) for tool in self._tools],
+            [to_tool_declaration(tool) for tool in self._tools],
         )
         if (not self._messages or self._messages[0].role != "system") and initial_message is not None:
             self._messages.insert(0, initial_message)

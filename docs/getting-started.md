@@ -42,7 +42,7 @@ agent.abort()                     # cooperatively stops an in-flight run
 
 `Agent.state.messages` holds the transcript, `Agent.state.system_prompt` is replayed from its system messages, and `Agent.subscribe` listeners are awaited in subscription order after the public state updates. The run stays busy until the terminal listeners settle, so `wait_for_idle()` resolves only after `agent_end` handling completes. Cancelling a caller awaiting `prompt`, `continue_`, or `wait_for_idle` ends only that wait; use `abort()` to stop the run.
 
-The example uses a deterministic in-process `StreamFn`, so it runs without credentials. Provider integration and the system/tool replay boundary are covered in [LLM layer](llm.md).
+The example uses a deterministic in-process `StreamFn`, so it runs without credentials. [In-process Agent](agent.md#tools) shows how to attach executable tools with a JSON Schema; provider integration and the system/tool replay boundary are covered in [LLM layer](llm.md).
 
 ## Run a durable agent
 
