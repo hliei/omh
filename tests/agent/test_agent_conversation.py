@@ -258,9 +258,13 @@ def test_state_list_assignment_copies_top_level_and_shares_objects() -> None:
     assert len(agent.state.messages) == 2
     assert agent.state.messages[0] is original_messages[0]
 
-    original_tools = [AgentTool(name="t", description="d", parameters={}, label="T")]
+    async def execute(tool_call_id: str, args: dict[str, object], signal: AbortSignal | None) -> object:
+        del tool_call_id, args, signal
+        raise AssertionError("tool must not be executed")
+
+    original_tools = [AgentTool(name="t", description="d", parameters={}, label="T", execute=execute)]
     agent.state.tools = original_tools
-    original_tools.append(AgentTool(name="t2", description="d", parameters={}, label="T2"))
+    original_tools.append(AgentTool(name="t2", description="d", parameters={}, label="T2", execute=execute))
     assert len(agent.state.tools) == 1
     assert agent.state.tools[0] is original_tools[0]
 

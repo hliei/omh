@@ -1,9 +1,56 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Sequence
+from dataclasses import dataclass
 
-from omh.llm.types import Context, Message, SystemMessage, Tool, TranscriptContext
+from omh.llm.types import (
+    Context,
+    Message,
+    SystemMessage,
+    Tool,
+    ToolReference,
+    TranscriptContext,
+)
 from omh.llm.utils.text import content_text, get_system_message_text
+
+
+def to_tool_declaration(tool: Tool) -> Tool:
+    """Strip executable and display-only state from a tool for transcript comparison."""
+    return Tool(name=tool.name, description=tool.description, parameters=copy.deepcopy(tool.parameters))
+
+
+def declarations_equal(left: Tool, right: Tool) -> bool:
+    """Whether two tools declare the same interface to the model."""
+    return left.name == right.name and left.description == right.description and left.parameters == right.parameters
+
+
+@dataclass(frozen=True, slots=True)
+class ToolStateChanges:
+    """Tool additions and removals between two complete tool states."""
+
+    tools_added: list[Tool]
+    tools_removed: list[ToolReference]
+
+
+def get_tool_state_changes(previous: Sequence[Tool], current: Sequence[Tool]) -> ToolStateChanges:
+    """Compare two tool states; a changed definition is a removal followed by an addition."""
+    previous_by_name = {tool.name: tool for tool in previous}
+    current_by_name = {tool.name: tool for tool in current}
+    added = [
+        tool
+        for tool in current
+        if tool.name not in previous_by_name or not declarations_equal(previous_by_name[tool.name], tool)
+    ]
+    removed = [
+        ToolReference(name=tool.name)
+        for tool in previous
+        if tool.name not in current_by_name or not declarations_equal(tool, current_by_name[tool.name])
+    ]
+    return ToolStateChanges(
+        tools_added=[to_tool_declaration(tool) for tool in added],
+        tools_removed=removed,
+    )
 
 
 def create_initial_system_message(
