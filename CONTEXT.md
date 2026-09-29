@@ -9,8 +9,20 @@
 _Avoid_: AgentHarness、AgentLane
 
 **AgentTool**:
-传统 Agent 持有的可执行工具，包含名称、描述、JSON Schema 参数、显示 label、可选参数预处理与 execute 回调。发送给模型的声明只含名称、描述与参数；未知工具、预处理或校验失败、执行异常成为错误工具结果，不进入副作用。
+传统 Agent 持有的可执行工具，包含名称、描述、JSON Schema 参数、显示 label、可选参数预处理、execute 回调及可选 execution_mode。发送给模型的声明只含名称、描述与参数；未知工具、预处理或校验失败、before hook 阻断、执行异常成为错误工具结果，不进入副作用。execute 在存活期间可通过 on_update 报告进度。
 _Avoid_: AgentHarnessTool
+
+**Tool batch（工具批次）**:
+一条 assistant 消息中的全部工具调用。默认并行：按来源顺序预检，允许的调用并发执行；tool_execution_end 按完成顺序，工具结果消息按来源顺序。全局 sequential 或任一被调用工具声明 `execution_mode="sequential"` 时整批串行。只有全部已最终结算结果都明确 terminate 时才停止该批次的后续模型回合。
+_Avoid_: 仅让声明串行的那个工具串行
+
+**Tool hook（工具前后钩子）**:
+before_tool_call 在参数校验后运行，接收原始调用、经校验参数与运行上下文，可阻断执行并提供 terminate 提示。after_tool_call 接收执行结果，按字段替换 content、details、usage、is_error、terminate，省略值保留原值且不深合并；hook 异常成为错误工具结果。
+_Avoid_: 深合并结果字段
+
+**Progress update（工具进度）**:
+execute 存活期间通过 on_update 接纳的部分工具结果，作为 tool_execution_update 事件在终结前收敛；调用终结后的更新被忽略。
+_Avoid_: 终结后仍写入观察状态
 
 **AgentHarness**:
 管理 agent 对话执行及中断恢复的持久化运行时。已持久化确认的执行结果在恢复后不会重复执行；外部结果未知的调用遵循明确的恢复规则。

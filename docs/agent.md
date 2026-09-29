@@ -81,7 +81,8 @@ the prepared arguments against the JSON Schema, executes each tool with
 `(tool_call_id, validated_args, signal, on_update)`, emits `tool_execution_end`,
 emits each `toolResult` message through the normal `message_start`/`message_end`
 sequence, appends the results to the transcript, and requests the next model
-response.
+response. `tool_execution_start` and `tool_execution_end` both carry the raw
+model arguments; the validated arguments go to the hooks and the tool.
 
 Argument normalization works on a copy, so the `ToolCall` kept in the assistant
 history retains the raw model arguments. Schema handling covers primitive

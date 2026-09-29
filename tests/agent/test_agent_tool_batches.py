@@ -366,6 +366,36 @@ async def test_unknown_tool_in_parallel_batch_produces_error_without_execution()
     assert tool_end_names(events) == ["missing", "known"]
 
 
+async def test_sequential_immediate_failure_produces_events_and_continues() -> None:
+    known = ControlledTool(name="known", gated=False)
+    stream = ScriptedStreamFn(
+        [
+            lambda: tool_call_message([("c1", "missing", {"value": "a"}), ("c2", "known", {"value": "b"})]),
+            lambda: text_message("recovered"),
+        ]
+    )
+    agent = Agent(
+        AgentOptions(
+            stream_fn=stream,
+            tool_execution="sequential",
+            initial_state=AgentInitialState(model=make_model(), tools=[known.agent_tool()]),
+        )
+    )
+    events = collect_events(agent)
+
+    await agent.prompt("go")
+
+    assert known.calls == [("c2", {"value": "b"})]
+    messages = result_messages(agent)
+    assert [message.tool_call_id for message in messages] == ["c1", "c2"]
+    assert messages[0].is_error is True
+    assert [event.tool_name for event in events if isinstance(event, ToolExecutionStartEvent)] == [
+        "missing",
+        "known",
+    ]
+    assert tool_end_names(events) == ["missing", "known"]
+
+
 # ---------------------------------------------------------------------------
 # A10 / A12: before and after tool hooks
 # ---------------------------------------------------------------------------
@@ -562,6 +592,55 @@ async def test_progress_updates_settle_before_end_and_late_updates_are_ignored()
     tool.update_sink(AgentToolResult(content=[TextContent(text="late")], details={"step": 3}))
     late_updates = [event for event in events if isinstance(event, ToolExecutionUpdateEvent)]
     assert len(late_updates) == 2
+
+
+async def test_progress_is_delivered_while_tool_is_still_running() -> None:
+    tool = ControlledTool(name="echo")
+    update_sent = asyncio.Event()
+    update_received = asyncio.Event()
+
+    async def execute_with_progress(
+        tool_call_id: str,
+        args: dict[str, object],
+        signal: AbortSignal | None,
+        on_update: AgentToolUpdateCallback,
+    ) -> AgentToolResult:
+        on_update(AgentToolResult(content=[TextContent(text="working")], details={"step": 1}))
+        update_sent.set()
+        await tool.release.wait()
+        tool.calls.append((tool_call_id, args))
+        return tool.result
+
+    tool.execute = execute_with_progress  # type: ignore[method-assign]
+
+    stream = ScriptedStreamFn(
+        [
+            lambda: tool_call_message([("c1", "echo", {"value": "x"})]),
+            lambda: text_message("done"),
+        ]
+    )
+    agent = Agent(
+        AgentOptions(
+            stream_fn=stream,
+            initial_state=AgentInitialState(model=make_model(), tools=[tool.agent_tool()]),
+        )
+    )
+
+    def observe(event: AgentEvent, signal: AbortSignal) -> None:
+        if isinstance(event, ToolExecutionUpdateEvent):
+            update_received.set()
+
+    agent.subscribe(observe)
+
+    run = asyncio.create_task(agent.prompt("go"))
+    await asyncio.wait_for(update_sent.wait(), timeout=1)
+    # The update must be observable before the tool is released.
+    await asyncio.wait_for(update_received.wait(), timeout=1)
+    assert tool.release.is_set() is False
+
+    tool.release.set()
+    await asyncio.wait_for(run, timeout=1)
+    assert tool.calls == [("c1", {"value": "x"})]
 
 
 # ---------------------------------------------------------------------------

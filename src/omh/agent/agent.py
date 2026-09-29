@@ -183,7 +183,6 @@ class Agent:
         self._state.is_streaming = True
         self._state.streaming_message = None
         self._state.error_message = None
-        self._state._clear_pending_tool_calls()
 
         run = _ActiveRun(
             abort_controller=AbortController(),

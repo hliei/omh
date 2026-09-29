@@ -405,7 +405,7 @@ async def _execute_tool_calls_parallel(
             if signal is not None and signal.aborted:
                 break
             continue
-        entries.append(_parallel_tool_call(preparation, assistant_message, context, config, signal, emit))
+        entries.append(_deferred_tool_call(preparation, assistant_message, context, config, signal, emit))
         if signal is not None and signal.aborted:
             break
 
@@ -423,7 +423,7 @@ async def _execute_tool_calls_parallel(
     return _ExecutedToolBatch(messages=messages, terminate=_should_terminate_tool_batch(ordered))
 
 
-def _parallel_tool_call(
+def _deferred_tool_call(
     preparation: _PreparedToolCall,
     assistant_message: AssistantMessage,
     context: AgentContext,
@@ -433,11 +433,7 @@ def _parallel_tool_call(
 ) -> Callable[[], Awaitable[_FinalizedToolCall]]:
     async def run() -> _FinalizedToolCall:
         if signal is not None and signal.aborted:
-            finalized = _FinalizedToolCall(
-                tool_call=preparation.tool_call,
-                result=_create_error_tool_result("Operation aborted"),
-                is_error=True,
-            )
+            finalized = _aborted_tool_call(preparation.tool_call)
             await _emit_tool_execution_end(emit, finalized)
             return finalized
         return await _execute_and_finalize_tool_call(preparation, assistant_message, context, config, signal, emit)
@@ -545,11 +541,7 @@ async def _prepare_tool_call(
             if inspect.isawaitable(before):
                 before = await before
             if signal is not None and signal.aborted:
-                return _FinalizedToolCall(
-                    tool_call=tool_call,
-                    result=_create_error_tool_result("Operation aborted"),
-                    is_error=True,
-                )
+                return _aborted_tool_call(tool_call)
             if before is not None and before.block:
                 result = _create_error_tool_result(before.reason or "Tool execution was blocked")
                 if before.terminate is True:
@@ -563,11 +555,7 @@ async def _prepare_tool_call(
         )
 
     if signal is not None and signal.aborted:
-        return _FinalizedToolCall(
-            tool_call=tool_call,
-            result=_create_error_tool_result("Operation aborted"),
-            is_error=True,
-        )
+        return _aborted_tool_call(tool_call)
 
     return _PreparedToolCall(tool_call=tool_call, tool=tool, args=args)
 
@@ -593,7 +581,7 @@ async def _execute_prepared_tool_call(
     signal: AbortSignal | None,
     emit: AgentEventSink,
 ) -> tuple[AgentToolResult, bool]:
-    pending_updates: list[Awaitable[None]] = []
+    pending_updates: list[asyncio.Task[None]] = []
     accepting_updates = True
 
     def on_update(partial_result: AgentToolResult) -> None:
@@ -608,7 +596,9 @@ async def _execute_prepared_tool_call(
             )
         )
         if inspect.isawaitable(outcome):
-            pending_updates.append(outcome)
+            # Start listener work immediately so progress is observable while the
+            # tool is still running; settle accepted updates before finalizing.
+            pending_updates.append(asyncio.ensure_future(outcome))
 
     try:
         result = prepared.tool.execute(prepared.tool_call.id, prepared.args, signal, on_update)
@@ -619,8 +609,8 @@ async def _execute_prepared_tool_call(
         executed = (_create_error_tool_result(str(error)), True)
 
     accepting_updates = False
-    for pending in pending_updates:
-        await pending
+    if pending_updates:
+        await asyncio.gather(*pending_updates)
     return executed
 
 
@@ -666,6 +656,14 @@ async def _finalize_executed_tool_call(
 
 def _create_error_tool_result(message: str) -> AgentToolResult:
     return AgentToolResult(content=[TextContent(text=message)], details={})
+
+
+def _aborted_tool_call(tool_call: ToolCall) -> _FinalizedToolCall:
+    return _FinalizedToolCall(
+        tool_call=tool_call,
+        result=_create_error_tool_result("Operation aborted"),
+        is_error=True,
+    )
 
 
 def _create_tool_result_message(finalized: _FinalizedToolCall) -> ToolResultMessage:
