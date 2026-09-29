@@ -13,7 +13,7 @@ Review the intended files and ignore rules before staging. Inspect the staged di
 ## Feature work
 
 1. Define one cohesive delivery from a local ticket, several closely related tickets, or a small direct request. One branch and PR should be independently reviewable, mergeable, and reversible; ticket count does not determine branch count.
-2. Start a `<type>/<delivery-name>` branch (see naming below) from up-to-date `main`. Create branches when work starts. For dependent deliveries, merge the prerequisite first, then branch from updated `main`; unrelated work can proceed independently.
+2. Start a `<type>/<delivery-name>` branch (see naming below) from up-to-date `main`. Create branches when work starts; `docs` and `chore` commits skip this and go directly to `main` (see Direct commits to `main`). For dependent deliveries, merge the prerequisite first, then branch from updated `main`; unrelated work can proceed independently.
 3. Implement the selected scope and update relevant tests and documentation. Keep local execution status according to [the task tracker](issue-tracker.md).
 4. Before pushing Python code, dependency, or check-configuration changes, run `ruff check src tests`, `mypy`, and `pytest` in the development environment and resolve failures. For documentation-only changes, verify the affected content and links. Select files to stage and inspect the staged diff before committing.
 5. Push the feature branch and open a PR describing the problem, resulting behavior, scope, and validation. Include necessary context directly; reviewers must not need local planning files. A GitHub Issue is optional.
@@ -21,9 +21,17 @@ Review the intended files and ignore rules before staging. Inspect the staged di
 
 Keep GitHub automatic head-branch deletion disabled and merge PRs without `--delete-branch`. Delete remote branches only when explicitly requested. Start later deliveries on new branches from updated `main` rather than reusing retained branches.
 
-Split a large feature into independently useful deliveries. Group small tickets when they contribute to the same result. Code, tests, and necessary documentation for one behavior normally belong together. Routine feature development reaches `main` through PRs.
+Split a large feature into independently useful deliveries. Group small tickets when they contribute to the same result. Code, tests, and necessary documentation for one behavior normally belong together. Feature development reaches `main` through PRs.
 
 Pushing a branch shares its reachable commits, including their history. Ignore rules affect untracked files; they do not remove previously committed files or history.
+
+## Direct commits to `main`
+
+`docs` and `chore` commits go straight to `main`: documentation, repository conventions and process (including this workflow), tooling, dependencies, and maintenance. They need no branch, PR, or pre-merge review; push them to `main` directly.
+
+`feat`, `fix`, `refactor`, and `test` deliveries start on a `<type>/<delivery-name>` branch and reach `main` through a PR. Documentation and tests that belong to a delivery's scope stay on that branch; do not split them out to take this shortcut.
+
+Direct commits still follow the commit-message convention and, when they touch Python code, dependency, or check configuration, the local checks below. `main` therefore mixes delivery merge commits with direct commits; that is accepted for these changes.
 
 ## Commit messages
 
@@ -48,7 +56,7 @@ Use `<type>/<short-delivery-name>` with lowercase English words separated by hyp
 | `test` | Tests without a production behavior change | `test/sqlite-transactions` |
 | `chore` | Tooling, dependencies, or maintenance | `chore/update-dev-dependencies` |
 
-Choose the type for the primary purpose: tests and documentation accompanying a feature stay on its `feat/` branch. Use `feat` consistently rather than `feature`, and `fix` rather than `bugfix`. Keep `main` as the integration branch. A prototype workflow may retain its separate `prototype/<name>` evidence branch as required by that workflow.
+Choose the type for the primary purpose: tests and documentation accompanying a feature stay on its `feat/` branch. The `docs` and `chore` types commit directly to `main`; the other types start on a branch. Use `feat` consistently rather than `feature`, and `fix` rather than `bugfix`. Keep `main` as the integration branch. A prototype workflow may retain its separate `prototype/<name>` evidence branch as required by that workflow.
 
 ## Releases
 
