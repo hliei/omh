@@ -27,7 +27,7 @@ Pushing a branch shares its reachable commits, including their history. Ignore r
 
 ## Local checks and CI failures
 
-Run the local checks before each push of code changes. `ruff check --fix src tests` can fix supported lint findings; review its changes and rerun the checks. Local checks run on the developer platform; CI repeats Ruff, mypy, and pytest on macOS and Ubuntu 24.04 to cover both supported platforms.
+Run the local checks before each push of code changes. `ruff check --fix src tests` can fix supported lint findings; review its changes and rerun the checks. Local checks run on the developer platform; CI repeats Ruff, mypy, and pytest on macOS and Ubuntu 24.04 to cover both supported platforms. CI also builds the sdist and wheel on Ubuntu 24.04, verifies the wheel carries `py.typed` and the SQLite migrations, and runs the test suite against the installed wheel rather than the source tree.
 
 If CI fails, inspect the failing job and reproduce its command locally where possible. Fix the cause on the same feature branch, verify the fix, commit, and push again. The existing PR updates and CI reruns; merge only after the required checks pass. Platform-specific failures need verification on the affected platform. CI reports failures and does not automatically commit fixes.
 
