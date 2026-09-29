@@ -11,3 +11,4 @@ These records explain durable design choices. The [harness chapters](../harness.
 | [0005 — SQLite branch index](0005-preserve-sqlite-branch-index.md) | Segments and accepted history-copy cost |
 | [0006 — SQLite container and ownership](0006-sqlite-container-and-ownership.md) | Naming, discovery, and writable ownership |
 | [0007 — Agent execution boundaries](0007-agent-execution-boundaries.md) | Planned in-process Agent and durable execution module boundaries |
+| [0008 — Package verification in CI](0008-package-verification-in-ci.md) | Distribution contents and installed-wheel checks |
