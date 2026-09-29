@@ -14,6 +14,7 @@ from omh.agent import (
     AgentStartEvent,
     AgentTool,
     AgentToolResult,
+    AgentToolUpdateCallback,
     MessageEndEvent,
     MessageStartEvent,
     ToolExecutionEndEvent,
@@ -148,8 +149,9 @@ class RecordingTool:
         tool_call_id: str,
         args: dict[str, object],
         signal: AbortSignal | None,
+        on_update: AgentToolUpdateCallback,
     ) -> AgentToolResult:
-        del signal
+        del signal, on_update
         self.calls.append((tool_call_id, args))
         if self.error is not None:
             raise self.error

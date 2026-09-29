@@ -258,8 +258,13 @@ def test_state_list_assignment_copies_top_level_and_shares_objects() -> None:
     assert len(agent.state.messages) == 2
     assert agent.state.messages[0] is original_messages[0]
 
-    async def execute(tool_call_id: str, args: dict[str, object], signal: AbortSignal | None) -> object:
-        del tool_call_id, args, signal
+    async def execute(
+        tool_call_id: str,
+        args: dict[str, object],
+        signal: AbortSignal | None,
+        on_update: object,
+    ) -> object:
+        del tool_call_id, args, signal, on_update
         raise AssertionError("tool must not be executed")
 
     original_tools = [AgentTool(name="t", description="d", parameters={}, label="T", execute=execute)]

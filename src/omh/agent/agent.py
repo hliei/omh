@@ -18,15 +18,20 @@ from omh.agent.agent_loop import (
     run_agent_loop_continue,
 )
 from omh.agent.types import (
+    AfterToolCall,
     AgentContext,
     AgentEndEvent,
     AgentEvent,
     AgentMessage,
     AgentOptions,
     AgentState,
+    BeforeToolCall,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
+    ToolExecutionEndEvent,
+    ToolExecutionMode,
+    ToolExecutionStartEvent,
     TurnEndEvent,
 )
 from omh.llm.types import (
@@ -72,6 +77,9 @@ class Agent:
         self._listeners: list[AgentListener] = []
         self._active_run: _ActiveRun | None = None
         self.stream_fn = options.stream_fn
+        self.tool_execution: ToolExecutionMode = options.tool_execution
+        self.before_tool_call: BeforeToolCall | None = options.before_tool_call
+        self.after_tool_call: AfterToolCall | None = options.after_tool_call
 
     @property
     def state(self) -> AgentState:
@@ -152,6 +160,7 @@ class Agent:
         self._state.is_streaming = False
         self._state.streaming_message = None
         self._state.error_message = None
+        self._state._clear_pending_tool_calls()
 
     def _normalize_prompt_input(
         self,
@@ -174,6 +183,7 @@ class Agent:
         self._state.is_streaming = True
         self._state.streaming_message = None
         self._state.error_message = None
+        self._state._clear_pending_tool_calls()
 
         run = _ActiveRun(
             abort_controller=AbortController(),
@@ -196,6 +206,7 @@ class Agent:
     def _finish_run(self, run: _ActiveRun) -> None:
         self._state.is_streaming = False
         self._state.streaming_message = None
+        self._state._clear_pending_tool_calls()
         if not run.idle.done():
             run.idle.set_result(None)
         if self._active_run is run:
@@ -207,7 +218,13 @@ class Agent:
     def _create_loop_config(self) -> AgentLoopConfig:
         thinking_level = self._state.thinking_level
         reasoning: ReasoningLevel | None = None if thinking_level == "off" else thinking_level
-        return AgentLoopConfig(model=self._state.model, reasoning=reasoning)
+        return AgentLoopConfig(
+            model=self._state.model,
+            reasoning=reasoning,
+            tool_execution=self.tool_execution,
+            before_tool_call=self.before_tool_call,
+            after_tool_call=self.after_tool_call,
+        )
 
     async def _run_prompt_messages(self, messages: list[AgentMessage], signal: AbortSignal) -> None:
         await run_agent_loop(
@@ -262,6 +279,10 @@ class Agent:
         elif isinstance(event, MessageEndEvent):
             self._state.streaming_message = None
             self._state.messages.append(event.message)
+        elif isinstance(event, ToolExecutionStartEvent):
+            self._state._add_pending_tool_call(event.tool_call_id)
+        elif isinstance(event, ToolExecutionEndEvent):
+            self._state._remove_pending_tool_call(event.tool_call_id)
         elif isinstance(event, TurnEndEvent):
             message = event.message
             error_message = getattr(message, "error_message", None)
