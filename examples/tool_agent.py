@@ -3,7 +3,7 @@
 import asyncio
 from typing import cast
 
-from omh.agent import (
+from omh.agent.durable import (
     BACKGROUND_CONTEXT,
     AgentHarness,
     AgentHarnessOptions,

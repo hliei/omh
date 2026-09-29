@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from omh.agent.session.codec import (
+from omh.agent.durable.session.codec import (
     decode_message,
     decode_usage,
     encode_message,
     encode_usage,
 )
-from omh.agent.session.types import (
+from omh.agent.durable.session.types import (
     BranchSummaryEntry,
     CompactionEntry,
     CustomEntry,

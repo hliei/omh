@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from omh.agent.durable.agent_harness import (
+    DriveOptions,
+    DriveOutcome,
+    SettledDriveOutcome,
+)
+from omh.agent.durable.context import Context
+from omh.agent.durable.hooks import BeforeDriveHook
+from omh.agent.durable.runtime.drive.checkpoint import run_checkpoint, start_run
+from omh.agent.durable.runtime.drive.generation import run_generation
+from omh.agent.durable.runtime.drive.reconcile import reconcile_abort
+from omh.agent.durable.runtime.drive.recovery import recover_assistant_generation
+from omh.agent.durable.runtime.drive.retry import run_retry_wait
+from omh.agent.durable.runtime.drive.structural import (
+    commit_navigation,
+    prepare_compaction_threshold,
+    recover_structural_generation,
+    run_structural_decision,
+    run_structural_generation,
+    run_structural_retry_wait,
+)
+from omh.agent.durable.runtime.drive.tools import run_tools
+
+if TYPE_CHECKING:
+    from omh.agent.durable.runtime.lane import AgentLane
+
+
+async def drive_operation(
+    lane: AgentLane, options: DriveOptions, context: Context
+) -> DriveOutcome:
+    execution = await lane.inspect_execution(context)
+    operation = (
+        "run"
+        if execution.current is None
+        else execution.current.kind
+    )
+    await lane.hooks.run(
+        "before_drive",
+        BeforeDriveHook(
+            lane=lane.name,
+            run_id=options.operation_id,
+            operation=operation,
+        ),
+        context,
+    )
+    while True:
+        if await lane.is_abort_requested(options.operation_id, context):
+            return SettledDriveOutcome(
+                outcome=await reconcile_abort(lane, options.operation_id, context)
+            )
+        current = await lane.inspect_execution(context)
+        if (
+            current.current is None
+            or current.current.operation_id != options.operation_id
+        ):
+            result = await lane.get_result(options.operation_id, context)
+            if result is None:
+                raise RuntimeError(
+                    f"Operation {options.operation_id!r} ended without a result"
+                )
+            return SettledDriveOutcome(outcome=result)
+        match current.current.at:
+            case "starting":
+                await start_run(lane, options.operation_id, context)
+            case "checkpoint":
+                from omh.agent.durable.runtime.codec import decode_operation_state
+                from omh.agent.durable.runtime.types import CheckpointOperation
+                from omh.agent.durable.session.values import operation_state
+
+                stored = await lane._options.session.get_value(
+                    operation_state(options.operation_id), context
+                )
+                if stored is None:
+                    raise RuntimeError(
+                        f"Operation {options.operation_id!r} is missing state"
+                    )
+                checkpoint = decode_operation_state(stored.value)
+                if not isinstance(checkpoint, CheckpointOperation):
+                    continue
+                threshold = await prepare_compaction_threshold(
+                    lane, options.operation_id, checkpoint, context
+                )
+                outcome = await run_checkpoint(
+                    lane,
+                    options.operation_id,
+                    context,
+                    threshold=threshold,
+                )
+                if outcome is not None:
+                    return SettledDriveOutcome(outcome=outcome)
+            case "assistant.ready":
+                await run_generation(lane, options.operation_id, context)
+            case "assistant.retry_wait":
+                waiting = await run_retry_wait(lane, options, context)
+                if waiting is not None:
+                    return waiting
+            case "assistant.effect_pending":
+                await recover_assistant_generation(lane, options.operation_id, context)
+            case "tools":
+                await run_tools(lane, options.operation_id, context)
+            case "summary.deciding":
+                await run_structural_decision(lane, options.operation_id, context)
+            case "summary.ready":
+                await run_structural_generation(lane, options.operation_id, context)
+            case "summary.retry_wait":
+                waiting = await run_structural_retry_wait(lane, options, context)
+                if waiting is not None:
+                    return waiting
+            case "summary.effect_pending":
+                await recover_structural_generation(
+                    lane, options.operation_id, context
+                )
+            case "navigation.ready_to_commit":
+                from omh.agent.durable.runtime.codec import decode_operation_state
+                from omh.agent.durable.runtime.types import (
+                    NavigationReadyToCommitOperation,
+                )
+                from omh.agent.durable.session.values import operation_state
+
+                stored = await lane._options.session.get_value(
+                    operation_state(options.operation_id), context
+                )
+                if stored is None:
+                    raise RuntimeError(
+                        f"Operation {options.operation_id!r} is missing state"
+                    )
+                navigation = decode_operation_state(stored.value)
+                if isinstance(navigation, NavigationReadyToCommitOperation):
+                    await commit_navigation(
+                        lane, options.operation_id, navigation, context
+                    )
+            case other:
+                raise RuntimeError(f"Unsupported operation state: {other}")

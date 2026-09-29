@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
-from omh.agent.session.types import Entry, StorageBranchScan
+from omh.agent.durable.session.types import Entry, StorageBranchScan
 from omh.session_backends.sqlite.session.entries import decode_entry_row
 from omh.session_backends.sqlite.sql import SqlQuery, join_sql_fragments, sql
 from omh.session_backends.sqlite.types import SqliteDatabase, SqliteRow

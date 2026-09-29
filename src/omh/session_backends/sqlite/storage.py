@@ -5,13 +5,13 @@ import time
 from asyncio import Lock
 from collections.abc import Callable
 
-from omh.agent.context import Context
-from omh.agent.session.commit import (
+from omh.agent.durable.context import Context
+from omh.agent.durable.session.commit import (
     CommittedStateWrite,
     CommittedWrite,
     prepare_storage_commit,
 )
-from omh.agent.session.types import (
+from omh.agent.durable.session.types import (
     BranchSummaryEntry,
     CommitResult,
     CompactionEntry,
@@ -25,7 +25,7 @@ from omh.agent.session.types import (
     UsageScan,
     Write,
 )
-from omh.agent.session.values import (
+from omh.agent.durable.session.values import (
     ListElement,
     ListReadOptions,
     StoredValue,

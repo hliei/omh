@@ -6,6 +6,7 @@ Start with [Getting started](getting-started.md) for source installation, runnab
 
 | Document | Questions it answers |
 | --- | --- |
+| [In-process Agent](agent.md) | How do I run and observe a Session-free Agent conversation? |
 | [Storage](harness/storage.md) | What is durable, what commits atomically, and who owns a Session? |
 | [Conversation tree](harness/conversation-tree.md) | How do branches, history, compaction, and context relate? |
 | [Operations](harness/operations.md) | What is accepted, queued, persisted, and settled? |
