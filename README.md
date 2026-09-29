@@ -57,6 +57,8 @@ mypy
 pytest
 ```
 
+A `.venv` created with `uv venv` has no `pip`; create it with `uv venv --seed`, or install into it with `uv pip install -e ".[dev]"`.
+
 Tests run offline without live provider calls. CI runs the checks on macOS and Ubuntu 24.04 x86_64; other Linux distributions and architectures are not separately validated.
 
 ## License

@@ -25,6 +25,8 @@ mypy
 pytest
 ```
 
+A `.venv` created with `uv venv` has no `pip`; create it with `uv venv --seed`, or install into it with `uv pip install -e ".[dev]"`.
+
 Tests use offline providers and controlled tools. For behavior changes, verify the relevant public behavior and interruption boundaries; persistence changes need reopen coverage. Update the owning contract chapter alongside changes, and record significant trade-offs in an ADR. For documentation-only changes, check content, relative links, and code references. Run the full checks before pushing Python changes as specified in the Git workflow.
 
 ## Tasks and changes
