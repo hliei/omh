@@ -1,0 +1,52 @@
+#!/bin/sh
+# Commit-message check for the convention in docs/agents/git-workflow.md.
+#
+# Invoked by `git commit` and `git merge` with $1 = the proposed message file.
+# Reject: a body, a non-Conventional subject, or a subject longer than 72 characters.
+# Bypass deliberately with `git commit --no-verify`; required checks still apply.
+
+set -u
+
+msg_file=${1:-}
+if [ -z "$msg_file" ] || [ ! -f "$msg_file" ]; then
+  exit 0
+fi
+
+# Git strips comment lines when it creates the commit; strip them here too so the
+# check sees the message that will actually be recorded.
+message=$(grep -v '^#' "$msg_file")
+subject=$(printf '%s\n' "$message" | sed -e '/^[[:space:]]*$/d' | head -n 1)
+body=$(printf '%s\n' "$message" | sed -e '/^[[:space:]]*$/d' | tail -n +2)
+
+fail() {
+  echo "commit-msg: $1" >&2
+  echo "  subject: [$subject]" >&2
+  echo "  docs/agents/git-workflow.md (Commit messages):" >&2
+  echo "  use '<type>(<scope>): <short imperative summary>', within 72 characters, no body" >&2
+  echo "  types: feat fix docs refactor test chore" >&2
+  echo "  fix the message, or bypass on purpose with: git commit --no-verify" >&2
+  exit 1
+}
+
+if [ -z "$subject" ]; then
+  fail "the commit message is empty"
+fi
+
+if [ -n "$body" ]; then
+  fail "the commit message has a body; keep it to a single line"
+fi
+
+if [ "${#subject}" -gt 72 ]; then
+  fail "the subject is ${#subject} characters; keep it within 72"
+fi
+
+# Merge and revert commits are git-generated rather than written deliveries.
+case "$subject" in
+  Merge\ *|Revert\ *) exit 0 ;;
+esac
+
+if ! printf '%s\n' "$subject" | grep -Eq '^(feat|fix|docs|refactor|test|chore)(\([a-z0-9._/-]+\))?!?: .+$'; then
+  fail "the subject is not a Conventional Commit subject"
+fi
+
+exit 0

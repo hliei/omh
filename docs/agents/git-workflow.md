@@ -25,6 +25,10 @@ Split a large feature into independently useful deliveries. Group small tickets 
 
 Pushing a branch shares its reachable commits, including their history. Ignore rules affect untracked files; they do not remove previously committed files or history.
 
+## Commit messages
+
+For commits you write, use a single-line Conventional Commit subject: `<type>(<scope>): <short imperative summary>` (omit the scope when it adds no value). Keep the subject within 72 characters and use no body by default. For example: `feat(agent): add Session-free conversation path and durable namespace`. Put delivery details and validation in the PR description; add a commit body only when explicitly requested.
+
 ## Local checks and CI failures
 
 Run the local checks before each push of code changes. `ruff check --fix src tests` can fix supported lint findings; review its changes and rerun the checks. Local checks run on the developer platform; CI repeats Ruff, mypy, and pytest on macOS and Ubuntu 24.04 to cover both supported platforms. CI also builds the sdist and wheel on Ubuntu 24.04, verifies the wheel carries `py.typed` and the SQLite migrations, and runs the test suite against the installed wheel rather than the source tree.
