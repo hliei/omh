@@ -1,5 +1,7 @@
 # Execution and recovery
 
+Part of the experimental [Durable Agent SDK](README.md).
+
 The host attaches a harness to a writable Session and explicitly calls `drive` or a convenience method. Attachment inventories lanes and open operations without starting work. The host also owns scheduling and the single-writer lifecycle; the harness supplies no lease, repository scan, or automatic takeover.
 
 ## Shared execution and cancellation

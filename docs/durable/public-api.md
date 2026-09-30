@@ -1,5 +1,7 @@
 # Public surface
 
+Part of the experimental [Durable Agent SDK](README.md).
+
 Public declarations live in [agent_harness.py](../../src/omh/agent/durable/agent_harness.py); exports live in [omh.agent.durable](../../src/omh/agent/durable/__init__.py). Signatures use snake_case and async/await. `Result`/`Ok`/`Err` represent expected interface outcomes; durable operation results and runtime faults are separate channels. See [ADR-0002](../adr/0002-python-api-and-storage-boundaries.md).
 
 ## Running and observing
@@ -34,7 +36,7 @@ Telemetry travels through the invocation Context via explicit Protocols and a no
 
 An `AgentHarnessTool` declares name, description, JSON Schema parameters, replay policy, and an async callable. Its arguments are `(tool_call_id, arguments, on_update, tool_context, invocation, context)`. `on_update` is synchronous; optional `AgentHarnessToolUpdateOptions(checkpoint=True)` requests durable progress. Invocation exposes stable identity and memo access. Tool context can be a supplied object or a sync/async provider resolved for a tool batch.
 
-Built-in `read`, `write`, `edit`, and `bash` use `ExecutionToolContext` with an explicitly configured `LocalExecutionEnv`. File operations return typed errors through `Result`; paths can be relative to the configured cwd or absolute. Cwd is not a sandbox. File calls execute synchronously in the event loop.
+Built-in `read`, `write`, `edit`, and `bash` use `ExecutionToolContext` with an explicitly configured `LocalExecutionEnv`. File operations return typed errors through `Result`; paths can be relative to the configured cwd or absolute. These tools operate on the host filesystem and launch local processes with the application's permissions. Cwd is not a sandbox; applications own permission controls and any required process or container isolation. File calls execute synchronously in the event loop.
 
 - `read` supports text offsets/limits and image detection; image processing is optional, and BMP requires a processor for image content.
 - `write` and `edit` serialize mutations by environment and canonical path. Edit accepts an `edits` array, preserves CRLF/BOM, and reports missing, ambiguous, or overlapping replacements.

@@ -2,7 +2,7 @@
 
 ## Project knowledge
 
-Read [the harness overview](docs/harness.md) and the relevant chapter before changing runtime, Session, or recovery behavior; read [the LLM contract](docs/llm.md) for provider and streaming work. [The documentation index](docs/README.md) lists the reading paths.
+Read [the Agent contract](docs/agent.md) before changing the in-process Agent or standalone loop. For durable runtime, Session, or recovery changes, read [the durable overview](docs/durable/README.md) and the relevant chapter. Read [the LLM contract](docs/llm.md) for provider and streaming work. [The documentation index](docs/README.md) lists the reading paths.
 
 `CONTEXT.md` defines the project's domain vocabulary; [architecture decisions](docs/adr/README.md) record important trade-offs. Read [domain documentation](docs/agents/domain.md) when exploring domain concepts or changing a design.
 
@@ -10,7 +10,7 @@ Keep this guide focused on the project's module responsibilities, stable boundar
 
 ## SDK layout
 
-The installable package lives in `src/omh/`. `omh.llm` owns provider inputs and streams, is independently usable, and must not import `omh.agent`. `omh.agent` owns the in-process Agent and its conversation execution. `omh.agent.durable` owns Session contracts, durable execution, recovery, tools, and observation. `omh.session_backends.sqlite` implements persistent storage against the Session contract. Applications consume the SDK; the SDK does not depend on applications.
+The installable package lives in `src/omh/`. `omh.llm` owns provider inputs and streams, is independently usable, and must not import `omh.agent`. `omh.agent` is the main SDK entry and owns the in-process Agent and standalone loop. The experimental `omh.agent.durable` SDK owns Session contracts, durable execution, recovery, tools, and observation. `omh.session_backends.sqlite` implements persistent storage against the durable Session contract. Applications consume the SDK; the SDK does not depend on applications.
 
 ## Development commands
 

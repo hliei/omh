@@ -1,6 +1,8 @@
 # In-process Agent
 
-`omh.agent.Agent` is a stateful, in-process agent that runs model conversations without a Session, Branch, or AgentLane. Persistent execution stays in the experimental durable harness ([`omh.agent.durable`](harness.md)); the two paths use separate execution cores.
+`omh.agent` is omh's main SDK entry. It provides a stateful, in-process `Agent` and a standalone conversation loop, with tools, events, hooks, queues, and cancellation. Start with [Getting started](getting-started.md) for runnable model, streaming, and tool examples.
+
+The Agent holds its state in the current process; applications own history saving and restart policies. Persistent Sessions and interruption recovery belong to the experimental [Durable Agent SDK](durable/README.md). The two SDKs use separate execution cores and share the [LLM layer](llm.md).
 
 ## Creating an Agent
 
@@ -69,7 +71,7 @@ which supports short-lived tokens. A falsey result keeps the static
 `AgentOptions.api_key` fallback. `on_payload`, `on_response`, and
 `on_provider_stream_event` are forwarded to the stream function at the transport
 points it supports. `session_id`, `thinking_budgets`, `transport`, and
-`max_retry_delay_ms` are forwarded with their baseline meaning; `session_id` is
+`max_retry_delay_ms` are forwarded as request options; `session_id` is
 never interpreted as a durable Session, and the built-in transport does not add
 client-side caching, WebSocket, or retry behavior.
 
@@ -82,10 +84,10 @@ distinguishes forwarding from real support so no option is exposed as a no-op.
 | Option group | Agent/loop responsibility | Built-in DeepSeek (Chat Completions) |
 | --- | --- | --- |
 | `model`, `thinking_level`/`reasoning`, run `signal` | Resolved per request; the final assistant message records the requested level | Passed through; `reasoning` is clamped to the model's supported levels |
-| `convert_to_llm`, `transform_context` | Run each request in that order before transcript normalization | Not provider-specific; the normalized transcript is projected by the provider |
+| `transform_context`, `convert_to_llm` | Run each request in that order before transcript normalization | Not provider-specific; the normalized transcript is projected by the provider |
 | `get_api_key`, `api_key` | Resolved per request with the static fallback | Used as the request credential |
-| `prepare_request`, `prepare_next_turn`/`prepare_next_turn_with_context`, `finish_turn` | Consumed by the traditional core; ordering and request counts are contract | Not provider-specific |
-| `before_tool_call`, `after_tool_call`, `tool_execution`, `steering_mode`, `follow_up_mode` | Consumed by the traditional core | Not provider-specific |
+| `prepare_request`, `prepare_next_turn`/`prepare_next_turn_with_context`, `finish_turn` | Consumed by the Agent/loop; ordering and request counts are contract | Not provider-specific |
+| `before_tool_call`, `after_tool_call`, `tool_execution`, `steering_mode`, `follow_up_mode` | Consumed by the Agent/loop | Not provider-specific |
 | `session_id` | Forwarded unchanged; never a durable Session | Forwarded but not sent by DeepSeek |
 | `thinking_budgets` | Forwarded | Forwarded; not consumed while no token-budget field is modeled |
 | `transport` | Forwarded | HTTP SSE only; other values are ignored rather than implemented |
@@ -319,9 +321,7 @@ The Agent, direct execution, and the stream producer own their work differently:
 | `agent_loop` / `agent_loop_continue` | an independent producer task | stopping the read, cancelling a reader, or cancelling one result waiter does not cancel the producer or other waiters | pass a signal; the producer stops at the next cooperative check |
 
 The producer task is exposed as `stream.task` for callers that want to await
-or cancel it. [`examples/standalone_loop.py`](../examples/standalone_loop.py)
-runs the direct and stream entries against an in-process echo model without
-credentials.
+or cancel it.
 
 ## Module organization
 
@@ -345,10 +345,9 @@ Applications import the public Agent, loop entries, and contracts from
 | [`hooks.py`](../src/omh/agent/hooks.py) | Request, turn, tool, credential, and queue hooks with their inputs and results |
 | [`stream_fn.py`](../src/omh/agent/stream_fn.py) | Model stream function contract and host-installed default |
 
-Declarations previously collected in `omh.agent.types` now live in these
-modules. Direct imports from that module must use the owning module or the
-unchanged `omh.agent` public exports. `QueueMode` lives with Agent construction
-options; reasoning levels and provider callbacks use the existing LLM contracts.
+`QueueMode` lives with Agent construction options; reasoning levels and provider
+callbacks use the shared LLM contracts. Applications can import these through
+the `omh.agent` public exports.
 
 The loop retains scheduling decisions. Its execution modules do not import the
 loop or the Agent. Model response handling updates the active context's assistant
@@ -357,36 +356,17 @@ append. The event stream starts a supplied execution callback without owning
 turn scheduling. Provider transport and transcript primitives remain in
 `omh.llm`; durable execution remains in `omh.agent.durable`.
 
-## Migration and supported scope
+## Supported scope
 
-`omh.agent` exports only the traditional Agent and loop. The durable harness,
-Session contracts, runtime, and harness tools live in the experimental
-`omh.agent.durable` namespace. The relocation keeps no compatibility aliases:
-a caller that previously imported `AgentHarness` or a durable runtime type from
-`omh.agent` changes the import to `omh.agent.durable`. No stored record,
-namespace key, operation state, or side-effect rule changed, so existing
-Sessions open and resume unchanged. [`examples/minimal_agent.py`](../examples/minimal_agent.py),
-[`streaming_agent.py`](../examples/streaming_agent.py), and
-[`tool_agent.py`](../examples/tool_agent.py) show the durable imports.
+The main SDK includes the in-process Agent, standalone loop, request/turn/tool
+hooks, input queues, events, and cooperative cancellation. Applications supply
+executable tools and own application-level session files, compaction and retry
+policies, resource discovery, and UI/CLI behavior.
 
-Durable callers keep the legacy `Context` input shape on the LLM boundary: the
-model registry still accepts `Context.system_prompt`/`Context.tools` and
-normalizes it with `normalize_context`. A custom provider implementation is a
-different case: providers now receive a `TranscriptContext`, and one that read
-`system_prompt`/`tools` directly must project from the system messages as
-[LLM layer](llm.md#provider-input-contract) describes.
-
-The three ownership models above are deliberate Python boundaries, not
-equivalent cancellation ports. Cancelling an Agent waiter ends only that wait
-and the Agent stays busy until `agent_end` listeners settle. A direct loop task
-belongs to the caller, so cancelling it interrupts execution without promising a
-full terminal event sequence. A stream producer is independent, so readers may
-stop or be cancelled without stopping it; pass a signal for a cooperative stop.
-
-This document covers the traditional Agent as accepted: an in-process Agent, a
-standalone loop, request/turn/tool hooks, input queues, observation, and
-cancellation. It does not promise the coding-agent application layer (session
-files, automatic compaction or retry policy, extension/resource discovery, or
-UI/CLI), all pi providers or transports, or exactly-once external effects.
-Offline tests with controlled providers do not validate a live service or
-performance.
+The experimental Durable Agent SDK owns persistent Sessions, recovery,
+compaction, tree navigation, resource loading, and built-in filesystem/process
+tools. See its [overview](durable/README.md) and
+[import migration](durable/README.md#import-migration) for existing durable callers.
+Provider capabilities and transport limits are documented in the
+[LLM contract](llm.md#request-options). Offline tests with controlled providers
+do not validate a live service or performance.

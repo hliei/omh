@@ -1,6 +1,8 @@
 # Invariants and verification
 
-These guarantees connect the [harness contract](../harness.md) to executable checks. Test files below contain representative coverage; the table does not claim exhaustive race coverage.
+Part of the experimental [Durable Agent SDK](README.md).
+
+These guarantees connect the [harness contract](README.md) to executable checks. Test files below contain representative coverage; the table does not claim exhaustive race coverage.
 
 | Invariant | Verification entry point |
 | --- | --- |

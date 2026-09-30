@@ -25,4 +25,4 @@ SQLite 后端是本项目第一个跨进程持久的存储实现，本 ADR 记�
 - 第二个进程或第二个仓库实例同时打开同一个 Session 不会被检测；正确性依赖宿主保证单写者。若将来需要多进程调度，必须新增租约/接管能力，而不是放宽这里的约束。
 - O(history) 分叉复制限制与分支索引结构另见 [ADR-0005](0005-preserve-sqlite-branch-index.md)。
 
-实现入口：[SQLite repository](../../src/omh/session_backends/sqlite/repo.py)。完整契约见[存储](../harness/storage.md)。
+实现入口：[SQLite repository](../../src/omh/session_backends/sqlite/repo.py)。完整契约见[存储](../durable/storage.md)。

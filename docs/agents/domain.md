@@ -1,11 +1,11 @@
 # Domain documentation
 
-Before exploring domain concepts or changing a design, read the root [CONTEXT.md](../../CONTEXT.md), the relevant [harness chapter](../harness.md), and applicable [architecture decisions](../adr/README.md).
+Before exploring domain concepts or changing a design, read the root [CONTEXT.md](../../CONTEXT.md), the relevant [Agent](../agent.md), [LLM](../llm.md), or [durable](../durable/README.md) contract, and applicable [architecture decisions](../adr/README.md).
 
 ## Document responsibilities
 
 - `CONTEXT.md` defines canonical terms and distinctions. Use that vocabulary in proposals, tests, and implementation discussions.
-- `docs/harness.md` and `docs/harness/` describe runtime behavior, state transitions, and guarantees. `docs/llm.md` describes the independent model layer.
+- `docs/agent.md` describes the main in-process Agent and standalone loop. `docs/llm.md` describes the shared, independently usable model layer. `docs/durable/` describes the experimental Durable Agent SDK's state transitions and guarantees.
 - `docs/adr/` records consequential choices with context, alternatives, decisions, and consequences. Keep numbers stable and update incoming links when files move.
 - Local specifications and tickets track proposed work according to [task tracking](issue-tracker.md). They do not replace lasting contracts.
 

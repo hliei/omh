@@ -1,5 +1,7 @@
 # Operations
 
+Part of the experimental [Durable Agent SDK](README.md).
+
 An Operation is one accepted unit of work on an AgentLane. The lane has at most one current operation; concurrent acceptance returns `LaneBusy`. Accepted work can be resumed from its complete durable state. Acceptance itself starts no provider or tool effect.
 
 ## Acceptance and restart state

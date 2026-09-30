@@ -1,25 +1,37 @@
 # Documentation
 
-Start with [Getting started](getting-started.md) for source installation, runnable agents, streaming, tools, and Session persistence, or the [harness overview](harness.md) for the runtime model and an execution trace. The [project README](../README.md) introduces the SDK and development workflow.
+omh's main SDK is the in-process Agent in `omh.agent`. Start with [Getting started](getting-started.md) to connect a model, continue a conversation, stream output, and execute a tool. The [project README](../README.md) introduces the SDK and development workflow.
 
-## Implementation contracts
+## Agent
 
-| Document | Questions it answers |
+The [Agent contract](agent.md) describes the stateful Agent and its standalone loop:
+
+- [State and ownership](agent.md#state-and-ownership), [running and continuing](agent.md#running-and-continuing).
+- [Input queues](agent.md#input-queues), [tools](agent.md#tools), [request and turn hooks](agent.md#request-and-turn-hooks).
+- [Events](agent.md#events-and-subscribers), [cancellation](agent.md#cancellation), [standalone loop](agent.md#standalone-loop).
+
+## LLM layer
+
+[LLM layer](llm.md) covers model/provider configuration, transcript inputs, request options, credentials, and streaming. `omh.llm` is shared by both Agent SDKs and can be used independently.
+
+## Durable Agent SDK (experimental)
+
+`omh.agent.durable` provides persistent Sessions and recoverable execution through `AgentHarness`. Read the [durable overview](durable/README.md) for the execution model or [Durable getting started](durable/getting-started.md) for runnable examples, including SQLite persistence.
+
+| Contract | Questions it answers |
 | --- | --- |
-| [In-process Agent](agent.md) | How do I run and observe a Session-free Agent conversation? |
-| [Storage](harness/storage.md) | What is durable, what commits atomically, and who owns a Session? |
-| [Conversation tree](harness/conversation-tree.md) | How do branches, history, compaction, and context relate? |
-| [Operations](harness/operations.md) | What is accepted, queued, persisted, and settled? |
-| [Execution and recovery](harness/execution.md) | What happens after interruption, cancellation, close, or failure? |
-| [Public surface](harness/public-api.md) | How do applications run, observe, and extend a harness? |
-| [Invariants and verification](harness/invariants.md) | Which guarantees must changes preserve, and where are they tested? |
-| [LLM layer](llm.md) | How are models, credentials, streams, and cancellation represented? |
+| [Storage](durable/storage.md) | What is durable, what commits atomically, and who owns a Session? |
+| [Conversation tree](durable/conversation-tree.md) | How do branches, history, compaction, and context relate? |
+| [Operations](durable/operations.md) | What is accepted, queued, persisted, and settled? |
+| [Execution and recovery](durable/execution.md) | What happens after interruption, cancellation, close, or failure? |
+| [Public surface](durable/public-api.md) | How do applications run, observe, and extend a durable harness? |
+| [Invariants and verification](durable/invariants.md) | Which guarantees must changes preserve, and where are they tested? |
 
-The chapters describe implemented behavior and explicitly identify limitations. They do not imply that every possible race has a dedicated test or that offline tests validate a live provider.
+The contracts describe implemented behavior and identify limitations. Experimental status does not relax the documented persistence and recovery guarantees. Offline tests do not validate a live provider or establish performance.
 
 ## Project knowledge and contribution
 
 - [Domain vocabulary](../CONTEXT.md) defines terms.
-- [Architecture decisions](adr/README.md) explain significant trade-offs.
+- [Architecture decisions](adr/README.md) explain significant trade-offs and their scope.
 - [Project guide](../AGENTS.md) routes development tasks to the relevant conventions.
 - [Domain documentation](agents/domain.md), [task tracking](agents/issue-tracker.md), [triage](agents/triage-labels.md), and [Git workflow](agents/git-workflow.md) describe repository work.

@@ -1,6 +1,6 @@
 # Getting started
 
-omh provides an in-process Agent for model conversations, streaming, and tools, plus an experimental durable AgentHarness for persistent, recoverable execution. Start with the in-process Agent below, then continue to the durable Session examples. For execution and recovery contracts, see the [harness overview](harness.md) and [public surface](harness/public-api.md).
+This guide uses `omh.agent`, omh's main SDK. An Agent holds conversation state in the current process and runs model and tool turns. The examples connect to the built-in DeepSeek provider. For persistent Sessions and interruption recovery, see the experimental [Durable Agent SDK](durable/README.md).
 
 ## Install from source
 
@@ -10,261 +10,170 @@ Use standard CPython 3.14 on macOS or Linux. From the repository root:
 python3.14 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-```
-
-The Python distribution and import name are both `omh`. For development dependencies and checks, see [Development](../README.md#development).
-
-## Run an in-process Agent
-
-The traditional API lives in `omh.agent` and needs no Session, Branch, or AgentLane. Provide an explicit `StreamFn` and model; nothing binds a provider implicitly:
-
-```bash
-python examples/agent_conversation.py
-```
-
-[Agent conversation source](../examples/agent_conversation.py):
-
-```python
-from omh.agent import Agent, AgentInitialState, AgentOptions
-
-agent = Agent(
-    AgentOptions(
-        stream_fn=my_stream_fn,
-        initial_state=AgentInitialState(system_prompt="You are concise.", model=my_model),
-    )
-)
-
-agent.subscribe(on_event)
-await agent.prompt("hello")
-await agent.prompt("and again")   # continues the same transcript
-agent.abort()                     # cooperatively stops an in-flight run
-```
-
-`Agent.state.messages` holds the transcript, `Agent.state.system_prompt` is replayed from its system messages, and `Agent.subscribe` listeners are awaited in subscription order after the public state updates. The run stays busy until the terminal listeners settle, so `wait_for_idle()` resolves only after `agent_end` handling completes. Cancelling a caller awaiting `prompt`, `continue_`, or `wait_for_idle` ends only that wait; use `abort()` to stop the run.
-
-The example uses a deterministic in-process `StreamFn`, so it runs without credentials. [In-process Agent](agent.md#tools) shows how to attach executable tools with a JSON Schema; provider integration and the system/tool replay boundary are covered in [LLM layer](llm.md).
-
-## Run the standalone loop
-
-Applications that own the execution lifecycle can skip the Agent and call the conversation loop directly from `omh.agent`:
-
-```bash
-python examples/standalone_loop.py
-```
-
-[Standalone loop source](../examples/standalone_loop.py):
-
-```python
-from omh.agent import AgentContext, AgentLoopConfig, agent_loop, run_agent_loop
-
-context = AgentContext(messages=[], tools=[])
-config = AgentLoopConfig(model=my_model)
-
-# Direct: runs in the caller's task and awaits the sink.
-new_messages = await run_agent_loop([user_message], context, config, my_sink, signal, my_stream_fn)
-
-# Stream: an independent producer with events and a final result.
-stream = agent_loop([user_message], context, config, signal, my_stream_fn)
-async for event in stream:
-    handle(event)
-new_messages = await stream.result()
-```
-
-The `run_agent_loop`/`run_agent_loop_continue` entries are owned by the caller's task; the `agent_loop`/`agent_loop_continue` entries own an independent producer whose `result()` can be awaited by more than one waiter. [In-process Agent](agent.md#ownership) compares the Agent, direct, and stream ownership rules and their cancellation behavior.
-
-## Run a durable agent
-
-The durable harness examples call DeepSeek and require an API key in the process environment. Durable types are imported from the experimental `omh.agent.durable` namespace:
-
-```bash
 export DEEPSEEK_API_KEY="your-api-key"
-python examples/minimal_agent.py
 ```
 
-The SDK reads the environment variable; it does not automatically load `.env` files. These commands run from the repository root after the source installation above. Each script is self-contained and can also be copied into your application. The examples select `deepseek-flash` from the built-in model registry.
+The Python distribution and import name are both `omh`. The examples read the key from the process environment; they do not load `.env` files. The built-in provider uses `https://api.deepseek.com`, and these examples select `deepseek-flash` from its model catalog. For development checks, see [Development](../README.md#development).
 
-The built-in provider sends requests to `https://api.deepseek.com`. An HTTP 401 authentication error means that endpoint rejected the credential; check that `DEEPSEEK_API_KEY` is valid for the official DeepSeek API, then rerun the script.
+## Run and continue a conversation
 
-[Minimal agent source](../examples/minimal_agent.py):
+Run the complete [conversation example](../examples/conversation.py):
+
+```bash
+python examples/conversation.py
+```
+
+Or save the following code as a Python file and run it in the environment above:
 
 ```python
 import asyncio
+import os
 
-from omh.agent.durable import (
-    BACKGROUND_CONTEXT,
-    AgentHarness,
-    AgentHarnessOptions,
-    BranchScan,
-    MemorySessionRepo,
-    SessionCreateOptions,
-)
-from omh.llm import content_text, create_models, deepseek_provider
+from omh.agent import Agent, AgentInitialState, AgentOptions
+from omh.llm import AssistantMessage, content_text, deepseek_provider
 
 
 async def main() -> None:
-    ctx = BACKGROUND_CONTEXT
-    models = create_models()
-    models.set_provider(deepseek_provider())
-    model = models.get_model("deepseek", "deepseek-flash")
-    assert model is not None
-
-    repo = MemorySessionRepo()
-    try:
-        session = await repo.create(SessionCreateOptions(), ctx)
-        created = await AgentHarness.create(
-            AgentHarnessOptions(session=session, models=models, model=model), ctx
+    provider = deepseek_provider()
+    model = next(model for model in provider.get_models() if model.id == "deepseek-flash")
+    agent = Agent(
+        AgentOptions(
+            stream_fn=provider.stream_simple,
+            api_key=os.environ["DEEPSEEK_API_KEY"],
+            initial_state=AgentInitialState(system_prompt="You are concise.", model=model),
         )
-        harness = created.harness
-        try:
-            lane = await harness.lane("main", ctx)
-            result = await lane.prompt("What is 2 + 2? Answer briefly.", ctx)
-            if not result.ok:
-                raise RuntimeError(result.error)
-            if result.value.status != "completed":
-                raise RuntimeError(result.value.error or result.value.status)
+    )
 
-            entries = await lane.find_entries(BranchScan(limit=1), ctx)
-            for entry in entries:
-                if entry.type == "message" and entry.message.role == "assistant":
-                    print(content_text(list(entry.message.content)))
-        finally:
-            await harness.close(ctx)
-    finally:
-        await repo.close(ctx)
+    for prompt in ("What is 2 + 2?", "Multiply that result by 3."):
+        print(f"You: {prompt}")
+        await agent.prompt(prompt)
+        if agent.state.error_message:
+            raise RuntimeError(agent.state.error_message)
+        message = agent.state.messages[-1]
+        if isinstance(message, AssistantMessage):
+            print(f"Agent: {content_text(message.content)}")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
 ```
 
-A Session owns history, the harness drives model and tool calls, and a named lane selects a conversation. `lane.prompt` waits for the run to settle. Call it again on the same lane to continue with its existing history.
+`stream_fn` connects the Agent to model streaming. `provider.stream_simple` accepts the Agent's normalized transcript; the example supplies its API key explicitly through `AgentOptions`. The Agent does not bind a provider implicitly. A custom `StreamFn` can use another model integration or an offline implementation; see [LLM layer](llm.md#connecting-the-agent).
 
-Check both result layers: `result.ok` reports whether the interface call succeeded, while `result.value.status` reports whether the operation completed, failed, or was aborted. The operation result contains IDs and status; read the assistant message from lane history to get its text. The default `BranchScan` order is newest first.
+`await agent.prompt(...)` waits for the run to finish and returns `None`. Read the transcript from `agent.state.messages` and check `agent.state.error_message` for a failed or aborted model turn. Calling `prompt` again on the same Agent includes the previous conversation. `content_text` extracts text from the final message.
 
-Close the harness before the repository. These examples use process-local Memory storage; use SQLite when the conversation must survive process restarts.
+The Agent owns process-local state. Applications decide whether and how to save history.
 
 ## Stream the answer
 
-```bash
-python examples/streaming_agent.py
-```
-
-The [streaming example](../examples/streaming_agent.py) subscribes before prompting and prints each text delta:
-
-```python
-def print_delta(event: HarnessEvent, context: Context) -> None:
-    if event.type == "message_update" and event.lane == "main":
-        if event.event.type == "text_delta":
-            print(event.event.delta, end="", flush=True)
-
-unsubscribe = harness.events.on("message_update", print_delta)
-```
-
-Import `HarnessEvent` and `Context` from `omh.agent.durable`. Events arrive while `lane.prompt` is awaiting completion. Call `unsubscribe()` when finished, and still check the terminal operation status: streamed text may belong to an attempt that later fails or retries. For an initial snapshot plus subsequent events, use `lane.watch()`.
-
-## Give the agent a tool
+Run the complete [streaming example](../examples/streaming.py):
 
 ```bash
-python examples/tool_agent.py
+python examples/streaming.py
 ```
 
-The [tool example](../examples/tool_agent.py) registers an `add` tool with a JSON Schema, an async implementation, and `replay="safe"`. It asks the model to calculate `137 + 289` using that tool. A successful tool invocation prints:
-
-```text
-Tool: add(137, 289) = 426
-```
-
-The harness validates the model's arguments, calls the function, stores the tool result, and asks the model to continue. The script then prints the model's final answer. Tool selection is made by the model; the `Tool:` line confirms that it actually invoked the function.
-
-The callable takes `(tool_call_id, arguments, on_update, tool_context, invocation, context)` and returns `AgentToolResult`. The example only needs `arguments`. Pure addition is safe to replay after interruption; choose a replay policy based on the effects of your own tool. The default is `"never"`. See [tools and execution environments](harness/public-api.md#tools-and-execution-environments) for progress, tool context, and built-in tools.
-
-## Set a system prompt
-
-Register a context transformation before prompting:
+For the Agent created above, define a listener at module scope:
 
 ```python
-from omh.agent.durable import Context, TransformContextResult
+from omh.agent import AgentEvent, MessageUpdateEvent
+from omh.llm.types import AbortSignal
 
 
-def assistant_instructions(event: object, context: Context) -> TransformContextResult:
-    return TransformContextResult(system_prompt="You are a concise assistant.")
-
-
-harness.hooks.on("transform_context", assistant_instructions)
+def print_delta(event: AgentEvent, signal: AbortSignal) -> None:
+    if isinstance(event, MessageUpdateEvent):
+        update = event.assistant_message_event
+        if update.type == "text_delta":
+            print(update.delta, end="", flush=True)
 ```
 
-Hooks are process-local configuration; register them again when constructing a harness for a reopened Session.
-
-## In-memory history
-
-The following storage examples run offline and do not require an API key.
-
-A Session stores history; a named Branch selects a path through it. Save this example as a Python file and run it in the environment above:
+Then subscribe before prompting, inside the async function:
 
 ```python
-import asyncio
-
-from omh.agent.durable import BACKGROUND_CONTEXT, MemorySessionRepo, SessionCreateOptions
-from omh.llm import UserMessage
-
-
-async def main() -> None:
-    repo = MemorySessionRepo()
-    try:
-        session = await repo.create(SessionCreateOptions(), BACKGROUND_CONTEXT)
-        branch = await session.create_branch("main", None, BACKGROUND_CONTEXT)
-        await branch.append_message(
-            UserMessage(content="hello", timestamp=0), BACKGROUND_CONTEXT
-        )
-        history = await branch.find_entries(None, BACKGROUND_CONTEXT)
-        print(history)
-    finally:
-        await repo.close(BACKGROUND_CONTEXT)
-
-
-asyncio.run(main())
+unsubscribe = agent.subscribe(print_delta)
+try:
+    await agent.prompt("Explain recursion in one sentence.")
+    print()
+    if agent.state.error_message:
+        raise RuntimeError(agent.state.error_message)
+finally:
+    unsubscribe()
 ```
 
-Memory storage is process-local. Use SQLite when history must survive closing the repository and restarting the process.
+Listeners receive an Agent event and the run's cancellation signal. State updates precede listener delivery, and the Agent awaits listeners in subscription order. Streamed text is partial output; check the run's error state even when some text has arrived. See [events and subscribers](agent.md#events-and-subscribers).
 
-## SQLite persistence
+## Give the Agent a tool
 
-This example uses a temporary directory so it can be rerun without conflicting with an existing Session. An application should supply a persistent directory instead.
+Run the complete [tool example](../examples/tools.py):
+
+```bash
+python examples/tools.py
+```
+
+A tool combines a model-facing JSON Schema with an execution callback. Define this at module scope:
 
 ```python
-import asyncio
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from typing import cast
 
-from omh.agent.durable import BACKGROUND_CONTEXT, SessionCreateOptions
-from omh.llm import UserMessage
-from omh.session_backends.sqlite import SqliteSessionRepo
+from omh.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
+from omh.llm import TextContent
+from omh.llm.types import AbortSignal
 
 
-async def main() -> None:
-    with TemporaryDirectory() as directory:
-        repo = SqliteSessionRepo(Path(directory))
-        try:
-            session = await repo.create(
-                SessionCreateOptions(id="chat"), BACKGROUND_CONTEXT
-            )
-            branch = await session.create_branch("main", None, BACKGROUND_CONTEXT)
-            await branch.append_message(
-                UserMessage(content="hello", timestamp=0), BACKGROUND_CONTEXT
-            )
-            metadata = session.metadata
-        finally:
-            await repo.close(BACKGROUND_CONTEXT)
-
-        repo = SqliteSessionRepo(Path(directory))
-        try:
-            session = await repo.open(metadata, BACKGROUND_CONTEXT)
-            print(session.metadata)
-        finally:
-            await repo.close(BACKGROUND_CONTEXT)
+async def add(
+    tool_call_id: str,
+    arguments: dict[str, object],
+    signal: AbortSignal | None,
+    on_update: AgentToolUpdateCallback,
+) -> AgentToolResult:
+    left = cast(int, arguments["left"])
+    right = cast(int, arguments["right"])
+    total = left + right
+    print(f"Tool: add({left}, {right}) = {total}")
+    return AgentToolResult(content=[TextContent(text=str(total))])
 
 
-asyncio.run(main())
+ADD_TOOL = AgentTool(
+    name="add",
+    label="Add",
+    description="Add two integers and return their sum.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "left": {"type": "integer"},
+            "right": {"type": "integer"},
+        },
+        "required": ["left", "right"],
+        "additionalProperties": False,
+    },
+    execute=add,
+)
 ```
 
-Reopening accesses the same stored Session. It does not automatically run an agent or resume an operation. Across processes, retain the Session metadata or discover it through the repository's listing API. The host must ensure a single writable owner; see the [storage contract](harness/storage.md).
+Pass `tools=[ADD_TOOL]` in `AgentInitialState` when creating the Agent. You can also replace the tool list between runs. Inside the async function, using the existing Agent:
+
+```python
+agent.state.tools = [ADD_TOOL]
+await agent.prompt("Use the add tool to calculate 137 + 289, then report the result.")
+if agent.state.error_message:
+    raise RuntimeError(agent.state.error_message)
+message = agent.state.messages[-1]
+if isinstance(message, AssistantMessage):
+    print(content_text(message.content))
+```
+
+The Agent advertises the tool, validates arguments before execution, appends the tool result, and asks the model to continue. A successful invocation prints `Tool: add(137, 289) = 426`. Tool selection is made by the model; that line confirms the callback actually ran.
+
+The callback receives `(tool_call_id, arguments, signal, on_update)`. Use `on_update` for progress and `signal` for cooperative cancellation. See [tools](agent.md#tools) for batching, hooks, validation, and result semantics.
+
+## Set system instructions
+
+The conversation example uses `AgentInitialState(system_prompt="You are concise.", model=model)` to seed its initial system message. Set this string when constructing the Agent; `agent.state.system_prompt` exposes the instructions replayed from the transcript and is read-only.
+
+For changes during a conversation, system messages can add instructions, update named sections, and declare tool changes. See [application messages and context conversion](agent.md#application-messages-and-context-conversion) for replay rules.
+
+## Next steps
+
+- [Steering and follow-up queues](agent.md#input-queues): inject guidance at a turn boundary or queue a message for when the run would otherwise finish.
+- [Cancellation](agent.md#cancellation): `agent.abort()` requests a cooperative stop. Cancelling a caller waiting on `prompt` only ends that wait.
+- [Request and turn hooks](agent.md#request-and-turn-hooks): prepare model inputs and control whether the conversation continues.
+- [Standalone loop](agent.md#standalone-loop): use direct calls or an event stream when your application owns state and lifecycle.
+- [Durable getting started](durable/getting-started.md): use the experimental SDK when you need Sessions, SQLite persistence, or explicit recovery after interruption.

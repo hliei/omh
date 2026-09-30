@@ -1,4 +1,4 @@
-"""Ask DeepSeek a question. Requires DEEPSEEK_API_KEY in the environment."""
+"""Print DeepSeek text deltas through the experimental durable AgentHarness. Requires DEEPSEEK_API_KEY."""
 
 import asyncio
 
@@ -6,11 +6,18 @@ from omh.agent.durable import (
     BACKGROUND_CONTEXT,
     AgentHarness,
     AgentHarnessOptions,
-    BranchScan,
+    Context,
+    HarnessEvent,
     MemorySessionRepo,
     SessionCreateOptions,
 )
-from omh.llm import content_text, create_models, deepseek_provider
+from omh.llm import create_models, deepseek_provider
+
+
+def print_delta(event: HarnessEvent, context: Context) -> None:
+    if event.type == "message_update" and event.lane == "main":
+        if event.event.type == "text_delta":
+            print(event.event.delta, end="", flush=True)
 
 
 async def main() -> None:
@@ -27,19 +34,17 @@ async def main() -> None:
             AgentHarnessOptions(session=session, models=models, model=model), ctx
         )
         harness = created.harness
+        unsubscribe = harness.events.on("message_update", print_delta)
         try:
             lane = await harness.lane("main", ctx)
-            result = await lane.prompt("What is 2 + 2? Answer briefly.", ctx)
+            result = await lane.prompt("Explain recursion in one sentence.", ctx)
+            print()
             if not result.ok:
                 raise RuntimeError(result.error)
             if result.value.status != "completed":
                 raise RuntimeError(result.value.error or result.value.status)
-
-            entries = await lane.find_entries(BranchScan(limit=1), ctx)
-            for entry in entries:
-                if entry.type == "message" and entry.message.role == "assistant":
-                    print(content_text(list(entry.message.content)))
         finally:
+            unsubscribe()
             await harness.close(ctx)
     finally:
         await repo.close(ctx)

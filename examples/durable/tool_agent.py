@@ -1,4 +1,4 @@
-"""Let DeepSeek call a custom addition tool. Requires DEEPSEEK_API_KEY."""
+"""Let the experimental durable AgentHarness call an addition tool with DeepSeek. Requires DEEPSEEK_API_KEY."""
 
 import asyncio
 from typing import cast

@@ -19,4 +19,4 @@
 
 调用取消不会意外结束其他观察者共享的工作，代价是应用必须明确选择停止等待还是中止 operation。类型化 API 与存储 JSON 可以分别演进，但每次持久化形状变化都要核对 codecs 和恢复测试。独立互操作需要额外设计与验证。
 
-具体契约见 [公开接口](../harness/public-api.md)、[存储](../harness/storage.md)与[执行](../harness/execution.md)。
+具体契约见 [公开接口](../durable/public-api.md)、[存储](../durable/storage.md)与[执行](../durable/execution.md)。

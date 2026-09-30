@@ -10,4 +10,4 @@
 
 ## Consequences
 
-宿主可以显式恢复已接纳工作，而无需把所有中断都交给人工判断；工具作者仍需正确声明重放安全性。这不承诺外部副作用恰好发生一次，也不以零记录 usage 证明请求未计费。调用取消与 operation abort 分开，见 [ADR-0002](0002-python-api-and-storage-boundaries.md)；完整恢复规则见 [执行与恢复](../harness/execution.md)。
+宿主可以显式恢复已接纳工作，而无需把所有中断都交给人工判断；工具作者仍需正确声明重放安全性。这不承诺外部副作用恰好发生一次，也不以零记录 usage 证明请求未计费。调用取消与 operation abort 分开，见 [ADR-0002](0002-python-api-and-storage-boundaries.md)；完整恢复规则见 [执行与恢复](../durable/execution.md)。

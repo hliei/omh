@@ -1,51 +1,77 @@
 # Omh Agent Harness
 
-A Python SDK for in-process and durable agent conversations.
+A Python Agent SDK for model conversations, tool execution, and conversation control.
 
-omh (oh-my-harness) combines streamed model responses, tool execution, and conversation state. `omh.agent` provides an in-process, Session-free Agent with steering and follow-up queues; the experimental `omh.agent.durable` namespace adds persistent execution with named conversation branches, durable queued inputs, hooks, and explicit recovery after interruption. Sessions can run in memory or persist to SQLite. The built-in model provider is DeepSeek.
+omh (oh-my-harness) centers on **`omh.agent`**, an in-process Agent with conversation state, streaming events, tools, steering, and follow-up queues. Applications can use the stateful Agent or drive the same conversation loop directly. **`omh.llm`** supplies the shared model layer and can also be used independently.
 
-The Python distribution and import name are both `omh`.
+The experimental **`omh.agent.durable`** SDK adds persistent Sessions, named conversation branches, durable queued inputs, and explicit recovery after interruption. Both Agent SDKs ship in the same `omh` distribution. The built-in model provider is DeepSeek.
 
-- [Getting started](docs/getting-started.md) — source installation, runnable agents, streaming, tools, and Session persistence
-- [Documentation](docs/README.md) — contracts, architecture decisions, and development guides
-- [Harness design](docs/harness.md) — execution, persistence, and recovery
+## Quick start
 
-## Run an agent
-
-With Python 3.14, the in-process Agent example needs no credentials:
+Use Python 3.14 on macOS or Linux. From the repository root:
 
 ```bash
 python3.14 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-python examples/agent_conversation.py
-```
-
-For the durable runtime with a DeepSeek API key, set the environment variable and run one of the harness examples:
-
-```bash
 export DEEPSEEK_API_KEY="your-api-key"
-python examples/minimal_agent.py
+python examples/conversation.py
 ```
 
-For streamed text, run [streaming_agent.py](examples/streaming_agent.py). For a model–tool–model round trip, run [tool_agent.py](examples/tool_agent.py). To drive the same loop directly, or consume it as an event stream, without an Agent, run [standalone_loop.py](examples/standalone_loop.py). Each script is self-contained; [Getting started](docs/getting-started.md) explains the APIs.
+The example continues a conversation through two prompts. A single prompt needs:
 
-## Modules
+```python
+import asyncio
+import os
 
-All modules ship in the same SDK distribution.
+from omh.agent import Agent, AgentInitialState, AgentOptions
+from omh.llm import AssistantMessage, content_text, deepseek_provider
 
-| Module | Description |
-| --- | --- |
-| [`omh.llm`](docs/llm.md) | Independently usable model/provider layer with text, thinking, and tool-call streams |
-| [`omh.agent`](docs/agent.md) | In-process, Session-free Agent with transcript state, events, and cancellation |
-| [`omh.agent.durable`](docs/harness.md) | Experimental durable runtime with tools, queues, hooks, observation, and recovery |
-| [`omh.session_backends.sqlite`](docs/harness/storage.md) | SQLite-backed Session storage for persistent history and execution state |
 
-## Execution & Permissions
+async def main() -> None:
+    provider = deepseek_provider()
+    model = next(model for model in provider.get_models() if model.id == "deepseek-flash")
+    agent = Agent(
+        AgentOptions(
+            stream_fn=provider.stream_simple,
+            api_key=os.environ["DEEPSEEK_API_KEY"],
+            initial_state=AgentInitialState(system_prompt="You are concise.", model=model),
+        )
+    )
+    await agent.prompt("What is 2 + 2?")
+    if agent.state.error_message:
+        raise RuntimeError(agent.state.error_message)
+    message = agent.state.messages[-1]
+    if isinstance(message, AssistantMessage):
+        print(content_text(message.content))
 
-Built-in tools operate on the host filesystem and launch local processes with the permissions of the application. The configured working directory is not a sandbox. Applications are responsible for permission controls and any process or container isolation they require.
 
-See [tools and execution environments](docs/harness/public-api.md#tools-and-execution-environments) for the execution boundary.
+asyncio.run(main())
+```
+
+[Getting started](docs/getting-started.md) walks through model setup, continued conversation, streaming, and a custom tool. The three runnable examples cover [continued conversation](examples/conversation.py), [streaming](examples/streaming.py), and [tool execution](examples/tools.py).
+
+## Agent capabilities
+
+- **Conversation state:** retain messages between prompts and configure system instructions and tools.
+- **Streaming events:** observe model text, turn boundaries, and tool progress as the run advances.
+- **Tool execution:** validate JSON Schema arguments, execute tool batches, and feed results back to the model.
+- **Conversation control:** steer a run, queue follow-ups, and cooperatively abort execution.
+- **Hooks:** prepare model requests, control turn continuation, and inspect or modify tool calls and results.
+- **Standalone loop:** use direct execution or an event stream when the application owns conversation state and lifecycle.
+
+See the [Agent contract](docs/agent.md) for behavior and ownership rules. The in-process Agent keeps its state in memory; applications own any history saving or restart policy.
+
+## Modules and documentation
+
+| Module | Role | Start here |
+| --- | --- | --- |
+| `omh.agent` | Main SDK: in-process Agent and standalone loop | [Getting started](docs/getting-started.md), [Agent contract](docs/agent.md) |
+| `omh.llm` | Independently usable model/provider layer with text, thinking, and tool-call streams | [LLM contract](docs/llm.md) |
+| `omh.agent.durable` | Experimental Durable Agent SDK: AgentHarness, Sessions, execution, and recovery | [Durable overview](docs/durable/README.md), [Durable getting started](docs/durable/getting-started.md) |
+| `omh.session_backends.sqlite` | Persistent storage for durable Sessions | [Storage contract](docs/durable/storage.md) |
+
+The [documentation index](docs/README.md) includes detailed contracts and development guides. Durable built-in filesystem and process tools are described under [tools and execution environments](docs/durable/public-api.md#tools-and-execution-environments).
 
 ## Contributing
 

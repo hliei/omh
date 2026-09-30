@@ -1,6 +1,8 @@
 # Storage
 
-Storage persists records and current state; it does not schedule work. See the [harness overview](../harness.md) for the execution model.
+Part of the experimental [Durable Agent SDK](README.md).
+
+Storage persists records and current state; it does not schedule work. See the [harness overview](README.md) for the execution model.
 
 ## Records and addresses
 

@@ -12,4 +12,4 @@ SQLite 通过分段缓存与 base branch/sequence 链组织分支查询。分叉
 
 ## Consequences
 
-调用者需要考虑未压缩长历史的分叉成本。优化应作为独立架构变更，以行为测试和性能证据评估；现有限制不能被文档改名掩盖。结构与代码入口见[对话树](../harness/conversation-tree.md)。
+调用者需要考虑未压缩长历史的分叉成本。优化应作为独立架构变更，以行为测试和性能证据评估；现有限制不能被文档改名掩盖。结构与代码入口见[对话树](../durable/conversation-tree.md)。

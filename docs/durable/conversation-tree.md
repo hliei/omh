@@ -1,5 +1,7 @@
 # Conversation tree
 
+Part of the experimental [Durable Agent SDK](README.md).
+
 A Session holds immutable entries linked by parent id. A Branch is a name plus a movable tip selecting a path. Appending history creates entries and updates the tip atomically; navigating moves the tip without deleting the abandoned path.
 
 ## Branches and lanes

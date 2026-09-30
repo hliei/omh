@@ -1,21 +1,39 @@
 # LLM layer
 
-`omh.llm` configures models/providers and exposes unified text, thinking, and tool-call streams. It is part of the single SDK distribution and can be used independently of `omh.agent`; it must not import the agent layer.
+`omh.llm` configures models/providers and exposes unified text, thinking, and tool-call streams. It is the shared model layer for the main [in-process Agent](agent.md) and experimental [Durable Agent SDK](durable/README.md). It ships in the single `omh` distribution, can be used independently, and must not import the agent layer.
+
+## Connecting the Agent
+
+An Agent receives a `StreamFn` through `AgentOptions.stream_fn` or a host-installed default. The function accepts a model, normalized `TranscriptContext`, and request options. A provider's `stream_simple` satisfies that contract directly. The [getting-started example](getting-started.md#run-and-continue-a-conversation) uses `deepseek_provider().stream_simple` with an explicit `AgentOptions.api_key`.
+
+Direct provider calls use the supplied credentials; the provider's auth configuration is resolved by `Models` when using the registry. To use registry-managed credentials from an Agent, adapt the transcript to the registry's input shape without discarding its system messages:
+
+```python
+from omh.llm import AssistantMessageEventStream, Context, Model, SimpleStreamOptions, TranscriptContext
+
+
+def stream_fn(
+    model: Model, context: TranscriptContext, options: SimpleStreamOptions | None
+) -> AssistantMessageEventStream:
+    return models.stream_simple(model, Context(messages=list(context.messages)), options)
+```
+
+Here `models` is a registry from `create_models()` with the desired provider registered using `models.set_provider(...)`. The wrapper is passed as `AgentOptions.stream_fn`; it preserves the full transcript for normalization and provider projection.
 
 ## Models, inputs, and transport
 
-`Models` resolves provider/model identities; `create_models`, `create_provider`, and `deepseek_provider` build registries and the built-in provider. `omh.llm.Context` contains messages, system prompt, and tool definitions. It is distinct from the agent invocation Context used for cancellation and telemetry. Tool parameters are JSON Schema dictionaries; Python objects use snake_case while message discriminants include `toolCall` and `toolUse`.
+`Models` resolves provider/model identities; `create_models`, `create_provider`, and `deepseek_provider` build registries and the built-in provider. `omh.llm.Context` contains messages, system prompt, and tool definitions. It is distinct from `omh.agent.AgentContext`, which holds conversation messages and executable tools for the loop, and from `omh.agent.durable.Context`, which carries invocation cancellation and telemetry. Tool parameters are JSON Schema dictionaries; Python objects use snake_case while message discriminants include `toolCall` and `toolUse`.
 
-`SystemMessage` carries system instructions and tool declarations at a point in the transcript. `TranscriptContext` is the normalized request input: its prompt and tool declarations live in system messages rather than separate fields. `normalize_context` folds the legacy `Context.system_prompt`/`Context.tools` shorthand into a leading system message, and the transcript helpers replay system messages into the current prompt and tool set. `validate_tool_arguments` coerces and validates tool-call arguments against a plain JSON Schema, including primitive coercion, optional-null removal, nested values, and `allOf`/`anyOf`/`oneOf` composition. The traditional Agent passes a normalized transcript to its `StreamFn` and uses this validation before executing a tool; provider projection remains the provider's responsibility.
+`SystemMessage` carries system instructions and tool declarations at a point in the transcript. `TranscriptContext` is the normalized request input: its prompt and tool declarations live in system messages rather than separate fields. `normalize_context` folds the `Context.system_prompt`/`Context.tools` shorthand into a leading system message, and the transcript helpers replay system messages into the current prompt and tool set. `validate_tool_arguments` coerces and validates tool-call arguments against a plain JSON Schema, including primitive coercion, optional-null removal, nested values, and `allOf`/`anyOf`/`oneOf` composition. The in-process Agent passes a normalized transcript to its `StreamFn` and uses this validation before executing a tool; provider projection remains the provider's responsibility.
 
 ### Provider input contract
 
-`Models.stream`, `stream_simple`, `complete`, and `complete_simple` still accept
-the public legacy `Context` (with independent `system_prompt` and `tools`), then
-call `normalize_context` and hand the provider a `TranscriptContext`. This keeps
-durable callers on their existing input shape.
+`Models.stream`, `stream_simple`, `complete`, and `complete_simple` accept
+`Context` (with optional `system_prompt` and `tools`), then call
+`normalize_context` and hand the provider a `TranscriptContext`. Both direct LLM
+callers and the durable runtime can use this input shape.
 
-Provider implementations now receive `TranscriptContext` instead of `Context`.
+Provider implementations receive `TranscriptContext`.
 The built-in Chat Completions projection resolves the current prompt and tools
 from the transcript's system messages. When a model cannot accept
 mid-conversation system messages, the projection folds later system messages
@@ -23,7 +41,7 @@ into the leading one; otherwise it keeps them in place. A custom provider that
 read `context.system_prompt` or `context.tools` must migrate to
 `get_current_system_message`/`get_current_tools` (or `resolve_transcript`) and
 project from the system messages. The built-in DeepSeek path exercises this
-contract; other provider catalogs are not part of this increment.
+contract; other built-in provider catalogs are not supplied.
 
 ### Request options
 
@@ -51,7 +69,7 @@ HTTP uses an injectable `fetch` or httpx, not the OpenAI Python SDK. The default
 
 `stream` and `stream_simple` produce a unified event stream with a terminal message result. Preparation/request failures use an `error` event; successful completion uses `done`. Consumers should distinguish streamed partials from the final message and provider-reported usage.
 
-`AssistantMessageFrameEncoder` and `reduce_assistant_message_frames` encode/reduce durable stream prefixes. The harness uses these utilities instead of defining a second frame format. Frames alone cannot establish final usage, request completion, or whether an interrupted request was billed.
+`AssistantMessageFrameEncoder` and `reduce_assistant_message_frames` encode/reduce durable stream prefixes. The durable harness uses these utilities instead of defining a second frame format. Frames alone cannot establish final usage, request completion, or whether an interrupted request was billed.
 
 Credential resolution works on request-option copies. In-memory credential updates serialize per provider with an asyncio lock; resolving auth does not mutate caller configuration.
 
