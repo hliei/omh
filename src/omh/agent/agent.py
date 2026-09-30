@@ -12,49 +12,48 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from omh.agent.loop import (
-    AgentLoopConfig,
-    _maybe_await,
-    run_agent_loop,
-    run_agent_loop_continue,
-)
-from omh.agent.stream_fn import get_default_stream_fn
-from omh.agent.types import (
-    AfterToolCall,
-    AgentContext,
+from omh.agent._async import maybe_await
+from omh.agent.context import AgentContext
+from omh.agent.events import (
     AgentEndEvent,
     AgentEvent,
-    AgentLoopTurnUpdate,
-    AgentMessage,
-    AgentOptions,
-    AgentState,
-    AgentTurnContext,
-    BeforeToolCall,
-    ConvertToLlm,
-    FinishTurn,
-    GetApiKey,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
-    OnPayload,
-    OnProviderStreamEvent,
-    OnResponse,
+    ToolExecutionEndEvent,
+    ToolExecutionStartEvent,
+    TurnEndEvent,
+)
+from omh.agent.hooks import (
+    AfterToolCall,
+    AgentLoopTurnUpdate,
+    AgentTurnContext,
+    BeforeToolCall,
+    FinishTurn,
+    GetApiKey,
     PrepareNextTurn,
     PrepareNextTurnWithContext,
     PrepareNextTurnWithSignal,
     PrepareRequest,
-    QueueMode,
-    ToolExecutionEndEvent,
-    ToolExecutionMode,
-    ToolExecutionStartEvent,
-    TransformContext,
-    TurnEndEvent,
 )
+from omh.agent.loop import (
+    run_agent_loop,
+    run_agent_loop_continue,
+)
+from omh.agent.loop_config import AgentLoopConfig
+from omh.agent.messages import AgentMessage, ConvertToLlm, TransformContext
+from omh.agent.options import AgentOptions, QueueMode
+from omh.agent.state import AgentState
+from omh.agent.stream_fn import get_default_stream_fn
+from omh.agent.tools import ToolExecutionMode
 from omh.llm.types import (
     AbortController,
     AbortSignal,
     AssistantMessage,
     ImageContent,
+    OnPayload,
+    OnProviderStreamEvent,
+    OnResponse,
     TextContent,
     ThinkingBudgets,
     Transport,
@@ -420,7 +419,7 @@ class Agent:
             else:
                 assert prepare_signal is not None
                 result = prepare_signal(signal)
-            return await _maybe_await(result)
+            return await maybe_await(result)
 
         return prepare_next_turn
 

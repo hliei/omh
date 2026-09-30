@@ -323,6 +323,40 @@ or cancel it. [`examples/standalone_loop.py`](../examples/standalone_loop.py)
 runs the direct and stream entries against an in-process echo model without
 credentials.
 
+## Module organization
+
+Applications import the public Agent, loop entries, and contracts from
+`omh.agent`. The implementation is organized by responsibility:
+
+| Module | Responsibility |
+| --- | --- |
+| [`agent.py`](../src/omh/agent/agent.py) | Agent operations, run ownership, queues, subscribers, and state reduction |
+| [`loop.py`](../src/omh/agent/loop.py) | Four standalone entries, request and turn hooks, queue polling, continuation, and termination |
+| [`model_response.py`](../src/omh/agent/model_response.py) | Context conversion, credentials, request options, and streamed assistant message updates |
+| [`tool_execution.py`](../src/omh/agent/tool_execution.py) | Batch preflight, serial or parallel execution, tool hooks, progress, and ordered results |
+| [`tool_declarations.py`](../src/omh/agent/tool_declarations.py) | Synchronizing executable tools with transcript declarations |
+| [`event_stream.py`](../src/omh/agent/event_stream.py) | Event consumers, independent producer tasks, and final result or failure delivery |
+| [`events.py`](../src/omh/agent/events.py) | Event contracts and awaited delivery to an event sink |
+| [`state.py`](../src/omh/agent/state.py) | Initial and mutable public Agent state, including list assignment ownership |
+| [`options.py`](../src/omh/agent/options.py), [`loop_config.py`](../src/omh/agent/loop_config.py) | Agent construction options and standalone loop configuration |
+| [`messages.py`](../src/omh/agent/messages.py) | Application messages and model-input conversion contracts |
+| [`tools.py`](../src/omh/agent/tools.py) | Executable tools, result and callback contracts, and model-facing declarations |
+| [`context.py`](../src/omh/agent/context.py) | Conversation messages and executable tools passed to the loop |
+| [`hooks.py`](../src/omh/agent/hooks.py) | Request, turn, tool, credential, and queue hooks with their inputs and results |
+| [`stream_fn.py`](../src/omh/agent/stream_fn.py) | Model stream function contract and host-installed default |
+
+Declarations previously collected in `omh.agent.types` now live in these
+modules. Direct imports from that module must use the owning module or the
+unchanged `omh.agent` public exports. `QueueMode` lives with Agent construction
+options; reasoning levels and provider callbacks use the existing LLM contracts.
+
+The loop retains scheduling decisions. Its execution modules do not import the
+loop or the Agent. Model response handling updates the active context's assistant
+message as it streams; tool execution returns result messages for the loop to
+append. The event stream starts a supplied execution callback without owning
+turn scheduling. Provider transport and transcript primitives remain in
+`omh.llm`; durable execution remains in `omh.agent.durable`.
+
 ## Migration and supported scope
 
 `omh.agent` exports only the traditional Agent and loop. The durable harness,
@@ -356,4 +390,3 @@ files, automatic compaction or retry policy, extension/resource discovery, or
 UI/CLI), all pi providers or transports, or exactly-once external effects.
 Offline tests with controlled providers do not validate a live service or
 performance.
-

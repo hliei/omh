@@ -20,8 +20,8 @@ from omh.agent import (
     AgentTurnContext,
     PrepareRequestContext,
 )
+from omh.agent.context import AgentContext
 from omh.agent.loop import AgentLoopConfig, run_agent_loop
-from omh.agent.types import AgentContext
 from omh.llm.types import (
     AbortSignal,
     AssistantMessage,

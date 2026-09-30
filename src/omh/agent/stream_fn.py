@@ -7,7 +7,18 @@ wins over the default.
 
 from __future__ import annotations
 
-from omh.agent.types import StreamFn
+from collections.abc import Awaitable, Callable
+
+from omh.llm.types import Model, SimpleStreamOptions, TranscriptContext
+from omh.llm.utils.event_stream import AssistantMessageEventStream
+
+#: Low-level model-stream function. It receives the normalized transcript whose
+#: prompt and tool declarations are carried by system messages, never by a
+#: separate prompt/tool field.
+StreamFn = Callable[
+    [Model, TranscriptContext, SimpleStreamOptions | None],
+    AssistantMessageEventStream | Awaitable[AssistantMessageEventStream],
+]
 
 _default_stream_fn: StreamFn | None = None
 
