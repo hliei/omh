@@ -229,6 +229,98 @@ AfterToolCall = Callable[
     Awaitable[AfterToolCallResult | None] | AfterToolCallResult | None,
 ]
 
+#: Decision returned by ``finish_turn``. ``None`` preserves normal scheduling.
+#: ``"end"`` stops without another request; ``"continue"`` ensures one more.
+AgentTurnDecision = Literal["continue", "end"]
+
+
+@dataclass(slots=True)
+class AgentTurnContext:
+    """Completed-turn state passed to ``finish_turn`` and turn preparation.
+
+    ``context`` is the runtime context after the assistant message and its tool
+    results were appended; ``new_messages`` are the messages this run would
+    return if it stops at this point. Both are the loop's live objects and may
+    grow after the hook returns, so snapshot them when retaining them.
+    """
+
+    message: AssistantMessage
+    tool_results: list[ToolResultMessage]
+    context: AgentContext
+    new_messages: list[AgentMessage]
+
+
+FinishTurn = Callable[
+    [AgentTurnContext, AbortSignal | None],
+    AgentTurnDecision | None | Awaitable[AgentTurnDecision | None],
+]
+
+
+@dataclass(slots=True)
+class AgentLoopTurnUpdate:
+    """Replacement runtime state used before the next provider request.
+
+    ``messages`` are appended to the next request's context with the normal
+    message lifecycle and tool-declaration coordination. Omitted fields keep
+    the current runtime values.
+    """
+
+    context: AgentContext | None = None
+    messages: list[AgentMessage] | None = None
+    model: Model | None = None
+    thinking_level: ThinkingLevel | None = None
+
+
+@dataclass(slots=True)
+class PrepareRequestContext:
+    """Runtime state available immediately before a conversation request.
+
+    Pending messages, including a prepared turn's additions, have already been
+    appended to ``context.messages`` and emitted when this is built.
+    """
+
+    context: AgentContext
+    model: Model
+    thinking_level: ThinkingLevel
+
+
+@dataclass(slots=True)
+class AgentRequestUpdate:
+    """Replacement runtime state for the request being prepared.
+
+    Unlike :class:`AgentLoopTurnUpdate`, a request update cannot append
+    messages. It applies to this request and later requests in the run.
+    """
+
+    context: AgentContext | None = None
+    model: Model | None = None
+    thinking_level: ThinkingLevel | None = None
+
+
+PrepareRequest = Callable[
+    [PrepareRequestContext, AbortSignal | None],
+    AgentRequestUpdate | None | Awaitable[AgentRequestUpdate | None],
+]
+
+#: Loop-level next-turn preparation. Receives the completed turn's context.
+PrepareNextTurn = Callable[
+    [AgentTurnContext],
+    AgentLoopTurnUpdate | None | Awaitable[AgentLoopTurnUpdate | None],
+]
+
+#: Agent-level next-turn preparation without loop context. Receives the run signal.
+PrepareNextTurnWithSignal = Callable[
+    [AbortSignal | None],
+    AgentLoopTurnUpdate | None | Awaitable[AgentLoopTurnUpdate | None],
+]
+
+#: Agent-level next-turn preparation with the completed-turn context. Takes
+#: priority over :data:`PrepareNextTurnWithSignal` when both are configured.
+PrepareNextTurnWithContext = Callable[
+    [AgentTurnContext, AbortSignal | None],
+    AgentLoopTurnUpdate | None | Awaitable[AgentLoopTurnUpdate | None],
+]
+
 
 @dataclass(slots=True)
 class AgentInitialState:
@@ -406,6 +498,10 @@ class AgentOptions:
     on_payload: OnPayload | None = None
     on_response: OnResponse | None = None
     on_provider_stream_event: OnProviderStreamEvent | None = None
+    finish_turn: FinishTurn | None = None
+    prepare_request: PrepareRequest | None = None
+    prepare_next_turn: PrepareNextTurnWithSignal | None = None
+    prepare_next_turn_with_context: PrepareNextTurnWithContext | None = None
     session_id: str | None = None
     thinking_budgets: ThinkingBudgets | None = None
     transport: Transport | None = None

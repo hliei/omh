@@ -12,7 +12,7 @@ import inspect
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import cast
+from typing import TypeVar, cast
 
 from omh.agent.types import (
     AfterToolCall,
@@ -20,13 +20,18 @@ from omh.agent.types import (
     AgentContext,
     AgentEndEvent,
     AgentEvent,
+    AgentLoopTurnUpdate,
     AgentMessage,
+    AgentRequestUpdate,
     AgentStartEvent,
     AgentTool,
     AgentToolResult,
+    AgentTurnContext,
+    AgentTurnDecision,
     BeforeToolCall,
     BeforeToolCallContext,
     ConvertToLlm,
+    FinishTurn,
     GetApiKey,
     MessageEndEvent,
     MessageStartEvent,
@@ -34,6 +39,9 @@ from omh.agent.types import (
     OnPayload,
     OnProviderStreamEvent,
     OnResponse,
+    PrepareNextTurn,
+    PrepareRequest,
+    PrepareRequestContext,
     StreamFn,
     ToolExecutionEndEvent,
     ToolExecutionMode,
@@ -50,6 +58,7 @@ from omh.llm.types import (
     Context,
     Message,
     Model,
+    ModelThinkingLevel,
     SimpleStreamOptions,
     StartEvent,
     SystemMessage,
@@ -99,6 +108,9 @@ class AgentLoopConfig:
     after_tool_call: AfterToolCall | None = None
     convert_to_llm: ConvertToLlm | None = None
     transform_context: TransformContext | None = None
+    finish_turn: FinishTurn | None = None
+    prepare_request: PrepareRequest | None = None
+    prepare_next_turn: PrepareNextTurn | None = None
     get_api_key: GetApiKey | None = None
     api_key: str | None = None
     on_payload: OnPayload | None = None
@@ -143,6 +155,16 @@ async def _emit(emit: AgentEventSink, event: AgentEvent) -> None:
     result = emit(event)
     if inspect.isawaitable(result):
         await result
+
+
+_T = TypeVar("_T")
+
+
+async def _maybe_await(value: _T | Awaitable[_T]) -> _T:
+    """Await ``value`` when it is awaitable; otherwise return it unchanged."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def _record_thinking_level(message: AssistantMessage, config: AgentLoopConfig) -> AssistantMessage:
@@ -206,38 +228,165 @@ async def _run_loop(
     emit: AgentEventSink,
     stream_fn: StreamFn,
 ) -> None:
-    first_turn = True
+    last_completed_turn: AgentTurnContext | None = None
+    explicit_continuation = False
+
+    # Outer loop: an explicit ``continue`` decision requests one more turn when
+    # no natural tool continuation or queued input already satisfies it.
     while True:
-        if not first_turn:
-            await _emit(emit, TurnStartEvent())
-        first_turn = False
+        has_more_tool_calls = True
 
-        message = await _stream_assistant_response(context, config, signal, emit, stream_fn)
-        new_messages.append(message)
+        # Inner loop: process tool calls and subsequent requests.
+        while has_more_tool_calls:
+            prepared_messages: list[AgentMessage] = []
+            if last_completed_turn is not None:
+                update = await _call_prepare_next_turn(config, last_completed_turn)
+                if update is not None:
+                    if update.context is not None:
+                        context = update.context
+                    config = _apply_config_update(config, update.model, update.thinking_level)
+                    prepared_messages = list(update.messages or [])
+                await _emit(emit, TurnStartEvent())
 
-        if message.stop_reason in {"error", "aborted"}:
-            await _emit(emit, TurnEndEvent(message=message, tool_results=[]))
-            break
+            for message in declare_tool_changes(context, prepared_messages):
+                await _emit(emit, MessageStartEvent(message=message))
+                await _emit(emit, MessageEndEvent(message=message))
+                context.messages.append(message)
+                new_messages.append(message)
 
-        tool_calls = [block for block in message.content if isinstance(block, ToolCall)]
-        tool_results: list[ToolResultMessage] = []
-        terminated = False
-        if tool_calls:
-            if message.stop_reason == "length":
-                batch = await _fail_truncated_tool_calls(tool_calls, emit)
-            else:
-                batch = await _execute_tool_calls(context, message, tool_calls, config, signal, emit)
-            tool_results = batch.messages
-            terminated = batch.terminate
-            for result in tool_results:
-                context.messages.append(result)
-                new_messages.append(result)
+            request_update = await _call_prepare_request(config, context, signal)
+            context, config = _apply_request_update(context, config, request_update)
 
-        await _emit(emit, TurnEndEvent(message=message, tool_results=tool_results))
-        if not tool_calls or terminated:
-            break
+            message = await _stream_assistant_response(context, config, signal, emit, stream_fn)
+            new_messages.append(message)
+
+            if message.stop_reason in {"error", "aborted"}:
+                last_completed_turn = AgentTurnContext(
+                    message=message,
+                    tool_results=[],
+                    context=context,
+                    new_messages=new_messages,
+                )
+                # Error and aborted responses remain hard exits; a hook's
+                # continue decision is not applied.
+                await _call_finish_turn(config, last_completed_turn, signal)
+                await _emit(emit, TurnEndEvent(message=message, tool_results=[]))
+                await _emit(emit, AgentEndEvent(messages=new_messages))
+                return
+
+            tool_calls = [block for block in message.content if isinstance(block, ToolCall)]
+            tool_results: list[ToolResultMessage] = []
+            has_more_tool_calls = False
+            if tool_calls:
+                if message.stop_reason == "length":
+                    batch = await _fail_truncated_tool_calls(tool_calls, emit)
+                else:
+                    batch = await _execute_tool_calls(context, message, tool_calls, config, signal, emit)
+                tool_results = batch.messages
+                has_more_tool_calls = not batch.terminate
+                for result in tool_results:
+                    context.messages.append(result)
+                    new_messages.append(result)
+
+            last_completed_turn = AgentTurnContext(
+                message=message,
+                tool_results=tool_results,
+                context=context,
+                new_messages=new_messages,
+            )
+            decision = await _call_finish_turn(config, last_completed_turn, signal)
+            await _emit(emit, TurnEndEvent(message=message, tool_results=tool_results))
+
+            if decision == "end":
+                await _emit(emit, AgentEndEvent(messages=new_messages))
+                return
+
+            explicit_continuation = decision == "continue"
+            if has_more_tool_calls:
+                explicit_continuation = False
+
+        if explicit_continuation:
+            explicit_continuation = False
+            continue
+        break
 
     await _emit(emit, AgentEndEvent(messages=new_messages))
+
+
+def _resolve_reasoning(
+    current: ReasoningLevel | None,
+    update: ModelThinkingLevel | None,
+) -> ReasoningLevel | None:
+    """Resolve a requested thinking level; ``None`` keeps the current value."""
+    if update is None:
+        return current
+    return None if update == "off" else update
+
+
+async def _call_prepare_request(
+    config: AgentLoopConfig,
+    context: AgentContext,
+    signal: AbortSignal | None,
+) -> AgentRequestUpdate | None:
+    hook = config.prepare_request
+    if hook is None:
+        return None
+    result = hook(
+        PrepareRequestContext(
+            context=context,
+            model=config.model,
+            thinking_level=config.reasoning if config.reasoning is not None else "off",
+        ),
+        signal,
+    )
+    return await _maybe_await(result)
+
+
+async def _call_prepare_next_turn(
+    config: AgentLoopConfig,
+    turn: AgentTurnContext,
+) -> AgentLoopTurnUpdate | None:
+    hook = config.prepare_next_turn
+    if hook is None:
+        return None
+    return await _maybe_await(hook(turn))
+
+
+async def _call_finish_turn(
+    config: AgentLoopConfig,
+    turn: AgentTurnContext,
+    signal: AbortSignal | None,
+) -> AgentTurnDecision | None:
+    hook = config.finish_turn
+    if hook is None:
+        return None
+    return await _maybe_await(hook(turn, signal))
+
+
+def _apply_config_update(
+    config: AgentLoopConfig,
+    model: Model | None,
+    thinking_level: ModelThinkingLevel | None,
+) -> AgentLoopConfig:
+    """Apply a requested model and thinking level, keeping omitted values."""
+    return replace(
+        config,
+        model=model if model is not None else config.model,
+        reasoning=_resolve_reasoning(config.reasoning, thinking_level),
+    )
+
+
+def _apply_request_update(
+    context: AgentContext,
+    config: AgentLoopConfig,
+    update: AgentRequestUpdate | None,
+) -> tuple[AgentContext, AgentLoopConfig]:
+    if update is None:
+        return context, config
+    return (
+        update.context if update.context is not None else context,
+        _apply_config_update(config, update.model, update.thinking_level),
+    )
 
 
 def declare_tool_changes(context: AgentContext, pending_messages: list[AgentMessage]) -> list[AgentMessage]:

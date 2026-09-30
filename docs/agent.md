@@ -179,6 +179,40 @@ last tool step and no further model request is made for it. A partial
 `terminate` does not stop the batch, and a truncated error batch always
 continues.
 
+## Request and turn hooks
+
+`AgentOptions.prepare_request` runs immediately before every model request,
+including the first. Pending messages are already appended to the request
+context and emitted as lifecycle events when it runs. It receives a
+`PrepareRequestContext` with the current `context`, `model`, and
+`thinking_level`, plus the run signal. Returning an `AgentRequestUpdate`
+replaces the context, model, and/or thinking level for this request and every
+later request in the run.
+
+`AgentOptions.prepare_next_turn_with_context` runs only when the loop will
+definitely start another request, after a completed turn and before its
+`turn_start`. It receives the completed `AgentTurnContext` and the signal and
+returns an `AgentLoopTurnUpdate`: a replacement context, model, or thinking
+level, and messages appended before the next request with the normal message
+lifecycle and tool-declaration coordination. `AgentOptions.prepare_next_turn`
+is the signal-only variant that keeps receiving the active run signal; when
+both are set, the context-taking version takes priority.
+
+`AgentOptions.finish_turn` runs after the assistant message and all of its tool
+results are appended, but before `turn_end`. Its `AgentTurnContext` exposes the
+completed `message`, its `tool_results`, the loop `context`, and the
+`new_messages` this run would return. Returning `None` keeps normal scheduling;
+`"end"` stops the run immediately without polling queues or making another
+request; `"continue"` guarantees at least one next request, which a natural
+tool continuation already satisfies without an extra request. Error and
+aborted responses still call the hook, but remain hard exits and ignore its
+decision.
+
+The hooks are also public, assignable attributes on the Agent
+(`agent.prepare_request`, `agent.prepare_next_turn`,
+`agent.prepare_next_turn_with_context`, `agent.finish_turn`), so an application
+can replace one between runs.
+
 ## Events and subscribers
 
 `agent.subscribe(listener)` registers a listener and returns an unsubscribe function. After each event the Agent updates public state, then awaits listeners in subscription order. `agent_end` is the final event, but `agent.is_streaming` stays true and `wait_for_idle()` stays pending until its listeners settle.
@@ -191,8 +225,7 @@ The Agent owns its run. Cancelling a caller awaiting `prompt`, `continue_`, or `
 
 ## Not yet delivered
 
-Tool input queues and request/turn hooks (`prepare_request`, `prepare_next_turn`,
-`finish_turn`) are planned in later slices. The four public loop entry points and
-their message-ownership and cancellation rules are also planned later; this
-document describes the delivered conversation, tool-batch, tool-policy, and
-model-integration path.
+Tool input queues (`steer`/`follow_up`) and the four public standalone loop
+entry points, with their message-ownership and cancellation rules, are planned
+in later slices; this document describes the delivered conversation,
+tool-batch, tool-policy, model-integration, and turn-control path.

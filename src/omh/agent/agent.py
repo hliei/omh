@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from omh.agent.agent_loop import (
     AgentLoopConfig,
+    _maybe_await,
     run_agent_loop,
     run_agent_loop_continue,
 )
@@ -23,11 +24,14 @@ from omh.agent.types import (
     AgentContext,
     AgentEndEvent,
     AgentEvent,
+    AgentLoopTurnUpdate,
     AgentMessage,
     AgentOptions,
     AgentState,
+    AgentTurnContext,
     BeforeToolCall,
     ConvertToLlm,
+    FinishTurn,
     GetApiKey,
     MessageEndEvent,
     MessageStartEvent,
@@ -35,6 +39,10 @@ from omh.agent.types import (
     OnPayload,
     OnProviderStreamEvent,
     OnResponse,
+    PrepareNextTurn,
+    PrepareNextTurnWithContext,
+    PrepareNextTurnWithSignal,
+    PrepareRequest,
     ToolExecutionEndEvent,
     ToolExecutionMode,
     ToolExecutionStartEvent,
@@ -96,6 +104,12 @@ class Agent:
         self.on_payload: OnPayload | None = options.on_payload
         self.on_response: OnResponse | None = options.on_response
         self.on_provider_stream_event: OnProviderStreamEvent | None = options.on_provider_stream_event
+        self.finish_turn: FinishTurn | None = options.finish_turn
+        self.prepare_request: PrepareRequest | None = options.prepare_request
+        self.prepare_next_turn: PrepareNextTurnWithSignal | None = options.prepare_next_turn
+        self.prepare_next_turn_with_context: PrepareNextTurnWithContext | None = (
+            options.prepare_next_turn_with_context
+        )
         self.session_id: str | None = options.session_id
         self.thinking_budgets: ThinkingBudgets | None = options.thinking_budgets
         self.transport: Transport | None = options.transport
@@ -250,6 +264,9 @@ class Agent:
             on_payload=self.on_payload,
             on_response=self.on_response,
             on_provider_stream_event=self.on_provider_stream_event,
+            finish_turn=self.finish_turn,
+            prepare_request=self.prepare_request,
+            prepare_next_turn=self._build_prepare_next_turn(),
             session_id=self.session_id,
             thinking_budgets=self.thinking_budgets,
             transport=self.transport,
@@ -265,6 +282,28 @@ class Agent:
             signal,
             self.stream_fn,
         )
+
+    def _build_prepare_next_turn(self) -> PrepareNextTurn | None:
+        """Bridge the Agent-level turn preparations onto the loop-level hook.
+
+        The context-taking version takes priority. The signal-only version keeps
+        receiving the active run signal rather than the loop context.
+        """
+        prepare_with_context = self.prepare_next_turn_with_context
+        prepare_signal = self.prepare_next_turn
+        if prepare_with_context is None and prepare_signal is None:
+            return None
+
+        async def prepare_next_turn(context: AgentTurnContext) -> AgentLoopTurnUpdate | None:
+            signal = self.signal
+            if prepare_with_context is not None:
+                result = prepare_with_context(context, signal)
+            else:
+                assert prepare_signal is not None
+                result = prepare_signal(signal)
+            return await _maybe_await(result)
+
+        return prepare_next_turn
 
     async def _run_continuation(self, signal: AbortSignal) -> None:
         await run_agent_loop_continue(
