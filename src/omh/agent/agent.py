@@ -43,6 +43,7 @@ from omh.agent.types import (
     PrepareNextTurnWithContext,
     PrepareNextTurnWithSignal,
     PrepareRequest,
+    QueueMode,
     ToolExecutionEndEvent,
     ToolExecutionMode,
     ToolExecutionStartEvent,
@@ -79,6 +80,36 @@ class _ActiveRun:
     task: asyncio.Task[None] | None = None
 
 
+class _PendingMessageQueue:
+    """FIFO queue drained by the current :data:`QueueMode`.
+
+    ``peek`` returns the messages a drain would take without consuming them.
+    """
+
+    def __init__(self, mode: QueueMode) -> None:
+        self.mode: QueueMode = mode
+        self._messages: list[AgentMessage] = []
+
+    def enqueue(self, message: AgentMessage) -> None:
+        self._messages.append(message)
+
+    def has_items(self) -> bool:
+        return bool(self._messages)
+
+    def peek(self) -> list[AgentMessage]:
+        if self.mode == "all":
+            return list(self._messages)
+        return [self._messages[0]] if self._messages else []
+
+    def drain(self) -> list[AgentMessage]:
+        drained = self.peek()
+        self._messages = self._messages[len(drained) :]
+        return drained
+
+    def clear(self) -> None:
+        self._messages = []
+
+
 class Agent:
     """In-process stateful agent.
 
@@ -93,6 +124,8 @@ class Agent:
         self._state = AgentState(options.initial_state)
         self._listeners: list[AgentListener] = []
         self._active_run: _ActiveRun | None = None
+        self._steering_queue = _PendingMessageQueue(options.steering_mode)
+        self._follow_up_queue = _PendingMessageQueue(options.follow_up_mode)
         self.stream_fn = options.stream_fn if options.stream_fn is not None else get_default_stream_fn()
         self.tool_execution: ToolExecutionMode = options.tool_execution
         self.before_tool_call: BeforeToolCall | None = options.before_tool_call
@@ -149,6 +182,57 @@ class Agent:
             return
         await asyncio.shield(run.idle)
 
+    @property
+    def steering_mode(self) -> QueueMode:
+        """How the steering queue is drained at a queue drain point."""
+        return self._steering_queue.mode
+
+    @steering_mode.setter
+    def steering_mode(self, mode: QueueMode) -> None:
+        self._steering_queue.mode = mode
+
+    @property
+    def follow_up_mode(self) -> QueueMode:
+        """How the follow-up queue is drained when the run would otherwise stop."""
+        return self._follow_up_queue.mode
+
+    @follow_up_mode.setter
+    def follow_up_mode(self, mode: QueueMode) -> None:
+        self._follow_up_queue.mode = mode
+
+    def steer(self, message: AgentMessage) -> None:
+        """Queue a message to inject at the next drain point (the initial poll or a completed turn)."""
+        self._steering_queue.enqueue(message)
+
+    def follow_up(self, message: AgentMessage) -> None:
+        """Queue a message to run only when the Agent would otherwise stop."""
+        self._follow_up_queue.enqueue(message)
+
+    def clear_steering_queue(self) -> None:
+        """Remove all queued steering messages."""
+        self._steering_queue.clear()
+
+    def clear_follow_up_queue(self) -> None:
+        """Remove all queued follow-up messages."""
+        self._follow_up_queue.clear()
+
+    def clear_all_queues(self) -> None:
+        """Remove all queued steering and follow-up messages."""
+        self._steering_queue.clear()
+        self._follow_up_queue.clear()
+
+    def has_queued_messages(self) -> bool:
+        """Return whether either queue still contains pending messages."""
+        return self._steering_queue.has_items() or self._follow_up_queue.has_items()
+
+    def peek_queued_messages(self) -> list[AgentMessage]:
+        """Preview the messages selected for the next turn without consuming them.
+
+        Steering takes priority over follow-up, matching the drain order.
+        """
+        steering = self._steering_queue.peek()
+        return steering if steering else self._follow_up_queue.peek()
+
     async def prompt(
         self,
         message: str | AgentMessage | list[AgentMessage],
@@ -168,8 +252,9 @@ class Agent:
     async def continue_(self) -> None:
         """Continue from the current transcript.
 
-        Rejects empty or system-only history and an assistant tail; queues are
-        not part of this slice.
+        Rejects empty or system-only history. An assistant tail is continued
+        only when a queue supplies the next input: steering first, then
+        follow-up; with neither queued it is rejected like the low-level loop.
         """
         if self._active_run is not None:
             raise RuntimeError("Agent is already processing. Wait for completion before continuing.")
@@ -178,6 +263,22 @@ class Agent:
         if last_message is None or all(message.role == "system" for message in self._state.messages):
             raise ValueError("No messages to continue from")
         if last_message.role == "assistant":
+            queued_steering = self._steering_queue.drain()
+            if queued_steering:
+                run = self._begin_run(
+                    lambda signal: self._run_prompt_messages(
+                        queued_steering, signal, skip_initial_steering_poll=True
+                    )
+                )
+                assert run.task is not None
+                await asyncio.shield(run.task)
+                return
+            queued_follow_ups = self._follow_up_queue.drain()
+            if queued_follow_ups:
+                run = self._begin_run(lambda signal: self._run_prompt_messages(queued_follow_ups, signal))
+                assert run.task is not None
+                await asyncio.shield(run.task)
+                return
             raise ValueError("Cannot continue from message role: assistant")
 
         run = self._begin_run(lambda signal: self._run_continuation(signal))
@@ -195,6 +296,7 @@ class Agent:
         self._state.streaming_message = None
         self._state.error_message = None
         self._state._clear_pending_tool_calls()
+        self.clear_all_queues()
 
     def _normalize_prompt_input(
         self,
@@ -248,9 +350,18 @@ class Agent:
     def _create_context_snapshot(self) -> AgentContext:
         return AgentContext(messages=list(self._state.messages), tools=list(self._state.tools))
 
-    def _create_loop_config(self) -> AgentLoopConfig:
+    def _create_loop_config(self, *, skip_initial_steering_poll: bool = False) -> AgentLoopConfig:
         thinking_level = self._state.thinking_level
         reasoning: ReasoningLevel | None = None if thinking_level == "off" else thinking_level
+        poll_steering = not skip_initial_steering_poll
+
+        def get_steering_messages() -> list[AgentMessage]:
+            nonlocal poll_steering
+            if not poll_steering:
+                poll_steering = True
+                return []
+            return self._steering_queue.drain()
+
         return AgentLoopConfig(
             model=self._state.model,
             reasoning=reasoning,
@@ -267,17 +378,25 @@ class Agent:
             finish_turn=self.finish_turn,
             prepare_request=self.prepare_request,
             prepare_next_turn=self._build_prepare_next_turn(),
+            get_steering_messages=get_steering_messages,
+            get_follow_up_messages=self._follow_up_queue.drain,
             session_id=self.session_id,
             thinking_budgets=self.thinking_budgets,
             transport=self.transport,
             max_retry_delay_ms=self.max_retry_delay_ms,
         )
 
-    async def _run_prompt_messages(self, messages: list[AgentMessage], signal: AbortSignal) -> None:
+    async def _run_prompt_messages(
+        self,
+        messages: list[AgentMessage],
+        signal: AbortSignal,
+        *,
+        skip_initial_steering_poll: bool = False,
+    ) -> None:
         await run_agent_loop(
             messages,
             self._create_context_snapshot(),
-            self._create_loop_config(),
+            self._create_loop_config(skip_initial_steering_poll=skip_initial_steering_poll),
             self._process_events,
             signal,
             self.stream_fn,

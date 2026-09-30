@@ -92,7 +92,24 @@ The Agent passes the loop an independent context snapshot; mutating the snapshot
 
 ## Running and continuing
 
-`await agent.prompt(text, images=None)` accepts text, a single message, or a message batch. `await agent.continue_()` continues from an existing transcript whose last message is a user or tool-result message; it rejects empty or system-only history and an assistant tail. A busy Agent rejects `prompt`, `continue_`, and `reset`. `reset()` clears the conversation and run state while retaining the replayed system baseline.
+`await agent.prompt(text, images=None)` accepts text, a single message, or a message batch. `await agent.continue_()` continues from an existing transcript whose last message is a user or tool-result message; it rejects empty or system-only history. A busy Agent rejects `prompt`, `continue_`, and `reset`. `reset()` clears the conversation, run state, and both input queues while retaining the replayed system baseline.
+
+An assistant tail normally cannot be continued. It is accepted only when an input queue supplies the next message: steering first, then follow-up. A steering continuation skips the loop's initial steering poll so a second queued steering message is not folded into the same request; with neither queue populated, `continue_()` raises the same rejection as the low-level loop.
+
+## Input queues
+
+Applications can queue messages while the Agent is idle or running:
+
+- `agent.steer(message)` queues steering that is injected at the next queue drain point (the initial poll, or the boundary after a completed turn). Steering never skips the remaining tool calls in the current batch.
+- `agent.follow_up(message)` queues a message that runs only when the Agent would otherwise stop, after natural tool continuation and steering are exhausted. A follow-up turn continues the same `agent_start`/`agent_end` cycle.
+
+Both queues are FIFO. `agent.steering_mode` and `agent.follow_up_mode` select how many messages a drain takes and default to `"one-at-a-time"`; `"all"` takes every message currently queued. `agent.has_queued_messages()` reports whether either queue is non-empty, and `agent.peek_queued_messages()` previews the messages selected for the next turn without consuming them, preferring steering over follow-up. `clear_steering_queue()`, `clear_follow_up_queue()`, and `clear_all_queues()` remove queued messages explicitly.
+
+Queue consumption follows the loop's scheduling boundaries. The initial poll injects steering queued before the run starts. After each completed turn, the loop polls steering; a natural tool continuation or a pending steering message keeps the turn going without an extra request. Steering that arrives while `prepare_next_turn` runs is picked up only when the earlier poll returned nothing, so `one-at-a-time` never consumes two messages in the same turn. A truncated or error turn leaves unconsumed queues in place, and an aborted run does not drain them; only explicit clearing or `reset()` removes them.
+
+`finish_turn`'s `"end"` decision still stops without polling either queue. Its `"continue"` decision guarantees at least one next request, which a natural tool continuation, a steering message, or a follow-up can satisfy without an additional request.
+
+Queued messages use the same application-message ownership and conversion rules as a prompt: the stored object becomes part of `Agent.state.messages`, and the default `convert_to_llm` filters custom roles out of the model request.
 
 ## Tools
 
@@ -225,7 +242,7 @@ The Agent owns its run. Cancelling a caller awaiting `prompt`, `continue_`, or `
 
 ## Not yet delivered
 
-Tool input queues (`steer`/`follow_up`) and the four public standalone loop
-entry points, with their message-ownership and cancellation rules, are planned
-in later slices; this document describes the delivered conversation,
-tool-batch, tool-policy, model-integration, and turn-control path.
+The four public standalone loop entry points, with their message-ownership
+and cancellation rules, are planned in a later slice; this document describes
+the delivered conversation, tool-batch, tool-policy, model-integration,
+turn-control, and input-queue path.

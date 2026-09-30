@@ -33,6 +33,8 @@ from omh.agent.types import (
     ConvertToLlm,
     FinishTurn,
     GetApiKey,
+    GetFollowUpMessages,
+    GetSteeringMessages,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
@@ -111,6 +113,8 @@ class AgentLoopConfig:
     finish_turn: FinishTurn | None = None
     prepare_request: PrepareRequest | None = None
     prepare_next_turn: PrepareNextTurn | None = None
+    get_steering_messages: GetSteeringMessages | None = None
+    get_follow_up_messages: GetFollowUpMessages | None = None
     get_api_key: GetApiKey | None = None
     api_key: str | None = None
     on_payload: OnPayload | None = None
@@ -231,13 +235,17 @@ async def _run_loop(
     last_completed_turn: AgentTurnContext | None = None
     explicit_continuation = False
 
+    # Steering may already be queued before the run starts; the first request
+    # picks it up together with the initial prompt messages.
+    pending_messages = await _call_get_steering_messages(config)
+
     # Outer loop: an explicit ``continue`` decision requests one more turn when
     # no natural tool continuation or queued input already satisfies it.
     while True:
         has_more_tool_calls = True
 
-        # Inner loop: process tool calls and subsequent requests.
-        while has_more_tool_calls:
+        # Inner loop: process tool calls, steering, and subsequent requests.
+        while has_more_tool_calls or pending_messages:
             prepared_messages: list[AgentMessage] = []
             if last_completed_turn is not None:
                 update = await _call_prepare_next_turn(config, last_completed_turn)
@@ -246,13 +254,20 @@ async def _run_loop(
                         context = update.context
                     config = _apply_config_update(config, update.model, update.thinking_level)
                     prepared_messages = list(update.messages or [])
+                # Preparation can be long-running (for example, compaction). Pick
+                # up steering queued while it ran. Only poll again when the
+                # earlier poll returned nothing; otherwise one-at-a-time mode
+                # would deliver two messages in this turn.
+                if not pending_messages:
+                    pending_messages = await _call_get_steering_messages(config)
                 await _emit(emit, TurnStartEvent())
 
-            for message in declare_tool_changes(context, prepared_messages):
+            for message in declare_tool_changes(context, [*prepared_messages, *pending_messages]):
                 await _emit(emit, MessageStartEvent(message=message))
                 await _emit(emit, MessageEndEvent(message=message))
                 context.messages.append(message)
                 new_messages.append(message)
+            pending_messages = []
 
             request_update = await _call_prepare_request(config, context, signal)
             context, config = _apply_request_update(context, config, request_update)
@@ -268,7 +283,7 @@ async def _run_loop(
                     new_messages=new_messages,
                 )
                 # Error and aborted responses remain hard exits; a hook's
-                # continue decision is not applied.
+                # continue decision is not applied and queues are not polled.
                 await _call_finish_turn(config, last_completed_turn, signal)
                 await _emit(emit, TurnEndEvent(message=message, tool_results=[]))
                 await _emit(emit, AgentEndEvent(messages=new_messages))
@@ -297,13 +312,22 @@ async def _run_loop(
             decision = await _call_finish_turn(config, last_completed_turn, signal)
             await _emit(emit, TurnEndEvent(message=message, tool_results=tool_results))
 
+            # An ``end`` decision stops without polling either queue.
             if decision == "end":
                 await _emit(emit, AgentEndEvent(messages=new_messages))
                 return
 
             explicit_continuation = decision == "continue"
-            if has_more_tool_calls:
+            pending_messages = await _call_get_steering_messages(config)
+            if has_more_tool_calls or pending_messages:
                 explicit_continuation = False
+
+        # The agent would stop here. Follow-up messages wait for this point.
+        follow_up_messages = await _call_get_follow_up_messages(config)
+        if follow_up_messages:
+            explicit_continuation = False
+            pending_messages = follow_up_messages
+            continue
 
         if explicit_continuation:
             explicit_continuation = False
@@ -350,6 +374,20 @@ async def _call_prepare_next_turn(
     if hook is None:
         return None
     return await _maybe_await(hook(turn))
+
+
+async def _call_get_steering_messages(config: AgentLoopConfig) -> list[AgentMessage]:
+    hook = config.get_steering_messages
+    if hook is None:
+        return []
+    return list(await _maybe_await(hook()))
+
+
+async def _call_get_follow_up_messages(config: AgentLoopConfig) -> list[AgentMessage]:
+    hook = config.get_follow_up_messages
+    if hook is None:
+        return []
+    return list(await _maybe_await(hook()))
 
 
 async def _call_finish_turn(

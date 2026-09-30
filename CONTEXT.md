@@ -8,6 +8,18 @@
 持有对话消息、配置、输入队列与运行状态的进程内执行单元，不要求 Session 存储。应用层负责其会话保存与运行策略；Agent 本身不提供跨进程中断恢复保证。
 _Avoid_: AgentHarness、AgentLane
 
+**Steering message（引导消息）**:
+传统 Agent 运行中排入的消息，在队列消费边界注入：初次调度时，以及每个完成回合之后。默认每次一条（one-at-a-time），也支持 all；peek 优先 steering 且不消费；工具批次不会因它跳过剩余调用；finish_turn 的 end 决定停止运行且不消费任何队列；失败或 abort 后未消费部分保留，只有显式清理或 reset 才移除。
+_Avoid_: 用并发 prompt 抢占当前运行
+
+**Follow-up message（后续消息）**:
+仅在原本可结束（没有自然工具续行或 steering）时消费并延续同一次运行的消息；finish_turn 的 end 决定不会消费它。后续回合仍属于同一个 agent_start／agent_end 周期。
+_Avoid_: 抢占当前工作
+
+**Queue mode（队列消费模式）**:
+one-at-a-time 或 all，决定一个消费边界取走多少条 FIFO 消息。steering 与 follow-up 各自独立设置。
+_Avoid_: 用 peek 隐式消费
+
 **AgentTool**:
 传统 Agent 持有的可执行工具，包含名称、描述、JSON Schema 参数、显示 label、可选参数预处理、execute 回调及可选 execution_mode。发送给模型的声明只含名称、描述与参数；未知工具、预处理或校验失败、before hook 阻断、执行异常成为错误工具结果，不进入副作用。execute 在存活期间可通过 on_update 报告进度。
 _Avoid_: AgentHarnessTool

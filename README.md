@@ -2,7 +2,7 @@
 
 A Python SDK for in-process and durable agent conversations.
 
-omh (oh-my-harness) combines streamed model responses, tool execution, and conversation state. `omh.agent` provides an in-process, Session-free Agent; the experimental `omh.agent.durable` namespace adds persistent execution with named conversation branches, queued inputs, hooks, and explicit recovery after interruption. Sessions can run in memory or persist to SQLite. The built-in model provider is DeepSeek.
+omh (oh-my-harness) combines streamed model responses, tool execution, and conversation state. `omh.agent` provides an in-process, Session-free Agent with steering and follow-up queues; the experimental `omh.agent.durable` namespace adds persistent execution with named conversation branches, durable queued inputs, hooks, and explicit recovery after interruption. Sessions can run in memory or persist to SQLite. The built-in model provider is DeepSeek.
 
 The Python distribution and import name are both `omh`.
 

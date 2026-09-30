@@ -55,6 +55,12 @@ ThinkingLevel = ModelThinkingLevel
 #:   order, while result messages keep assistant source order.
 ToolExecutionMode = Literal["sequential", "parallel"]
 
+#: How many queued messages a drain point injects.
+#:
+#: - ``one-at-a-time`` (default): take only the oldest queued message.
+#: - ``all``: take every message currently queued.
+QueueMode = Literal["all", "one-at-a-time"]
+
 #: Application message union. The traditional Agent starts with the standard LLM
 #: message roles; applications add their own roles by extending the conversion
 #: boundary rather than by widening the LLM message union.
@@ -308,6 +314,14 @@ PrepareNextTurn = Callable[
     AgentLoopTurnUpdate | None | Awaitable[AgentLoopTurnUpdate | None],
 ]
 
+#: Loop-level steering poll. Returns the messages to inject at a queue drain
+#: point; the default Agent binding drains the steering queue by its mode.
+GetSteeringMessages = Callable[[], list[AgentMessage] | Awaitable[list[AgentMessage]]]
+
+#: Loop-level follow-up poll. Runs when the loop would otherwise stop and no
+#: steering or natural tool continuation is pending.
+GetFollowUpMessages = Callable[[], list[AgentMessage] | Awaitable[list[AgentMessage]]]
+
 #: Agent-level next-turn preparation without loop context. Receives the run signal.
 PrepareNextTurnWithSignal = Callable[
     [AbortSignal | None],
@@ -489,6 +503,8 @@ class AgentOptions:
     stream_fn: StreamFn | None = None
     initial_state: AgentInitialState | None = None
     tool_execution: ToolExecutionMode = "parallel"
+    steering_mode: QueueMode = "one-at-a-time"
+    follow_up_mode: QueueMode = "one-at-a-time"
     before_tool_call: BeforeToolCall | None = None
     after_tool_call: AfterToolCall | None = None
     convert_to_llm: ConvertToLlm | None = None
