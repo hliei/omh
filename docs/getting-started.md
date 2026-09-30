@@ -44,6 +44,34 @@ agent.abort()                     # cooperatively stops an in-flight run
 
 The example uses a deterministic in-process `StreamFn`, so it runs without credentials. [In-process Agent](agent.md#tools) shows how to attach executable tools with a JSON Schema; provider integration and the system/tool replay boundary are covered in [LLM layer](llm.md).
 
+## Run the standalone loop
+
+Applications that own the execution lifecycle can skip the Agent and call the conversation loop directly from `omh.agent`:
+
+```bash
+python examples/standalone_loop.py
+```
+
+[Standalone loop source](../examples/standalone_loop.py):
+
+```python
+from omh.agent import AgentContext, AgentLoopConfig, agent_loop, run_agent_loop
+
+context = AgentContext(messages=[], tools=[])
+config = AgentLoopConfig(model=my_model)
+
+# Direct: runs in the caller's task and awaits the sink.
+new_messages = await run_agent_loop([user_message], context, config, my_sink, signal, my_stream_fn)
+
+# Stream: an independent producer with events and a final result.
+stream = agent_loop([user_message], context, config, signal, my_stream_fn)
+async for event in stream:
+    handle(event)
+new_messages = await stream.result()
+```
+
+The `run_agent_loop`/`run_agent_loop_continue` entries are owned by the caller's task; the `agent_loop`/`agent_loop_continue` entries own an independent producer whose `result()` can be awaited by more than one waiter. [In-process Agent](agent.md#ownership) compares the Agent, direct, and stream ownership rules and their cancellation behavior.
+
 ## Run a durable agent
 
 The durable harness examples call DeepSeek and require an API key in the process environment. Durable types are imported from the experimental `omh.agent.durable` namespace:

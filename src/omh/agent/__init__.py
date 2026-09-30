@@ -8,6 +8,15 @@ not imported from here.
 from __future__ import annotations
 
 from omh.agent.agent import Agent
+from omh.agent.loop import (
+    AgentEventSink,
+    AgentEventStream,
+    AgentLoopConfig,
+    agent_loop,
+    agent_loop_continue,
+    run_agent_loop,
+    run_agent_loop_continue,
+)
 from omh.agent.stream_fn import (
     clear_default_stream_fn,
     get_default_stream_fn,
@@ -74,7 +83,10 @@ __all__ = [
     "AgentContext",
     "AgentEndEvent",
     "AgentEvent",
+    "AgentEventSink",
+    "AgentEventStream",
     "AgentInitialState",
+    "AgentLoopConfig",
     "AgentLoopTurnUpdate",
     "AgentMessage",
     "AgentOptions",
@@ -117,8 +129,12 @@ __all__ = [
     "TransformContext",
     "TurnEndEvent",
     "TurnStartEvent",
+    "agent_loop",
+    "agent_loop_continue",
     "clear_default_stream_fn",
     "get_default_stream_fn",
+    "run_agent_loop",
+    "run_agent_loop_continue",
     "set_default_stream_fn",
     "to_tool_declaration",
 ]

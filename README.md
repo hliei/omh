@@ -28,7 +28,7 @@ export DEEPSEEK_API_KEY="your-api-key"
 python examples/minimal_agent.py
 ```
 
-For streamed text, run [streaming_agent.py](examples/streaming_agent.py). For a model–tool–model round trip, run [tool_agent.py](examples/tool_agent.py). Each script is self-contained; [Getting started](docs/getting-started.md) explains the APIs.
+For streamed text, run [streaming_agent.py](examples/streaming_agent.py). For a model–tool–model round trip, run [tool_agent.py](examples/tool_agent.py). To drive the same loop directly, or consume it as an event stream, without an Agent, run [standalone_loop.py](examples/standalone_loop.py). Each script is self-contained; [Getting started](docs/getting-started.md) explains the APIs.
 
 ## Modules
 
