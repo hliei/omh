@@ -12,7 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from omh.agent.agent_loop import (
+from omh.agent.loop import (
     AgentLoopConfig,
     _maybe_await,
     run_agent_loop,

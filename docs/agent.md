@@ -240,9 +240,63 @@ The conversation lifecycle emits `agent_start`, `turn_start`, `message_start`, `
 
 The Agent owns its run. Cancelling a caller awaiting `prompt`, `continue_`, or `wait_for_idle` ends only that wait; the run and other waiters continue. `agent.abort()` cooperatively signals the current run, and the Agent becomes idle only after the run and its terminal listeners settle. Abort does not preempt uncooperative work or undo side effects.
 
-## Not yet delivered
+## Standalone loop
 
-The four public standalone loop entry points, with their message-ownership
-and cancellation rules, are planned in a later slice; this document describes
-the delivered conversation, tool-batch, tool-policy, model-integration,
-turn-control, and input-queue path.
+Applications that own the execution lifecycle can skip the Agent and drive the
+same conversation loop directly from `omh.agent`. A `prepare` and a `continue`
+shape are each available with direct execution or an event stream:
+
+```python
+from omh.agent import (
+    AgentContext,
+    AgentLoopConfig,
+    agent_loop,
+    run_agent_loop,
+)
+
+context = AgentContext(messages=[], tools=[])
+config = AgentLoopConfig(model=my_model)
+
+# Direct: runs in the caller's task, awaits the sink, returns this run's messages.
+new_messages = await run_agent_loop([my_user_message], context, config, my_sink, signal, my_stream_fn)
+
+# Stream: an independent producer, events plus a final result.
+stream = agent_loop([my_user_message], context, config, signal, my_stream_fn)
+async for event in stream:
+    handle(event)
+new_messages = await stream.result()
+```
+
+`run_agent_loop` and `run_agent_loop_continue` are the direct entries:
+they await every `emit` call and return the messages this run added. A new
+prompt returns its accepted prompt messages plus any tool-declaration system
+message the loop had to add. A continuation returns only the new messages and
+appends them to the run's context list in place: that is the caller's
+`context.messages` unless a `prepare_next_turn` hook replaces the context for a
+later turn. The continuation entries reject an empty transcript and an
+assistant tail. Passing no `stream_fn` uses the host-installed default from
+`set_default_stream_fn` and fails clearly when none is installed.
+
+`agent_loop` and `agent_loop_continue` return an `AgentEventStream`. Its
+events and final messages match the direct entries; `stream.result()` is an
+independent awaitable so several waiters can await the same run. A producer
+failure reaches both `async for` and `result()` instead of hanging, and the
+stream never keeps a consumer alive: the producer finishes even when nobody
+reads. The producer-side `push`, `end`, and `fail` methods feed the stream and
+are called by the entries; applications normally consume the stream instead.
+
+### Ownership
+
+The Agent, direct execution, and the stream producer own their work differently:
+
+| Entry | Owner | Cancelling a waiter or task | Stopping cooperatively |
+| --- | --- | --- | --- |
+| `Agent.prompt` / `Agent.continue_` | the Agent | ends only that wait; the run and other waiters continue | `agent.abort()` |
+| `run_agent_loop` / `run_agent_loop_continue` | the caller's task | the task's cancellation interrupts the loop; no full terminal event sequence is promised | pass a signal and await completion |
+| `agent_loop` / `agent_loop_continue` | an independent producer task | stopping the read, cancelling a reader, or cancelling one result waiter does not cancel the producer or other waiters | pass a signal; the producer stops at the next cooperative check |
+
+The producer task is exposed as `stream.task` for callers that want to await
+or cancel it. [`examples/standalone_loop.py`](../examples/standalone_loop.py)
+runs the direct and stream entries against an in-process echo model without
+credentials.
+
