@@ -2,9 +2,16 @@
 
 A Python Agent SDK for model conversations, tool execution, and conversation control.
 
-omh (oh-my-harness) centers on **`omh.agent`**, an in-process Agent with conversation state, streaming events, tools, steering, and follow-up queues. Applications can use the stateful Agent or drive the same conversation loop directly. **`omh.llm`** supplies the shared model layer and can also be used independently.
+omh (oh-my-harness) provides the building blocks for Python agent applications:
 
-The experimental **`omh.agent.durable`** SDK adds persistent Sessions, named conversation branches, durable queued inputs, and explicit recovery after interruption. Both Agent SDKs ship in the same `omh` distribution. The built-in model provider is DeepSeek.
+- [`omh.agent`](docs/agent.md): The main Agent SDK, with an in-process agent loop, tool calling, and conversation state.
+- [`omh.llm`](docs/llm.md): A standalone model API for streaming text, thinking, and tool calls, with built-in DeepSeek support.
+- [`omh.agent.durable`](docs/durable/README.md): An experimental Durable Agent SDK with persistent sessions and interruption recovery.
+
+To get started with omh:
+
+- Follow the [getting-started guide](docs/getting-started.md) to run an Agent and give it tools.
+- Explore the [examples](examples/) or read the [documentation](docs/README.md) for API contracts and architecture.
 
 ## Quick start
 
