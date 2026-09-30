@@ -60,3 +60,11 @@ _Avoid_: 最后一条系统消息（代替完整重放）
 规范化后的模型请求输入：prompt 与工具声明位于 system message，而不是独立的 system_prompt／tools 字段。由 `normalize_context` 从公开 Context 简写生成。
 _Avoid_: 未规范化的公开 Context
 
+**CustomAgentMessage（自定义应用消息）**:
+由 `role` 标识、不属于标准 LLM 角色联合的应用消息。它保留在 Agent 历史中；默认模型转换过滤它，应用通过 `convert_to_llm`／`transform_context` 决定它如何进入请求。它不拓宽 durable codec 的接受集合。
+_Avoid_: 把应用消息伪装成标准模型消息
+
+**Default StreamFn（默认流函数）**:
+宿主通过 `set_default_stream_fn` 安装、由 `get_default_stream_fn` 读取的模型流回退。显式传入的 `StreamFn` 优先；未安装且未显式传入时明确失败，不会隐式绑定 provider 目录。
+_Avoid_: 在 Agent 内绑定具体模型目录
+

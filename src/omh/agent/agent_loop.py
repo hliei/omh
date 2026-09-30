@@ -26,14 +26,20 @@ from omh.agent.types import (
     AgentToolResult,
     BeforeToolCall,
     BeforeToolCallContext,
+    ConvertToLlm,
+    GetApiKey,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
+    OnPayload,
+    OnProviderStreamEvent,
+    OnResponse,
     StreamFn,
     ToolExecutionEndEvent,
     ToolExecutionMode,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
+    TransformContext,
     TurnEndEvent,
     TurnStartEvent,
     to_tool_declaration,
@@ -42,16 +48,20 @@ from omh.llm.types import (
     AbortSignal,
     AssistantMessage,
     Context,
+    Message,
     Model,
     SimpleStreamOptions,
     StartEvent,
     SystemMessage,
     TextContent,
+    ThinkingBudgets,
     Tool,
     ToolCall,
     ToolReference,
     ToolResultMessage,
     TranscriptContext,
+    Transport,
+    UserMessage,
 )
 from omh.llm.types import (
     ThinkingLevel as ReasoningLevel,
@@ -87,6 +97,17 @@ class AgentLoopConfig:
     tool_execution: ToolExecutionMode = "parallel"
     before_tool_call: BeforeToolCall | None = None
     after_tool_call: AfterToolCall | None = None
+    convert_to_llm: ConvertToLlm | None = None
+    transform_context: TransformContext | None = None
+    get_api_key: GetApiKey | None = None
+    api_key: str | None = None
+    on_payload: OnPayload | None = None
+    on_response: OnResponse | None = None
+    on_provider_stream_event: OnProviderStreamEvent | None = None
+    session_id: str | None = None
+    thinking_budgets: ThinkingBudgets | None = None
+    transport: Transport | None = None
+    max_retry_delay_ms: float | None = None
 
 
 @dataclass(slots=True)
@@ -109,9 +130,13 @@ class _ExecutedToolBatch:
     terminate: bool
 
 
-def _default_convert_to_llm(messages: list[AgentMessage]) -> list[AgentMessage]:
+def _default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
     """Keep standard LLM roles; application-specific roles are dropped by default."""
-    return [message for message in messages if message.role in {"system", "user", "assistant", "toolResult"}]
+    return [
+        message
+        for message in messages
+        if isinstance(message, SystemMessage | UserMessage | AssistantMessage | ToolResultMessage)
+    ]
 
 
 async def _emit(emit: AgentEventSink, event: AgentEvent) -> None:
@@ -280,6 +305,29 @@ def _with_tool_changes(
     )
 
 
+async def _resolve_api_key(config: AgentLoopConfig) -> str | None:
+    if config.get_api_key is None:
+        return config.api_key
+    resolved = config.get_api_key(config.model.provider)
+    if inspect.isawaitable(resolved):
+        resolved = await resolved
+    return resolved or config.api_key
+
+
+async def _build_request_context(config: AgentLoopConfig, messages: list[AgentMessage], signal: AbortSignal | None) -> TranscriptContext:
+    transformed = messages
+    if config.transform_context is not None:
+        maybe = config.transform_context(messages, signal)
+        if inspect.isawaitable(maybe):
+            maybe = await maybe
+        transformed = maybe
+    convert = config.convert_to_llm or _default_convert_to_llm
+    llm_messages = convert(transformed)
+    if inspect.isawaitable(llm_messages):
+        llm_messages = await llm_messages
+    return normalize_context(Context(messages=llm_messages))
+
+
 async def _stream_assistant_response(
     context: AgentContext,
     config: AgentLoopConfig,
@@ -287,13 +335,24 @@ async def _stream_assistant_response(
     emit: AgentEventSink,
     stream_fn: StreamFn,
 ) -> AssistantMessage:
-    llm_messages = _default_convert_to_llm(context.messages)
-    transcript: TranscriptContext = normalize_context(Context(messages=llm_messages))
+    transcript = await _build_request_context(config, context.messages, signal)
+    api_key = await _resolve_api_key(config)
 
     response = stream_fn(
         config.model,
         transcript,
-        SimpleStreamOptions(reasoning=config.reasoning, signal=signal),
+        SimpleStreamOptions(
+            reasoning=config.reasoning,
+            signal=signal,
+            api_key=api_key,
+            on_payload=config.on_payload,
+            on_response=config.on_response,
+            on_provider_stream_event=config.on_provider_stream_event,
+            transport=config.transport,
+            session_id=config.session_id,
+            thinking_budgets=config.thinking_budgets,
+            max_retry_delay_ms=config.max_retry_delay_ms,
+        ),
     )
     if inspect.isawaitable(response):
         response = await response

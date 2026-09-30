@@ -30,25 +30,27 @@ from omh.llm.types import (
     ProviderHeaders,
     SimpleStreamOptions,
     StreamOptions,
+    TranscriptContext,
     Usage,
     UsageCost,
 )
 from omh.llm.utils.event_stream import AssistantMessageEventStream
 from omh.llm.utils.lazy import lazy_stream
+from omh.llm.utils.transcript import normalize_context
 
 
 class ProviderStreams(Protocol):
     def stream(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: OpenAICompletionsOptions | StreamOptions | None = None,
     ) -> AssistantMessageEventStream: ...
 
     def stream_simple(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: SimpleStreamOptions | None = None,
     ) -> AssistantMessageEventStream: ...
 
@@ -65,14 +67,14 @@ class Provider(Protocol):
     def stream(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: OpenAICompletionsOptions | StreamOptions | None = None,
     ) -> AssistantMessageEventStream: ...
 
     def stream_simple(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: SimpleStreamOptions | None = None,
     ) -> AssistantMessageEventStream: ...
 
@@ -273,7 +275,7 @@ class ModelsImpl:
         async def setup() -> AssistantMessageEventStream:
             provider = self._require_provider(model)
             request_model, request_options = await self._apply_auth(model, options)
-            return provider.stream(request_model, context, request_options)
+            return provider.stream(request_model, normalize_context(context), request_options)
 
         return lazy_stream(model, setup)
 
@@ -294,7 +296,7 @@ class ModelsImpl:
         async def setup() -> AssistantMessageEventStream:
             provider = self._require_provider(model)
             request_model, request_options = await self._apply_auth(model, options or SimpleStreamOptions())
-            return provider.stream_simple(request_model, context, request_options)
+            return provider.stream_simple(request_model, normalize_context(context), request_options)
 
         return lazy_stream(model, setup)
 
@@ -338,7 +340,7 @@ class CreatedProvider:
     def stream(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: OpenAICompletionsOptions | StreamOptions | None = None,
     ) -> AssistantMessageEventStream:
         return self._api.stream(model, context, options)
@@ -346,7 +348,7 @@ class CreatedProvider:
     def stream_simple(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: SimpleStreamOptions | None = None,
     ) -> AssistantMessageEventStream:
         return self._api.stream_simple(model, context, options)

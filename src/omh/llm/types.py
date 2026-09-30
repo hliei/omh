@@ -16,6 +16,9 @@ ThinkingLevelMap = dict[ModelThinkingLevel, str | None]
 ToolChoice = Literal["auto", "none"]
 ThinkingFormat = Literal["openai", "deepseek"]
 MaxTokensField = Literal["max_completion_tokens", "max_tokens"]
+#: Preferred transport for providers that support more than one. Providers that
+#: do not support the option ignore it; the built-in HTTP path only implements SSE.
+Transport = Literal["sse", "websocket", "websocket-cached", "auto"]
 ProviderEnv = dict[str, str]
 ProviderHeaders = dict[str, str | None]
 
@@ -67,6 +70,24 @@ class AbortController:
 
     def abort(self, reason: BaseException | None = None) -> None:
         self.signal._abort(reason)
+
+
+@dataclass(frozen=True, slots=True)
+class ThinkingBudgets:
+    """Optional per-level reasoning token budgets for token-based providers."""
+
+    minimal: int | None = None
+    low: int | None = None
+    medium: int | None = None
+    high: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderResponse:
+    """Minimal HTTP response metadata passed to ``on_response``."""
+
+    status: int
+    headers: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +299,9 @@ class OpenAICompletionsCompat:
     requires_reasoning_content_on_assistant_messages: bool | None = None
     thinking_format: ThinkingFormat | None = None
     supports_strict_mode: bool | None = None
+    #: Whether the model accepts system/developer messages after the conversation
+    #: has started. When false, later system messages are folded into the leading one.
+    supports_mid_convo_system_messages: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +320,14 @@ class Model:
     sampling_params: dict[str, object] | None = None
     headers: dict[str, str] | None = None
     compat: OpenAICompletionsCompat | None = None
+
+
+#: Inspects or replaces a provider payload before it is sent. ``None`` keeps it.
+OnPayload = Callable[[dict[str, object], Model], Awaitable[dict[str, object] | None] | dict[str, object] | None]
+#: Invoked after an HTTP response is received, before its body is consumed.
+OnResponse = Callable[[ProviderResponse, Model], Awaitable[None] | None]
+#: Observes each parsed provider stream event before Pi normalization.
+OnProviderStreamEvent = Callable[[object, Model], Awaitable[None] | None]
 
 
 @dataclass(slots=True)
@@ -414,9 +446,23 @@ class StreamOptions:
     sampling_params: dict[str, object] | None = None
     max_tokens: int | None = None
     timeout_ms: float | None = None
-    on_payload: Callable[[dict[str, object], Model], Awaitable[dict[str, object] | None] | dict[str, object] | None] | None = (
-        None
-    )
+    on_payload: OnPayload | None = None
+    #: Invoked after an HTTP response is received, before its body stream is consumed.
+    on_response: OnResponse | None = None
+    #: Observer for each parsed provider stream event before Pi normalization. The
+    #: payload is adapter-owned and must be treated as read-only. Adapters that do
+    #: not parse a provider stream do not invoke it.
+    on_provider_stream_event: OnProviderStreamEvent | None = None
+    #: Preferred transport for providers that support more than one. Ignored when unsupported.
+    transport: Transport | None = None
+    #: Opaque session identifier forwarded to providers that support session-based caching.
+    #: It is never interpreted as a durable Session.
+    session_id: str | None = None
+    #: Per-level reasoning token budgets forwarded to token-based providers.
+    thinking_budgets: ThinkingBudgets | None = None
+    #: Cap for a provider-requested retry delay. Forwarded to transports that retry;
+    #: the built-in HTTP path does not perform client-side retries.
+    max_retry_delay_ms: float | None = None
 
 
 @dataclass(slots=True)

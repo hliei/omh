@@ -8,6 +8,41 @@
 
 `SystemMessage` carries system instructions and tool declarations at a point in the transcript. `TranscriptContext` is the normalized request input: its prompt and tool declarations live in system messages rather than separate fields. `normalize_context` folds the legacy `Context.system_prompt`/`Context.tools` shorthand into a leading system message, and the transcript helpers replay system messages into the current prompt and tool set. `validate_tool_arguments` coerces and validates tool-call arguments against a plain JSON Schema, including primitive coercion, optional-null removal, nested values, and `allOf`/`anyOf`/`oneOf` composition. The traditional Agent passes a normalized transcript to its `StreamFn` and uses this validation before executing a tool; provider projection remains the provider's responsibility.
 
+### Provider input contract
+
+`Models.stream`, `stream_simple`, `complete`, and `complete_simple` still accept
+the public legacy `Context` (with independent `system_prompt` and `tools`), then
+call `normalize_context` and hand the provider a `TranscriptContext`. This keeps
+durable callers on their existing input shape.
+
+Provider implementations now receive `TranscriptContext` instead of `Context`.
+The built-in Chat Completions projection resolves the current prompt and tools
+from the transcript's system messages. When a model cannot accept
+mid-conversation system messages, the projection folds later system messages
+into the leading one; otherwise it keeps them in place. A custom provider that
+read `context.system_prompt` or `context.tools` must migrate to
+`get_current_system_message`/`get_current_tools` (or `resolve_transcript`) and
+project from the system messages. The built-in DeepSeek path exercises this
+contract; other provider catalogs are not part of this increment.
+
+### Request options
+
+Options are split between core forwarding and adapter consumption:
+
+| Option | Core forwarding | Built-in Chat Completions consumption |
+| --- | --- | --- |
+| `reasoning`, `max_tokens`, `temperature`, `sampling_params`, `tool_choice` | Passed to the adapter | Mapped to request fields; `reasoning` is clamped to the model's supported levels |
+| `session_id` | Passed to the adapter | Forwarded but not sent by DeepSeek; never a durable Session |
+| `thinking_budgets` | Passed to the adapter | Forwarded; not consumed while no token-budget field is modeled |
+| `transport` | Passed to the adapter | HTTP SSE only; other values are ignored rather than implemented |
+| `max_retry_delay_ms` | Passed to the adapter | Forwarded; the built-in HTTP path performs no client-side retries |
+| `on_payload` | Passed to the adapter | Invoked before the request is sent; a returned payload replaces it |
+| `on_response` | Passed to the adapter | Invoked with `ProviderResponse(status, headers)` after the HTTP response arrives and before the body is consumed |
+| `on_provider_stream_event` | Passed to the adapter | Invoked for each parsed SSE chunk before normalization |
+
+Adapters that do not parse a provider stream do not invoke
+`on_provider_stream_event`; the callback is never exposed as a no-op interface.
+
 The built-in provider implements DeepSeek's official Chat Completions path, including thinking configuration, `max_tokens`, and reasoning-content replay. Shared Chat Completions field detection does not imply support for other providers. OAuth, deferred requests, image generation, and other built-in providers are not exposed.
 
 HTTP uses an injectable `fetch` or httpx, not the OpenAI Python SDK. The default transport parses SSE incrementally as lines arrive. `AbortSignal` can interrupt response-header or subsequent-event waits and closes the response; it is process-local and never a durable operation cancellation marker.
