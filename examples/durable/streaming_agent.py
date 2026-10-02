@@ -2,7 +2,7 @@
 
 import asyncio
 
-from omh.agent.durable import (
+from omh.durable import (
     BACKGROUND_CONTEXT,
     AgentHarness,
     AgentHarnessOptions,

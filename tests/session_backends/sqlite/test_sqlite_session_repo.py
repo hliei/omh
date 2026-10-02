@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from omh.agent.durable import (
+from omh.durable import (
     BACKGROUND_CONTEXT,
     BranchScan,
     CommitResult,

@@ -16,7 +16,7 @@ The [Agent contract](agent.md) describes the stateful Agent and its standalone l
 
 ## Durable Agent SDK (experimental)
 
-`omh.agent.durable` provides persistent Sessions and recoverable execution through `AgentHarness`. Read the [durable overview](durable/README.md) for the execution model or [Durable getting started](durable/getting-started.md) for runnable examples, including SQLite persistence.
+`omh.durable` provides persistent Sessions and recoverable execution through `AgentHarness`. Read the [durable overview](durable/README.md) for the execution model or [Durable getting started](durable/getting-started.md) for runnable examples, including SQLite persistence.
 
 | Contract | Questions it answers |
 | --- | --- |

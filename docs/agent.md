@@ -503,7 +503,7 @@ loop or the Agent. Model response handling updates the active context's assistan
 message as it streams; tool execution returns result messages for the loop to
 append. The event stream starts a supplied execution callback without owning
 turn scheduling. Provider transport and transcript primitives remain in
-`omh.llm`; durable execution remains in `omh.agent.durable`.
+`omh.llm`; durable execution remains in `omh.durable`.
 
 ## Supported scope
 

@@ -7,9 +7,9 @@ from asyncio import Task, create_task, gather, shield
 from collections.abc import Callable
 from pathlib import Path
 
-from omh.agent.durable.context import Context
-from omh.agent.durable.session.session import StorageBackedSession, Uuid7Generator
-from omh.agent.durable.session.types import (
+from omh.durable.context import Context
+from omh.durable.session.session import StorageBackedSession, Uuid7Generator
+from omh.durable.session.types import (
     Session,
     SessionCreateOptions,
     SessionMetadata,

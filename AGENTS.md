@@ -10,7 +10,7 @@ Keep this guide focused on the project's module responsibilities, stable boundar
 
 ## SDK layout
 
-The installable package lives in `src/omh/`. `omh.llm` owns provider inputs and streams, is independently usable, and must not import `omh.agent`. `omh.agent` is the main SDK entry and owns the in-process Agent and standalone loop. The experimental `omh.agent.durable` SDK owns Session contracts, durable execution, recovery, tools, and observation. `omh.session_backends.sqlite` implements persistent storage against the durable Session contract. Applications consume the SDK; the SDK does not depend on applications.
+The installable package lives in `src/omh/`. `omh.llm` owns provider inputs and streams, is independently usable, and must not import `omh.agent`. `omh.agent` is the main SDK entry and owns the in-process Agent and standalone loop. The experimental `omh.durable` SDK owns Session contracts, durable execution, recovery, tools, and observation. `omh.session_backends.sqlite` implements persistent storage against the durable Session contract. Applications consume the SDK; the SDK does not depend on applications.
 
 ## Development commands
 

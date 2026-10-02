@@ -80,6 +80,9 @@ jobs:
           wheel_names = set(zipfile.ZipFile(wheel).namelist())
           required = {
               "omh/py.typed",
+              "omh/durable/__init__.py",
+              "omh/durable/runtime/__init__.py",
+              "omh/durable/session/__init__.py",
               "omh/session_backends/sqlite/migrations/001_initial.sql",
           }
           missing = sorted(required - wheel_names)
@@ -89,10 +92,10 @@ jobs:
           unexpected = sorted(
               name
               for name in wheel_names
-              if name.startswith(("tests/", "docs/", "examples/"))
+              if name.startswith(("tests/", "docs/", "examples/", "omh/agent/durable/"))
           )
           if unexpected:
-              sys.exit(f"{wheel} contains non-runtime entries: {unexpected}")
+              sys.exit(f"{wheel} contains unexpected entries: {unexpected}")
 
           sdist_names = set(tarfile.open(sdist).getnames())
           if not any(name.endswith("src/omh/py.typed") for name in sdist_names):

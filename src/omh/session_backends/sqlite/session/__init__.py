@@ -1,4 +1,4 @@
-from omh.agent.durable.session.facade import SessionFacade
+from omh.durable.session.facade import SessionFacade
 
 SqliteOpenSession = SessionFacade
 

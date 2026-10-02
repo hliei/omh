@@ -6,7 +6,7 @@ omh (oh-my-harness) provides the building blocks for Python agent applications:
 
 - [`omh.agent`](docs/agent.md): The main Agent SDK, with an in-process agent loop, tool calling, and conversation state.
 - [`omh.llm`](docs/llm.md): A standalone model API for streaming text, thinking, and tool calls, with built-in DeepSeek support.
-- [`omh.agent.durable`](docs/durable/README.md): An experimental Durable Agent SDK with persistent sessions and interruption recovery.
+- [`omh.durable`](docs/durable/README.md): An experimental Durable Agent SDK with persistent sessions and interruption recovery.
 
 To get started with omh:
 
@@ -75,7 +75,7 @@ See the [Agent contract](docs/agent.md) for behavior and ownership rules. The in
 | --- | --- | --- |
 | `omh.agent` | Main SDK: in-process Agent and standalone loop | [Getting started](docs/getting-started.md), [Agent contract](docs/agent.md) |
 | `omh.llm` | Independently usable model/provider layer with text, thinking, and tool-call streams | [LLM contract](docs/llm.md) |
-| `omh.agent.durable` | Experimental Durable Agent SDK: AgentHarness, Sessions, execution, and recovery | [Durable overview](docs/durable/README.md), [Durable getting started](docs/durable/getting-started.md) |
+| `omh.durable` | Experimental Durable Agent SDK: AgentHarness, Sessions, execution, and recovery | [Durable overview](docs/durable/README.md), [Durable getting started](docs/durable/getting-started.md) |
 | `omh.session_backends.sqlite` | Persistent storage for durable Sessions | [Storage contract](docs/durable/storage.md) |
 
 The [documentation index](docs/README.md) includes detailed contracts and development guides. Durable built-in filesystem and process tools are described under [tools and execution environments](docs/durable/public-api.md#tools-and-execution-environments).

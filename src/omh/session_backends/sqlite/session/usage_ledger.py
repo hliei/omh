@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from omh.agent.durable.session.codec import decode_usage, encode_usage
-from omh.agent.durable.session.types import UsageRow, UsageScan
+from omh.durable.session.codec import decode_usage, encode_usage
+from omh.durable.session.types import UsageRow, UsageScan
 from omh.session_backends.sqlite.sql import SqlQuery, join_sql_fragments, sql
 from omh.session_backends.sqlite.types import SqliteDatabase, SqliteRow, SqliteStatement
 

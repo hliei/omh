@@ -1,6 +1,6 @@
 # Durable Agent SDK (experimental)
 
-`omh.agent.durable` is the experimental Durable Agent SDK within omh. The main SDK entry is the [in-process Agent](../agent.md). An application supplies a Session, model registry, tools, and explicit invocation Context. The harness accepts work, records its restart state, and drives model and tool calls through durable intent and settlement boundaries.
+`omh.durable` is the experimental Durable Agent SDK within omh. The main SDK entry is the [in-process Agent](../agent.md). An application supplies a Session, model registry, tools, and explicit invocation Context. The harness accepts work, records its restart state, and drives model and tool calls through durable intent and settlement boundaries.
 
 This document and its chapters are implementation contracts for maintainers and coding agents. Public declarations and tests remain the place to verify exact signatures and executable behavior. See the [domain glossary](../../CONTEXT.md) for canonical terms.
 
@@ -12,7 +12,7 @@ A Session owns a conversation tree, current values/lists, and an append-only usa
 
 The harness owns process-local execution tasks, registries, hooks, and observers. The host owns the writable Session lifecycle and decides when to resume work. Attaching a harness restores lane projections and discovers open operations without executing them.
 
-`omh.llm` is independently usable. `omh.agent` provides the in-process Agent, and the experimental `omh.agent.durable` namespace builds durable conversation execution on the same LLM layer; `omh.session_backends.sqlite` implements persistent storage. The LLM input `Context` carries messages and tools. The durable invocation `Context` carries cancellation and telemetry and is never persisted.
+`omh.llm` is independently usable. `omh.agent` provides the in-process Agent, and the experimental `omh.durable` namespace builds durable conversation execution on the same LLM layer; `omh.session_backends.sqlite` implements persistent storage. The LLM input `Context` carries messages and tools. The durable invocation `Context` carries cancellation and telemetry and is never persisted.
 
 ## A run through the durable boundaries
 
@@ -53,8 +53,10 @@ The current implementation does not provide cross-Session fork, remote Session t
 ## Import migration
 
 Existing callers that imported `AgentHarness`, Session contracts, or durable
-runtime types from `omh.agent` must import them from `omh.agent.durable`.
-There are no compatibility aliases at the main Agent entry. The namespace move
+runtime types from `omh.agent` or `omh.agent.durable` must import them from
+`omh.durable`. Durable submodules also move under `omh.durable`, such as
+`omh.durable.session` and `omh.durable.runtime`.
+There are no compatibility aliases at the old import paths. The namespace move
 did not change stored records, namespace keys, operation state, or side-effect
 rules; existing Sessions retain their storage and recovery contracts.
 

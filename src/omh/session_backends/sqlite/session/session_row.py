@@ -4,9 +4,9 @@ import json
 from dataclasses import dataclass
 from typing import cast
 
-from omh.agent.durable.session.codec import encode_usage
-from omh.agent.durable.session.types import SessionMetadata
-from omh.agent.durable.utils.usage import empty_usage
+from omh.durable.session.codec import encode_usage
+from omh.durable.session.types import SessionMetadata
+from omh.durable.utils.usage import empty_usage
 from omh.session_backends.sqlite.sql import sql
 from omh.session_backends.sqlite.types import SqliteDatabase, SqliteRow
 

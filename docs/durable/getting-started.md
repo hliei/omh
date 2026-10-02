@@ -1,6 +1,6 @@
 # Durable getting started
 
-This guide uses the experimental `omh.agent.durable` SDK. For the main in-process Agent, start with [Getting started](../getting-started.md). For durable execution and recovery contracts, see the [overview](README.md) and [public surface](public-api.md).
+This guide uses the experimental `omh.durable` SDK. For the main in-process Agent, start with [Getting started](../getting-started.md). For durable execution and recovery contracts, see the [overview](README.md) and [public surface](public-api.md).
 
 ## Install from source
 
@@ -16,7 +16,7 @@ The Python distribution and import name are both `omh`. For development dependen
 
 ## Run a durable agent
 
-The examples in `examples/durable/` use the experimental Durable Agent SDK. They call DeepSeek and require an API key in the process environment. Durable types are imported from the experimental `omh.agent.durable` namespace:
+The examples in `examples/durable/` use the experimental Durable Agent SDK. They call DeepSeek and require an API key in the process environment. Durable types are imported from the experimental `omh.durable` namespace:
 
 ```bash
 export DEEPSEEK_API_KEY="your-api-key"
@@ -32,7 +32,7 @@ The built-in provider sends requests to `https://api.deepseek.com`. An HTTP 401 
 ```python
 import asyncio
 
-from omh.agent.durable import (
+from omh.durable import (
     BACKGROUND_CONTEXT,
     AgentHarness,
     AgentHarnessOptions,
@@ -102,7 +102,7 @@ def print_delta(event: HarnessEvent, context: Context) -> None:
 unsubscribe = harness.events.on("message_update", print_delta)
 ```
 
-Import `HarnessEvent` and `Context` from `omh.agent.durable`. Events arrive while `lane.prompt` is awaiting completion. Call `unsubscribe()` when finished, and still check the terminal operation status: streamed text may belong to an attempt that later fails or retries. For an initial snapshot plus subsequent events, use `lane.watch()`.
+Import `HarnessEvent` and `Context` from `omh.durable`. Events arrive while `lane.prompt` is awaiting completion. Call `unsubscribe()` when finished, and still check the terminal operation status: streamed text may belong to an attempt that later fails or retries. For an initial snapshot plus subsequent events, use `lane.watch()`.
 
 ## Give the agent a tool
 
@@ -125,7 +125,7 @@ The callable takes `(tool_call_id, arguments, on_update, tool_context, invocatio
 Register a context transformation before prompting:
 
 ```python
-from omh.agent.durable import Context, TransformContextResult
+from omh.durable import Context, TransformContextResult
 
 
 def assistant_instructions(event: object, context: Context) -> TransformContextResult:
@@ -146,7 +146,7 @@ A Session stores history; a named Branch selects a path through it. Save this ex
 ```python
 import asyncio
 
-from omh.agent.durable import BACKGROUND_CONTEXT, MemorySessionRepo, SessionCreateOptions
+from omh.durable import BACKGROUND_CONTEXT, MemorySessionRepo, SessionCreateOptions
 from omh.llm import UserMessage
 
 
@@ -178,7 +178,7 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from omh.agent.durable import BACKGROUND_CONTEXT, SessionCreateOptions
+from omh.durable import BACKGROUND_CONTEXT, SessionCreateOptions
 from omh.llm import UserMessage
 from omh.session_backends.sqlite import SqliteSessionRepo
 

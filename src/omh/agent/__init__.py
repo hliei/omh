@@ -1,7 +1,7 @@
 """Traditional in-process Agent API.
 
 ``omh.agent`` is the main entry point for the in-process Agent. Persistent
-execution lives in the experimental :mod:`omh.agent.durable` namespace and is
+execution lives in the experimental :mod:`omh.durable` namespace and is
 not imported from here.
 """
 

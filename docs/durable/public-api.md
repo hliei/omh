@@ -2,7 +2,7 @@
 
 Part of the experimental [Durable Agent SDK](README.md).
 
-Public declarations live in [agent_harness.py](../../src/omh/agent/durable/agent_harness.py); exports live in [omh.agent.durable](../../src/omh/agent/durable/__init__.py). Signatures use snake_case and async/await. `Result`/`Ok`/`Err` represent expected interface outcomes; durable operation results and runtime faults are separate channels. See [ADR-0002](../adr/0002-python-api-and-storage-boundaries.md).
+Public declarations live in [agent_harness.py](../../src/omh/durable/agent_harness.py); exports live in [omh.durable](../../src/omh/durable/__init__.py). Signatures use snake_case and async/await. `Result`/`Ok`/`Err` represent expected interface outcomes; durable operation results and runtime faults are separate channels. See [ADR-0002](../adr/0002-python-api-and-storage-boundaries.md).
 
 ## Running and observing
 
@@ -51,5 +51,5 @@ Skill ignore handling consumes `.gitignore`, `.ignore`, and `.fdignore`, but is 
 
 ## Implementation and checks
 
-- [Events](../../src/omh/agent/durable/events.py), [hooks](../../src/omh/agent/durable/hooks.py), [telemetry](../../src/omh/agent/durable/telemetry.py), [execution environment](../../src/omh/agent/durable/execution_env.py), [tools](../../src/omh/agent/durable/tools/), [resource registry](../../src/omh/agent/durable/runtime/resource_registry.py).
-- [Observation tests](../../tests/agent/durable/runtime/test_observation.py), [built-in tool integration](../../tests/agent/durable/runtime/test_builtin_tools.py), [resource invocation tests](../../tests/agent/durable/runtime/test_resources.py), [skill loaders](../../tests/agent/durable/test_skills.py), [template tests](../../tests/agent/durable/test_prompt_templates.py).
+- [Events](../../src/omh/durable/events.py), [hooks](../../src/omh/durable/hooks.py), [telemetry](../../src/omh/durable/telemetry.py), [execution environment](../../src/omh/durable/execution_env.py), [tools](../../src/omh/durable/tools/), [resource registry](../../src/omh/durable/runtime/resource_registry.py).
+- [Observation tests](../../tests/durable/runtime/test_observation.py), [built-in tool integration](../../tests/durable/runtime/test_builtin_tools.py), [resource invocation tests](../../tests/durable/runtime/test_resources.py), [skill loaders](../../tests/durable/test_skills.py), [template tests](../../tests/durable/test_prompt_templates.py).
