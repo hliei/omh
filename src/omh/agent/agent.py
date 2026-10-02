@@ -10,9 +10,10 @@ import asyncio
 import copy
 import inspect
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import cast
 
 from omh.agent._async import maybe_await
@@ -21,6 +22,7 @@ from omh.agent.data import snapshot_messages
 from omh.agent.events import (
     AgentEndEvent,
     AgentEvent,
+    AgentSettledEvent,
     HistoryCommitEvent,
     MessageEndEvent,
     MessageStartEvent,
@@ -39,6 +41,7 @@ from omh.agent.hooks import (
     AfterToolCall,
     AgentLoopTurnUpdate,
     AgentTurnContext,
+    AgentTurnDecision,
     BeforeToolCall,
     FinishTurn,
     GetApiKey,
@@ -90,6 +93,11 @@ class _ActiveRun:
     idle: asyncio.Future[None]
     task: asyncio.Task[None] | None = None
     ending: bool = False
+    messages: list[AgentMessage] = field(default_factory=list)
+    settling: bool = False
+    pending_prompts: deque[list[AgentMessage]] = field(default_factory=deque)
+    notification_error: BaseException | None = None
+    stop: bool = False
 
 
 _current_run: ContextVar[_ActiveRun | None] = ContextVar("agent_current_run", default=None)
@@ -345,6 +353,10 @@ class Agent:
         """Start a new prompt from text, a single message, or a batch of messages."""
         self._ensure_open()
         if self._active_run is not None:
+            run = self._active_run
+            if run.settling and _current_run.get() is run:
+                run.pending_prompts.append(self._normalize_prompt_input(message, images))
+                return
             raise RuntimeError(
                 "Agent is already processing a prompt. Wait for completion before prompting again."
             )
@@ -409,12 +421,7 @@ class Agent:
         self,
         executor: Callable[[AbortSignal], Awaitable[None]],
     ) -> _ActiveRun:
-        self._state._is_streaming = True
-        self._state._is_busy = True
-        self._state._activity_kind = "dialogue"
-        self._state._streaming_message = None
-        self._state._error_message = None
-
+        self._reset_run_state()
         run = _ActiveRun(
             abort_controller=AbortController(),
             idle=asyncio.get_running_loop().create_future(),
@@ -424,18 +431,89 @@ class Agent:
         run.task.add_done_callback(_retrieve_task_exception)
         return run
 
+    def _reset_run_state(self) -> None:
+        self._state._is_streaming = True
+        self._state._is_busy = True
+        self._state._activity_kind = "dialogue"
+        self._state._streaming_message = None
+        self._state._error_message = None
+
     async def _runner(self, executor: Callable[[AbortSignal], Awaitable[None]], run: _ActiveRun) -> None:
-        signal = run.abort_controller.signal
-        token = _current_run.set(run)
+        first_error: BaseException | None = None
         try:
-            await executor(signal)
-        except Exception as error:  # noqa: BLE001 - traditional error boundary
-            if run.ending:
-                raise
-            await self._handle_run_failure(error, signal.aborted)
+            while True:
+                signal = run.abort_controller.signal
+                token = _current_run.set(run)
+                try:
+                    try:
+                        await self._run_dialogue(executor, run)
+                    except (Exception, asyncio.CancelledError) as error:
+                        if run.notification_error is not None:
+                            raise run.notification_error
+                        if run.ending or isinstance(error, asyncio.CancelledError):
+                            raise
+                        await self._handle_run_failure(error, signal.aborted)
+                except (Exception, asyncio.CancelledError) as error:
+                    reported_error = error if run.notification_error is None else run.notification_error
+                    if run.notification_error is not None:
+                        if not run.ending:
+                            self._state._error_message = str(reported_error)
+                    if first_error is None:
+                        first_error = reported_error
+                finally:
+                    if not run.ending:
+                        try:
+                            await self._process_events(AgentEndEvent(messages=list(run.messages)))
+                        except (Exception, asyncio.CancelledError) as error:
+                            if first_error is None:
+                                first_error = error
+                    try:
+                        run.settling = True
+                        self._state._clear_pending_tool_calls()
+                        await self._notify_listeners(AgentSettledEvent(
+                            messages=run.messages, aborted=signal.aborted,
+                            error_message=self._state.error_message,
+                        ))
+                    except (Exception, asyncio.CancelledError) as error:
+                        if first_error is None:
+                            first_error = error
+                    finally:
+                        run.settling = False
+                        _current_run.reset(token)
+                if self._close_task is not None or not run.pending_prompts:
+                    if run.pending_prompts and first_error is None:
+                        first_error = RuntimeError("Agent closed before an accepted prompt could start.")
+                    run.pending_prompts.clear()
+                    break
+                messages = run.pending_prompts.popleft()
+                run = _ActiveRun(
+                    abort_controller=AbortController(), idle=run.idle,
+                    task=run.task, pending_prompts=run.pending_prompts,
+                )
+                self._active_run = run
+                self._reset_run_state()
+
+                async def executor(signal: AbortSignal) -> None:
+                    await self._run_prompt_messages(messages, signal)
+            if first_error is not None:
+                raise first_error
         finally:
             self._finish_run(run)
-            _current_run.reset(token)
+
+    async def _run_dialogue(
+        self, executor: Callable[[AbortSignal], Awaitable[None]], run: _ActiveRun,
+    ) -> None:
+        signal = run.abort_controller.signal
+        await executor(signal)
+        while not signal.aborted and not run.stop:
+            messages = self._steering_queue.drain()
+            steering = bool(messages)
+            if not messages:
+                messages = self._follow_up_queue.drain()
+            if not messages:
+                break
+            run.ending = False
+            await self._run_prompt_messages(messages, signal, skip_initial_steering_poll=steering)
 
     def _finish_run(self, run: _ActiveRun) -> None:
         self._state._is_streaming = False
@@ -477,7 +555,7 @@ class Agent:
             on_payload=self.on_payload,
             on_response=self.on_response,
             on_provider_stream_event=self.on_provider_stream_event,
-            finish_turn=self.finish_turn,
+            finish_turn=self._finish_turn,
             prepare_request=self.prepare_request,
             prepare_next_turn=self._build_prepare_next_turn(),
             get_steering_messages=get_steering_messages,
@@ -488,6 +566,18 @@ class Agent:
             max_retry_delay_ms=self.max_retry_delay_ms,
         )
         return isolate_loop_config(config, self.convert_to_llm, self.transform_context)
+
+    async def _finish_turn(
+        self, context: AgentTurnContext, signal: AbortSignal | None,
+    ) -> AgentTurnDecision | None:
+        if self.finish_turn is None:
+            return None
+        can_end = getattr(context.message, "stop_reason", None) not in {"error", "aborted"}
+        decision = await maybe_await(self.finish_turn(context, signal))
+        if decision == "end" and can_end:
+            assert self._active_run is not None
+            self._active_run.stop = True
+        return decision
 
     async def _run_prompt_messages(
         self,
@@ -562,6 +652,8 @@ class Agent:
             entry = self._history.append_message(message)
             event = replace(event, message=message)
             self._reduce_state(event)
+            assert self._active_run is not None
+            self._active_run.messages.extend(snapshot_messages([message]))
             await self._notify_listeners(HistoryCommitEvent(
                 conversation_id=self._history.conversation_id, entries=(entry,), leaf_id=entry.id,
             ))
@@ -575,9 +667,16 @@ class Agent:
             raise RuntimeError("Agent listener invoked outside active run")
         signal = run.abort_controller.signal
         for listener in list(self._listeners):
-            result = listener(copy.deepcopy(event), signal)
-            if inspect.isawaitable(result):
-                await result
+            try:
+                result = listener(copy.deepcopy(event), signal)
+                if inspect.isawaitable(result):
+                    await result
+            except BaseException as error:
+                if run.notification_error is None:
+                    run.notification_error = error
+                if not run.ending and not run.settling:
+                    run.abort_controller.abort()
+                raise
 
     def _reduce_state(self, event: AgentEvent) -> None:
         if isinstance(event, (MessageStartEvent, MessageUpdateEvent)):
@@ -591,6 +690,9 @@ class Agent:
             self._state._remove_pending_tool_call(event.tool_call_id)
         elif isinstance(event, TurnEndEvent):
             message = event.message
+            if getattr(message, "stop_reason", None) in {"error", "aborted", "length"}:
+                assert self._active_run is not None
+                self._active_run.stop = True
             error_message = getattr(message, "error_message", None)
             if getattr(message, "role", None) == "assistant" and error_message:
                 self._state._error_message = error_message

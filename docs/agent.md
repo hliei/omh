@@ -242,13 +242,13 @@ custom `StreamFn` receives the full normalized `TranscriptContext` and the
 | `tools` | Read-only tuple of tool snapshots; execution callbacks remain host-owned. |
 | `system_prompt` | Read-only prompt replayed from the transcript's system messages. |
 | `model`, `thinking_level` | Read-only observations of the initial execution configuration. |
-| `is_busy` | True from activity acceptance through preparation, model/tool execution, and terminal listeners. |
+| `is_busy` | True from activity acceptance through preparation, execution, terminal listeners, and their accepted prompt chain. |
 | `activity_kind` | `"dialogue"` while a prompt or continuation is unsettled; otherwise `None`. |
 | `is_streaming` | True throughout the dialogue activity, including request preparation and terminal listeners. |
 | `is_closed` | True after permanent closure finishes; closure rejects new work from its start. |
 | `streaming_message` | Current partial assistant message, if any. |
 | `pending_tool_calls` | Tool call ids currently executing, tracked from tool execution events. |
-| `error_message` | Error text from the most recent failed or aborted turn. |
+| `error_message` | Error text from the most recent failed/aborted turn or ordinary notification failure. Final notification failure preserves the completed outcome. |
 
 All state fields above are read-only. History and state reads, accepted inputs,
 queue previews, hook message views, provider requests, and each listener's event
@@ -259,7 +259,7 @@ conversation. Long-lived provider and tool resources retain host ownership.
 
 ## Running and continuing
 
-`await agent.prompt(text, images=None)` accepts text, a single SDK message, or a message batch. `await agent.continue_()` continues from an existing transcript whose last message is a user or tool-result message; it rejects empty or system-only history. A busy Agent rejects `prompt` and `continue_`. Create another Agent to start a new conversation; `reset()` has been removed.
+`await agent.prompt(text, images=None)` accepts text, a single SDK message, or a message batch. `await agent.continue_()` continues from an existing transcript whose last message is a user or tool-result message; it rejects empty or system-only history. A busy Agent rejects ordinary `prompt` and `continue_` calls. A prompt awaited inside an `agent_settled` listener only confirms acceptance; see [events and subscribers](#events-and-subscribers) for scheduling and waiting rules. Create another Agent to start a new conversation; `reset()` has been removed.
 
 An assistant tail normally cannot be continued. It is accepted only when an input queue supplies the next message: steering first, then follow-up. A steering continuation skips the loop's initial steering poll so a second queued steering message is not folded into the same request; with neither queue populated, `continue_()` raises the same rejection as the low-level loop.
 
@@ -275,6 +275,12 @@ Both queues are FIFO. `agent.steering_mode` and `agent.follow_up_mode` select ho
 Queue consumption follows the loop's scheduling boundaries. The initial poll injects steering queued before the run starts. After each completed turn, the loop polls steering; a natural tool continuation or a pending steering message keeps the turn going without an extra request. Steering that arrives while `prepare_next_turn` runs is picked up only when the earlier poll returned nothing, so `one-at-a-time` never consumes two messages in the same turn. A truncated or error turn leaves unconsumed queues in place, and an aborted run does not drain them; only consumption or explicit clearing removes them.
 
 `finish_turn`'s `"end"` decision still stops without polling either queue. Its `"continue"` decision guarantees at least one next request, which a natural tool continuation, a steering message, or a follow-up can satisfy without an additional request.
+
+Input queued during a successful `agent_end` notification is consumed before
+the dialogue settles, starting another loop with the same activity signal.
+Steering still takes priority and respects its mode. This produces multiple
+`agent_start`/`agent_end` cycles and one final `agent_settled`. Abort and a valid
+`finish_turn="end"` prevent this continuation and preserve the queues.
 
 Queued messages use the same validation, isolation, and conversion rules as a
 prompt. Consumed input enters history, and custom content enters the default
@@ -401,16 +407,60 @@ can replace one between runs.
 
 ## Events and subscribers
 
-`agent.subscribe(listener)` registers a listener and returns an unsubscribe function. After each event the Agent updates public state, then awaits listeners in subscription order, giving each listener an independent event snapshot. `agent_end` is the final event, but `agent.state.is_streaming` stays true and `wait_for_idle()` stays pending until its listeners settle.
+`agent.subscribe(listener)` registers a synchronous or asynchronous listener
+and returns an unsubscribe function. After each event the Agent updates public
+state, then awaits listeners individually in subscription order. Each receives
+an independent event snapshot and the current activity's cancellation signal.
+A failure skips that event's remaining listeners.
 
-A failing terminal listener stops the remaining notifications and propagates
-to the prompt/continuation caller and any close callers awaiting that run.
-Completed history and results remain intact; the Agent does not emit a second
-error turn or repeat `agent_end`. Internal cleanup still releases idle waiters.
-When tool or progress notifications fail, every already started tool and
-accepted progress notification settles before the Agent reports idle or closed.
+`agent_end` ends one loop. `AgentSettledEvent` (`type="agent_settled"`) ends the
+whole dialogue activity after its loops and execution cleanup. It contains
+`messages`, an isolated snapshot of messages committed during this activity
+(excluding earlier history), `aborted`, and `error_message`, the final activity
+error text or `None`. History and effective context already include those
+commits. `is_busy` and `is_streaming` stay true throughout its awaited listeners.
+The standalone loop emits `agent_end` and does not emit `agent_settled`.
 
-The conversation lifecycle emits `agent_start`, `turn_start`, `message_start`, `message_update`, `history_commit`, `message_end`, `turn_end`, and `agent_end`. Assistant stream deltas arrive as `message_update` with the provider event attached. Tool execution emits `tool_execution_start`, `tool_execution_update` for live progress, and `tool_execution_end`; the resulting tool-result message uses the ordinary message lifecycle.
+Inside an awaited `agent_settled` listener, `await agent.prompt(...)` validates
+and copies the input, confirms acceptance, and immediately returns `None`.
+All settled listeners finish before accepted prompts execute serially in FIFO
+order. Each is a new activity with its own signal and settled event. Ordinary
+`prompt`/`continue_` callers and existing `wait_for_idle()` waiters include this
+entire chain; no idle window appears between activities. Prompt calls in
+`agent_end` or other ordinary events still raise the busy rejection, as do
+calls from outside the settled callback while the Agent is busy.
+
+Ordinary notification failures stop progression and cooperatively abort the
+activity. Accepted model streams, started tools, and progress notifications
+settle before final notification and idle/closure. The original exception is
+reported to the caller; committed history stays intact and no model-failure
+message is fabricated. General hook/model exceptions retain their existing
+assistant error lifecycle. Notification failures are never retried as provider
+errors.
+
+An `agent_end` or `agent_settled` listener failure propagates without changing
+the completed result, rewriting its error state, or repeating either event.
+Earlier callbacks' accepted prompts still execute even if later callbacks
+fail. The first failure is reported after the chain finishes; subsequent
+notification failures cannot strand idle or close waiters. Aborting the old
+activity does not abort separately accepted prompts. Permanent close stops
+prompts that have not started; if no earlier exception exists, the original
+caller and close callers receive a `RuntimeError` explaining that the Agent
+closed before an accepted prompt could start. Inputs stopped this way never
+enter history or emit execution events.
+
+The conversation lifecycle emits `agent_start`, `turn_start`, `message_start`,
+`message_update`, `history_commit`, `message_end`, `turn_end`, `agent_end`, and
+finally `agent_settled`. Assistant stream deltas arrive as `message_update` with
+the provider event attached. Tool execution emits `tool_execution_start`,
+`tool_execution_update` for live progress, and `tool_execution_end`; the
+resulting tool-result message uses the ordinary message lifecycle. Try the
+offline [settled listener example](../examples/settled.py).
+
+Migration: use `agent_settled` to observe final dialogue completion or schedule
+the next prompt. Keep `agent_end` for per-loop observation. Ordinary listener
+errors now raise to prompt/continuation callers and do not append synthetic
+assistant errors; handle saving errors at the application boundary.
 
 ## Cancellation
 
@@ -457,7 +507,8 @@ Awaiting `close()` or `wait_for_idle()` from the current activity's own callback
 or child work raises `RuntimeError`, since completion depends on that work
 returning. Callers outside the activity can await cleanup; callbacks can use
 the non-waiting `abort()` signal. Ordinary callback prompts still encounter the
-busy rejection.
+busy rejection; the `agent_settled` prompt acceptance rule above is the final
+notification exception. Awaiting idle or close there still rejects self-wait.
 
 Run the offline [lifecycle example](../examples/lifecycle.py) with
 `python examples/lifecycle.py` to see waiter cancellation, permanent closure,

@@ -295,8 +295,9 @@ async def test_close_waits_for_sibling_tools_after_a_listener_failure() -> None:
     assert not idle.done()
     assert agent.state.is_busy
     slow.release.set()
-    await asyncio.wait_for(running, 1)
-    await asyncio.wait_for(closing, 1)
+    for waiter in (running, closing):
+        with pytest.raises(RuntimeError, match="tool notification failed"):
+            await asyncio.wait_for(waiter, 1)
     await asyncio.wait_for(idle, 1)
     assert agent.state.is_closed
     assert not agent.state.pending_tool_calls
