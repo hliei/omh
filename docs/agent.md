@@ -43,8 +43,9 @@ system messages, not by a separate field.
 
 ## Application messages and context conversion
 
-`AgentMessage` is the standard LLM message union plus the SDK dataclass
-`CustomAgentMessage`. It has a fixed `role="custom"`, `custom_type`, text or
+`AgentMessage` is the standard LLM message union plus the SDK dataclasses
+`CustomAgentMessage` and `CompactionSummaryMessage`. The custom message has a
+fixed `role="custom"`, `custom_type`, text or
 text/image `content`, `display`, JSON `details`, and a millisecond `timestamp`.
 Custom messages stay in history and effective context; default conversion maps
 their content to a user message. `custom_type`, `display`, and `details` remain
@@ -82,10 +83,11 @@ conversation-unique short `id`, `parent_id`, and UTC `timestamp`. The root has
 no parent; subsequent entries point to the previous leaf and advance it.
 Sequence and parent relationships determine order, not timestamp sorting.
 
-The currently delivered entry types are `MessageHistoryEntry` (`message`),
+The entry types are `MessageHistoryEntry` (`message`),
 `CustomMessageHistoryEntry` (`custom_message`), `ModelChangeHistoryEntry`
 (`model_change`), and `ThinkingLevelChangeHistoryEntry`
-(`thinking_level_change`). Standard messages retain their complete SDK data.
+(`thinking_level_change`), plus `CompactionHistoryEntry` (`compaction`) and
+`ContextEditHistoryEntry` (`context_edit`). Standard messages retain their complete SDK data.
 Custom entries hold `custom_type`, `content`, `display`, and `details`; their UTC
 timestamp represents the custom message's millisecond timestamp. Model records
 contain only `provider` and `model_id`; thinking records contain the selected
@@ -96,8 +98,88 @@ message, and seed messages are recorded before any activity or subscription.
 An unconfigured placeholder model does not create a model-choice record. A host
 must save the initial full history explicitly; subscriptions do not replay
 earlier commits. Seeds create new record identities and are not a history
-restore interface. The current SDK does not yet provide history restoration or
-compaction.
+restore interface.
+
+### Restoring decoded history
+
+`validate_history(history)` accepts an already decoded `AgentHistory`, checks all
+records (including records outside the selected path), and returns
+`AgentHistorySettings`. Its `provider` and `model_id` identify the latest model
+on the leaf's parent chain: both model-change records and assistant messages
+participate. `thinking_level` defaults to `"off"`; `has_thinking_level` reports
+whether a thinking-change record exists. Assistant requested thinking does not
+set this preference. Sequence and relationships take precedence over timestamps.
+
+The host resolves the saved model identity against its current model catalog and
+credentials, chooses and reports any fallback, then supplies that executable
+`Model` and current `StreamFn`/tools in `AgentOptions`:
+
+```python
+from omh.agent import Agent, AgentInitialState, AgentOptions, validate_history
+
+settings = validate_history(decoded_history)
+# Host policy: explicit model, usable saved choice, then a reported fallback.
+model = resolve_model(settings.provider, settings.model_id)
+restored = Agent.from_history(
+    decoded_history,
+    AgentOptions(
+        stream_fn=my_stream_fn,
+        initial_state=AgentInitialState(model=model, tools=current_tools),
+    ),
+)
+assert restored.history == decoded_history
+await restored.prompt("Continue with the current tools.")
+```
+
+`Agent.from_history` validates again and isolates the input. It preserves the
+conversation identity, creation time, every raw record, IDs, parents, and leaf.
+It starts idle with empty queues, no active signal, pending tools, or prior error;
+construction does not call the model or execute tools. Historical declarations
+are data and cannot recreate callbacks or replay side effects. Current host
+tools synchronize their declaration delta before the next request. Historical
+system instructions remain the restored baseline; the constructor's
+`initial_state.system_prompt` is only a new-conversation seed.
+
+`initial_state.messages` must be omitted, including an empty list, and an explicit
+`conversation_id` must match the saved identity. The host-supplied model is the
+execution model; omitting it leaves the inspectable placeholder, without
+resolving a provider implicitly. `AgentInitialState.thinking_level=None` now
+means unspecified: new Agents default to off, restored Agents use the saved
+preference. Explicit `"off"` overrides it. Restored thinking is clamped to the
+execution model's capabilities. Neither overrides nor clamping append metadata
+records; missing historical thinking records remain missing.
+
+### Compaction and context edits
+
+A `CompactionHistoryEntry` stores `summary`, `first_kept_entry_id`,
+`tokens_before`, optional `usage`, JSON `details`, and a complete
+`system_message` checkpoint (`None` when there is no system state). Effective
+context uses the latest checkpoint and one derived `CompactionSummaryMessage`,
+then the retained non-system messages from first-kept to that compaction and the
+records after it. Older compactions in the retained range contribute no extra
+summary or checkpoint. Post-checkpoint system content, named sections, and tool
+declarations continue replaying normally. The summary message has `summary`,
+`tokens_before`, and a millisecond `timestamp`, with role `"compactionSummary"`.
+Default conversion sends it as user text with a summary explanation. It is
+derived context, never an additional raw message record.
+
+A `ContextEditHistoryEntry` names an earlier editable `target_id` and a
+`replacement`. `None` omits that message; `ContextEditReplacement(content=...)`
+changes only its projected content. A string replacement for an assistant or
+tool result becomes a text block. Content must fit the target's SDK message
+type. The last edit within the current context range wins. The original
+message's content and metadata remain in full history. System messages and
+metadata/compaction entries cannot be edit targets.
+
+Validation raises `ValueError` with a record ID and field or relationship for
+duplicate IDs, missing/cyclic parents, nonexistent leaf, first-kept or edit
+targets outside the record's ancestor chain, non-editable targets, unknown
+records, non-UTC record timestamps, and mismatched SDK payload types. It never
+skips semantic errors to guess a usable projection. `leaf_id=None` selects an
+empty context while preserving all records. The SDK defines decoded data and
+restoration; applications own JSON codecs and file I/O. Compaction execution
+and editing commands are not yet exposed. See the runnable offline
+[history example](../examples/history.py) for save-by-snapshot and restoration.
 
 Final messages first commit to complete history and effective context, then emit
 `HistoryCommitEvent` (`history_commit`) before `message_end`. The event contains

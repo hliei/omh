@@ -7,7 +7,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
-from omh.llm.types import AbortSignal, ImageContent, JsonValue, Message, TextContent
+from omh.llm.types import (
+    AbortSignal,
+    AssistantContent,
+    ImageContent,
+    JsonValue,
+    Message,
+    TextContent,
+)
 
 
 @runtime_checkable
@@ -30,7 +37,27 @@ class CustomAgentMessage:
     role: Literal["custom"] = field(default="custom", init=False)
 
 
-AgentMessage = Message | CustomAgentMessage
+@dataclass(slots=True)
+class CompactionSummaryMessage:
+    """Effective-context summary derived from a compaction record, never a raw message."""
+
+    summary: str
+    tokens_before: int
+    timestamp: int
+    role: Literal["compactionSummary"] = field(default="compactionSummary", init=False)
+
+
+ContextEditableContent = str | list[TextContent | ImageContent | AssistantContent]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextEditReplacement:
+    """Replace only a target message's content in effective context."""
+
+    content: ContextEditableContent
+
+
+AgentMessage = Message | CustomAgentMessage | CompactionSummaryMessage
 LoopMessage = Message | LoopApplicationMessage
 
 #: Converts application messages to LLM messages before transcript normalization.

@@ -37,7 +37,7 @@ class AgentInitialState:
 
     system_prompt: str | None = None
     model: Model | None = None
-    thinking_level: ThinkingLevel = "off"
+    thinking_level: ThinkingLevel | None = None
     tools: list[AgentTool] | None = None
     messages: list[AgentMessage] | None = None
 
@@ -56,7 +56,7 @@ class AgentState:
         if (not self._messages or self._messages[0].role != "system") and initial_message is not None:
             self._messages.insert(0, initial_message)
         self._model = copy.deepcopy(initial.model if initial.model is not None else DEFAULT_MODEL)
-        self._thinking_level: ThinkingLevel = initial.thinking_level
+        self._thinking_level: ThinkingLevel = initial.thinking_level or "off"
         self._is_streaming = False
         self._streaming_message: AgentMessage | None = None
         self._error_message: str | None = None

@@ -1,4 +1,4 @@
-"""Inspect a complete Agent/tool conversation offline: python examples/history.py."""
+"""Inspect and restore decoded Agent history offline: python examples/history.py."""
 
 import asyncio
 
@@ -10,6 +10,7 @@ from omh.agent import (
     AgentToolResult,
     CustomAgentMessage,
     HistoryCommitEvent,
+    validate_history,
 )
 from omh.llm.types import (
     AssistantMessage,
@@ -78,6 +79,20 @@ async def main() -> None:
     assert agent.state.messages[-1].content == [TextContent(text="The answer is 42.")]
     print(f"Conversation: {agent.history.conversation_id}")
     print(f"Complete records: {len(recorded)}; requests: {requests}")
+    saved = agent.history  # The application owns serialization and file I/O.
+    settings = validate_history(saved)
+    assert (settings.provider, settings.model_id) == (model.provider, model.id)
+    # This offline host already owns the selected model and current dependencies.
+    restored = Agent.from_history(saved, AgentOptions(
+        stream_fn=stream_fn, initial_state=AgentInitialState(model=model),
+    ))
+    assert restored.history == saved
+    assert not restored.state.is_streaming
+    assert requests == 2  # Restoration does no work and never replays the tool.
+    await restored.prompt("What was the answer?")
+    assert restored.history.entries[:len(saved.entries)] == saved.entries
+    assert restored.history.conversation_id == saved.conversation_id
+    print(f"Restored records: {len(restored.history.entries)}; requests: {requests}")
 
 
 if __name__ == "__main__":
