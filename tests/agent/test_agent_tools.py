@@ -11,6 +11,7 @@ from omh.agent import (
     AgentEvent,
     AgentInitialState,
     AgentOptions,
+    AgentSettledEvent,
     AgentStartEvent,
     AgentTool,
     AgentToolResult,
@@ -250,6 +251,7 @@ async def test_tool_call_roundtrip_executes_and_continues_model() -> None:
         MessageEndEvent,
         TurnEndEvent,
         AgentEndEvent,
+        AgentSettledEvent,
     ]
     start_event = next(event for event in events if isinstance(event, ToolExecutionStartEvent))
     assert start_event.args == {"value": "7"}

@@ -1,6 +1,6 @@
 # Agent 保留被等待的公共事件监听器
 
-状态：设计已接受，尚未实施。沿用 [ADR-0010](0010-agent-conversation-history-and-lifetime.md) 的内层循环与最终收束事件区分；当前已交付订阅行为见 [Agent 契约](../agent.md#events-and-subscribers)。
+状态：部分实施。顺序 awaited 公共监听器、最终 agent_settled、终结 prompt 后续链、故障传播及自我等待拒绝已交付；手动 compaction_end 规则待压缩执行接入。沿用 [ADR-0010](0010-agent-conversation-history-and-lifetime.md) 的内层循环与最终收束事件区分；当前已交付订阅行为见 [Agent 契约](../agent.md#events-and-subscribers)。
 
 Agent 的公共事件订阅继续支持同步、异步监听器，并按订阅顺序逐个等待。相比仅同步通知、将订阅方异步工作完全交给宿主管理，这保留已有 Python 嵌入式接口的等待契约，使监听器明确等待的工作进入事件处理和收尾范围。代价是慢监听器会延长运行或收尾，完成回调中的工作提交必须定义安全的接纳规则。
 

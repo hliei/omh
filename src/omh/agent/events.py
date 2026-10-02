@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from omh.agent.history import AgentHistoryEntry
-from omh.agent.messages import LoopMessage
+from omh.agent.messages import AgentMessage, LoopMessage
 from omh.agent.tools import AgentToolResult
 from omh.llm.types import AbortSignal, AssistantMessageEvent, ToolResultMessage
 
@@ -22,6 +22,14 @@ class AgentStartEvent:
 class AgentEndEvent:
     messages: list[LoopMessage]
     type: Literal["agent_end"] = "agent_end"
+
+
+@dataclass(slots=True)
+class AgentSettledEvent:
+    messages: list[AgentMessage]
+    aborted: bool
+    error_message: str | None
+    type: Literal["agent_settled"] = "agent_settled"
 
 
 @dataclass(slots=True)
@@ -92,6 +100,7 @@ class ToolExecutionEndEvent:
 AgentEvent = (
     AgentStartEvent
     | AgentEndEvent
+    | AgentSettledEvent
     | TurnStartEvent
     | TurnEndEvent
     | MessageStartEvent

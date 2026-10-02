@@ -7,6 +7,8 @@ message in the run result without appending it to the context again.
 
 from __future__ import annotations
 
+import asyncio
+
 from omh.agent._async import call_with_signal
 from omh.agent.context import AgentContext
 from omh.agent.events import (
@@ -120,37 +122,43 @@ async def stream_assistant_response(
     partial_message: AssistantMessage | None = None
     added_partial = False
 
-    async for event in response:
-        event_type = event.type
-        if isinstance(event, StartEvent):
-            partial_message = event.partial
-            context.messages.append(partial_message)
-            added_partial = True
-            await emit_event(emit, MessageStartEvent(message=partial_message))
-        elif event_type in _UPDATE_EVENT_TYPES:
-            partial = getattr(event, "partial", None)
-            if partial_message is not None and partial is not None:
-                partial_message = partial
-                context.messages[-1] = partial_message
-                await emit_event(
-                    emit,
-                    MessageUpdateEvent(message=partial_message, assistant_message_event=event),
-                )
-        elif event_type in {"done", "error"}:
-            final_message = _record_thinking_level(await response.result(), config)
-            if added_partial:
-                context.messages[-1] = final_message
-            else:
-                context.messages.append(final_message)
-                await emit_event(emit, MessageStartEvent(message=final_message))
-            await emit_event(emit, MessageEndEvent(message=final_message))
-            return final_message
+    try:
+        async for event in response:
+            event_type = event.type
+            if isinstance(event, StartEvent):
+                partial_message = event.partial
+                context.messages.append(partial_message)
+                added_partial = True
+                await emit_event(emit, MessageStartEvent(message=partial_message))
+            elif event_type in _UPDATE_EVENT_TYPES:
+                partial = getattr(event, "partial", None)
+                if partial_message is not None and partial is not None:
+                    partial_message = partial
+                    context.messages[-1] = partial_message
+                    await emit_event(
+                        emit,
+                        MessageUpdateEvent(message=partial_message, assistant_message_event=event),
+                    )
+            elif event_type in {"done", "error"}:
+                final_message = _record_thinking_level(await response.result(), config)
+                if added_partial:
+                    context.messages[-1] = final_message
+                else:
+                    context.messages.append(final_message)
+                    await emit_event(emit, MessageStartEvent(message=final_message))
+                await emit_event(emit, MessageEndEvent(message=final_message))
+                return final_message
 
-    final_message = _record_thinking_level(await response.result(), config)
-    if added_partial:
-        context.messages[-1] = final_message
-    else:
-        context.messages.append(final_message)
-        await emit_event(emit, MessageStartEvent(message=final_message))
-    await emit_event(emit, MessageEndEvent(message=final_message))
-    return final_message
+        final_message = _record_thinking_level(await response.result(), config)
+        if added_partial:
+            context.messages[-1] = final_message
+        else:
+            context.messages.append(final_message)
+            await emit_event(emit, MessageStartEvent(message=final_message))
+        await emit_event(emit, MessageEndEvent(message=final_message))
+        return final_message
+    finally:
+        # An Agent notification failure aborts the signal. Keep the accepted
+        # stream owned until its producer reports completion and cleanup.
+        if signal is not None and signal.aborted:
+            await asyncio.shield(response.result())

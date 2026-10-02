@@ -15,6 +15,7 @@ from omh.agent import (
     AgentInitialState,
     AgentMessage,
     AgentOptions,
+    AgentSettledEvent,
     AgentStartEvent,
     AgentTool,
     HistoryCommitEvent,
@@ -162,6 +163,7 @@ async def test_prompt_runs_without_session_and_exposes_lifecycle() -> None:
         MessageEndEvent,
         TurnEndEvent,
         AgentEndEvent,
+        AgentSettledEvent,
     ]
     assert agent.state.system_prompt == "You are helpful"
     assert [message.role for message in agent.state.messages] == ["system", "user", "assistant"]
@@ -400,7 +402,7 @@ async def test_error_stream_produces_error_lifecycle_without_retry() -> None:
     assert isinstance(final, AssistantMessage)
     assert final.stop_reason == "error"
     assert agent.state.error_message == "provider failed"
-    assert isinstance(events[-1], AgentEndEvent)
+    assert isinstance(events[-1], AgentSettledEvent)
     assert agent.state.is_streaming is False
 
 
@@ -417,7 +419,7 @@ async def test_stream_fn_exception_uses_failure_boundary() -> None:
     assert isinstance(final, AssistantMessage)
     assert final.stop_reason == "error"
     assert agent.state.error_message == "transport exploded"
-    assert isinstance(events[-1], AgentEndEvent)
+    assert isinstance(events[-1], AgentSettledEvent)
 
 
 # ---------------------------------------------------------------------------
@@ -491,11 +493,11 @@ async def test_listener_exception_is_not_isolated_as_handler_error() -> None:
 
     agent.subscribe(listener)
 
-    await agent.prompt("hi")
+    with pytest.raises(RuntimeError, match="listener failed"):
+        await agent.prompt("hi")
 
-    final = agent.state.messages[-1]
-    assert isinstance(final, AssistantMessage)
-    assert final.stop_reason == "error"
+    assert agent.state.messages[-1].role == "user"
+    assert stream.calls == 0
     assert agent.state.error_message == "listener failed"
     assert not hasattr(next(iter(events)), "handler_error")
 

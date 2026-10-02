@@ -9,12 +9,12 @@ import pytest
 
 from omh.agent import (
     Agent,
-    AgentEndEvent,
     AgentEvent,
     AgentInitialState,
     AgentLoopTurnUpdate,
     AgentOptions,
     AgentRequestUpdate,
+    AgentSettledEvent,
     AgentTool,
     AgentToolResult,
     AgentTurnContext,
@@ -630,7 +630,7 @@ async def test_agent_finish_turn_failure_uses_agent_error_lifecycle() -> None:
 
     assert stream.calls == 1
     assert agent.state.error_message == "finish failed"
-    assert events[-1] is AgentEndEvent
+    assert events[-1] is AgentSettledEvent
 
 
 async def test_direct_loop_hook_failure_propagates_to_caller() -> None:
