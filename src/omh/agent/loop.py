@@ -13,6 +13,7 @@ Session or an Agent.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import replace
 
 from omh.agent._async import maybe_await
@@ -50,6 +51,7 @@ from omh.llm.types import (
     ToolResultMessage,
 )
 from omh.llm.types import ThinkingLevel as ReasoningLevel
+from omh.llm.utils.abort import abort_reason, race_with_abort_signal
 
 
 def agent_loop(
@@ -176,9 +178,12 @@ async def _run_loop(
 
         # Inner loop: process tool calls, steering, and subsequent requests.
         while has_more_tool_calls or pending_messages:
+            # An abort stops the activity instead of starting another request.
+            if signal is not None and signal.aborted:
+                raise abort_reason(signal)
             prepared_messages: list[LoopMessage] = []
             if last_completed_turn is not None:
-                update = await _call_prepare_next_turn(config, last_completed_turn)
+                update = await _call_prepare_next_turn(config, last_completed_turn, signal)
                 if update is not None:
                     if update.context is not None:
                         context = update.context
@@ -293,17 +298,27 @@ async def _call_prepare_request(
         ),
         signal,
     )
-    return await maybe_await(result)
+    if not inspect.isawaitable(result):
+        return result
+    if signal is None:
+        return await result
+    return await race_with_abort_signal(result, signal)
 
 
 async def _call_prepare_next_turn(
     config: AgentLoopConfig,
     turn: AgentTurnContext,
+    signal: AbortSignal | None,
 ) -> AgentLoopTurnUpdate | None:
     hook = config.prepare_next_turn
     if hook is None:
         return None
-    return await maybe_await(hook(turn))
+    result = hook(turn)
+    if not inspect.isawaitable(result):
+        return result
+    if signal is None:
+        return await result
+    return await race_with_abort_signal(result, signal)
 
 
 async def _call_get_steering_messages(config: AgentLoopConfig) -> list[LoopMessage]:

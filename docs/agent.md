@@ -243,6 +243,7 @@ custom `StreamFn` receives the full normalized `TranscriptContext` and the
 | `system_prompt` | Read-only prompt replayed from the transcript's system messages. |
 | `model`, `thinking_level` | Read-only observations of the initial execution configuration. |
 | `is_streaming` | True from run start until terminal listeners settle. |
+| `closed` | True once close has started; the Agent permanently rejects new work. |
 | `streaming_message` | Current partial assistant message, if any. |
 | `pending_tool_calls` | Tool call ids currently executing, tracked from tool execution events. |
 | `error_message` | Error text from the most recent failed or aborted turn. |
@@ -404,7 +405,17 @@ The conversation lifecycle emits `agent_start`, `turn_start`, `message_start`, `
 
 ## Cancellation
 
-The Agent owns its run. Cancelling a caller awaiting `prompt`, `continue_`, or `wait_for_idle` ends only that wait; the run and other waiters continue. `agent.abort()` cooperatively signals the current run, and the Agent becomes idle only after the run and its terminal listeners settle. Abort does not preempt uncooperative work or undo side effects.
+The Agent owns its run. Cancelling a caller awaiting `prompt`, `continue_`, or `wait_for_idle` ends only that wait; the run and other waiters continue. `agent.abort()` cooperatively signals the current run and prevents the next automatic request: it interrupts request preparation, credential resolution, the model request, and pending tool calls. The Agent becomes idle only after the run and its terminal listeners settle. Abort does not preempt uncooperative work or undo side effects.
+
+The busy gate covers the whole activity, from acceptance through request preparation, the model request, tool execution, and terminal notification. A second `prompt` or `continue_` is rejected for that entire span, including while `prepare_request` or `get_api_key` is still awaiting. `steer` and `follow_up` remain admissible and are consumed at their normal scheduling boundaries.
+
+### Permanent close
+
+`await agent.close()` permanently stops acceptance. Close first sets `agent.closed`, which rejects new `prompt`, `continue_`, tool configuration (`set_tools`, `steering_mode`, `follow_up_mode`), and queue input (`steer`, `follow_up`). It then cooperatively aborts the active run and waits for it to settle. Reads, `abort()`, queue previews, and the explicit `clear_*` queue commands remain available.
+
+Close is idempotent: later calls wait for the same finalization, and cancelling a close waiter does not undo the close. The Agent finalizes its own run and bindings; it does not close host-owned provider clients or long-lived tool resources, and it neither saves history nor migrates queues. History, state, and unconsumed queues stay readable after close, and the application can clear queues explicitly. A terminal listener failure still settles the closed state and releases idle waiters; the error then reaches the close and run waiters. `agent.closed` and `agent.state.is_streaming` are independent observations, and an unconsumed queue never blocks `wait_for_idle()`.
+
+The offline [close example](../examples/close.py) exercises the busy gate, waiter cancellation, permanent close, and post-close reads.
 
 ## Standalone loop
 
@@ -477,7 +488,7 @@ Applications import the public Agent, loop entries, and contracts from
 
 | Module | Responsibility |
 | --- | --- |
-| [`agent.py`](../src/omh/agent/agent.py) | Agent operations, run ownership, queues, subscribers, and state reduction |
+| [`agent.py`](../src/omh/agent/agent.py) | Agent operations, activity ownership, close, queues, subscribers, and state reduction |
 | [`loop.py`](../src/omh/agent/loop.py) | Four standalone entries, request and turn hooks, queue polling, continuation, and termination |
 | [`model_response.py`](../src/omh/agent/model_response.py) | Context conversion, credentials, request options, and streamed assistant message updates |
 | [`tool_execution.py`](../src/omh/agent/tool_execution.py) | Batch preflight, serial or parallel execution, tool hooks, progress, and ordered results |
@@ -509,7 +520,7 @@ turn scheduling. Provider transport and transcript primitives remain in
 
 The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
-events, and cooperative cancellation. Applications supply
+events, cooperative cancellation, and permanent close. Applications supply
 executable tools and own application-level session files, compaction and retry
 policies, resource discovery, and UI/CLI behavior.
 
@@ -528,7 +539,8 @@ do not validate a live service or performance.
   `state.messages` is no longer supported.
 - Replace `reset()` with construction of a new Agent and rebind subscriptions.
   The old instance retains its history and queues. Before switching a running
-  instance, call `abort()` and await `wait_for_idle()`.
+  instance, call `abort()` and await `wait_for_idle()`; once the instance is
+  fully superseded, `await close()` permanently stops acceptance.
 - Replace tool-list assignment with `await agent.set_tools(tools)` while idle.
   Select model and thinking level through initial options; their state fields
   are observations.

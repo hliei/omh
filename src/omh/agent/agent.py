@@ -166,6 +166,8 @@ class Agent:
     def _configure(self, options: AgentOptions) -> None:
         self._listeners: list[AgentListener] = []
         self._active_run: _ActiveRun | None = None
+        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         self._steering_queue = _PendingMessageQueue(options.steering_mode)
         self._follow_up_queue = _PendingMessageQueue(options.follow_up_mode)
         self.stream_fn = options.stream_fn if options.stream_fn is not None else get_default_stream_fn()
@@ -206,6 +208,45 @@ class Agent:
         run = self._active_run
         return run.abort_controller.signal if run is not None else None
 
+    @property
+    def closed(self) -> bool:
+        """Whether close has started; a closed Agent permanently rejects new work."""
+        return self._closed
+
+    def _ensure_open(self, action: str) -> None:
+        if self._closed:
+            raise RuntimeError(f"Agent is closed; cannot {action}.")
+
+    async def close(self) -> None:
+        """Permanently stop accepting work and finalize the active run.
+
+        Close starts by rejecting new prompts, continuations, tool or mode
+        configuration, and queue input. It then cooperatively aborts the active
+        run and waits for it to settle. Close is idempotent: later calls wait for
+        the same finalization, and cancelling a close waiter does not undo it.
+        The Agent finalizes its own run and bindings; it does not close
+        host-owned provider clients or long-lived tool resources. History, state,
+        and unconsumed queues stay readable, and queues can still be cleared.
+        """
+        if not self._closed:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._finalize_close())
+            self._close_task.add_done_callback(_retrieve_task_exception)
+        task = self._close_task
+        if task is None:
+            return
+        await asyncio.shield(task)
+
+    async def _finalize_close(self) -> None:
+        run = self._active_run
+        if run is None:
+            return
+        run.abort_controller.abort()
+        if run.task is not None:
+            # Awaiting the run surfaces a terminal listener failure to the
+            # close caller without keeping the closed state from settling.
+            await asyncio.shield(run.task)
+
     def subscribe(self, listener: AgentListener) -> Callable[[], None]:
         """Register a lifecycle listener and return an unsubscribe function."""
         self._listeners.append(listener)
@@ -218,6 +259,7 @@ class Agent:
 
     async def set_tools(self, tools: list[AgentTool]) -> None:
         """Replace idle execution tools; declarations commit before the next request."""
+        self._ensure_open("set tools")
         if self._active_run is not None:
             raise RuntimeError("Agent is already processing. Wait for completion before setting tools.")
         self._state._tools = snapshot_tools(tools)
@@ -242,6 +284,7 @@ class Agent:
 
     @steering_mode.setter
     def steering_mode(self, mode: QueueMode) -> None:
+        self._ensure_open("change steering mode")
         self._steering_queue.mode = mode
 
     @property
@@ -251,14 +294,17 @@ class Agent:
 
     @follow_up_mode.setter
     def follow_up_mode(self, mode: QueueMode) -> None:
+        self._ensure_open("change follow-up mode")
         self._follow_up_queue.mode = mode
 
     def steer(self, message: AgentMessage) -> None:
         """Queue a message to inject at the next drain point (the initial poll or a completed turn)."""
+        self._ensure_open("enqueue steering")
         self._steering_queue.enqueue(message)
 
     def follow_up(self, message: AgentMessage) -> None:
         """Queue a message to run only when the Agent would otherwise stop."""
+        self._ensure_open("enqueue a follow-up")
         self._follow_up_queue.enqueue(message)
 
     def clear_steering_queue(self) -> None:
@@ -292,6 +338,7 @@ class Agent:
         images: list[ImageContent] | None = None,
     ) -> None:
         """Start a new prompt from text, a single message, or a batch of messages."""
+        self._ensure_open("prompt")
         if self._active_run is not None:
             raise RuntimeError(
                 "Agent is already processing a prompt. Wait for completion before prompting again."
@@ -309,6 +356,7 @@ class Agent:
         only when a queue supplies the next input: steering first, then
         follow-up; with neither queued it is rejected like the low-level loop.
         """
+        self._ensure_open("continue")
         if self._active_run is not None:
             raise RuntimeError("Agent is already processing. Wait for completion before continuing.")
 

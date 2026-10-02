@@ -740,6 +740,7 @@ async def test_error_run_retains_unconsumed_queues() -> None:
 
 async def test_abort_run_retains_unconsumed_queues() -> None:
     holder: dict[str, Agent] = {}
+    started = asyncio.Event()
     steer = user_message("steer", 1)
     follow_up = user_message("later", 2)
 
@@ -752,6 +753,7 @@ async def test_abort_run_retains_unconsumed_queues() -> None:
         agent = holder["agent"]
         agent.steer(steer)
         agent.follow_up(follow_up)
+        started.set()
         aborted = text_message("", "aborted", error_message="aborted by caller")
         assert options is not None
         assert options.signal is not None
@@ -766,7 +768,9 @@ async def test_abort_run_retains_unconsumed_queues() -> None:
     holder["agent"] = agent
 
     run = asyncio.create_task(agent.prompt("hello"))
-    await asyncio.sleep(0)
+    # Abort while the request is in flight so the queues queued during it are
+    # the ones under test; an abort before the first request would skip it.
+    await asyncio.wait_for(started.wait(), timeout=1)
     agent.abort()
     await asyncio.wait_for(run, timeout=1)
 
