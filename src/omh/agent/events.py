@@ -11,6 +11,7 @@ from omh.agent.history import AgentHistoryEntry
 from omh.agent.messages import AgentMessage, LoopMessage
 from omh.agent.tools import AgentToolResult
 from omh.llm.types import AbortSignal, AssistantMessageEvent, ToolResultMessage
+from omh.llm.types import ModelThinkingLevel as ThinkingLevel
 
 
 @dataclass(slots=True)
@@ -63,6 +64,23 @@ class MessageEndEvent:
     type: Literal["message_end"] = "message_end"
 
 
+@dataclass(slots=True)
+class ModelChangeEvent:
+    """Emitted after an explicit model selection actually changed."""
+
+    provider: str
+    model_id: str
+    type: Literal["model_change"] = "model_change"
+
+
+@dataclass(slots=True)
+class ThinkingLevelChangeEvent:
+    """Emitted after an explicit thinking-level selection actually changed."""
+
+    thinking_level: ThinkingLevel
+    type: Literal["thinking_level_change"] = "thinking_level_change"
+
+
 @dataclass(frozen=True, slots=True)
 class HistoryCommitEvent:
     conversation_id: str
@@ -107,6 +125,8 @@ AgentEvent = (
     | MessageUpdateEvent
     | MessageEndEvent
     | HistoryCommitEvent
+    | ModelChangeEvent
+    | ThinkingLevelChangeEvent
     | ToolExecutionStartEvent
     | ToolExecutionUpdateEvent
     | ToolExecutionEndEvent

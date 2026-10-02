@@ -191,7 +191,7 @@ async def test_prepare_request_runs_before_first_request_after_pending_messages(
     assert stream.calls == 1
 
 
-async def test_prepare_request_update_applies_to_this_and_later_requests() -> None:
+async def test_prepare_request_update_applies_to_this_request_only() -> None:
     stream = ScriptedStreamFn(
         [
             lambda: tool_call_message("echo", {"value": "1"}),
@@ -225,16 +225,22 @@ async def test_prepare_request_update_applies_to_this_and_later_requests() -> No
     await agent.prompt("hello")
 
     assert calls == 2
-    assert [request.model.id for request in stream.requests] == ["next-model", "next-model"]
-    assert [request.options.reasoning for request in stream.requests if request.options] == ["high", "high"]
-    requested = agent.state.messages[-1]
-    assert isinstance(requested, AssistantMessage)
-    assert requested.thinking_level == "high"
-
-    # The first replacement context persists into the later request.
-    second_prompt = stream.requests[1].context.messages[0]
-    assert isinstance(second_prompt, SystemMessage)
-    assert second_prompt.content == "prepared context"
+    # The hook override applies only to the request that returned it.
+    assert [request.model.id for request in stream.requests] == ["next-model", "test-model"]
+    assert [request.options.reasoning for request in stream.requests if request.options] == ["high", None]
+    assert stream.requests[0].context.messages[0].content == "prepared context"
+    # The next request is rebuilt from history; the earlier context override does not persist.
+    second_request = stream.requests[1].context.messages
+    assert not any(
+        isinstance(message, SystemMessage) and message.content == "prepared context"
+        for message in second_request
+    )
+    # Request overrides never rewrite the public selection or history.
+    assert agent.state.model.id == "test-model"
+    assert agent.state.thinking_level == "off"
+    final = agent.state.messages[-1]
+    assert isinstance(final, AssistantMessage)
+    assert final.thinking_level == "off"
 
 
 async def test_prepare_request_thinking_level_off_clears_reasoning() -> None:
@@ -393,12 +399,7 @@ async def test_prepare_next_turn_messages_get_lifecycle_events_and_tool_declarat
     def prepare_with_context(context: AgentTurnContext, signal: AbortSignal | None) -> AgentLoopTurnUpdate:
         del signal
         log.append(("hook", "prepare_next_turn"))
-        replacement = AgentContext(
-            messages=list(context.context.messages),
-            tools=[*context.context.tools, echo_tool("late")],
-        )
         return AgentLoopTurnUpdate(
-            context=replacement,
             messages=[UserMessage(content="prepared", timestamp=NOW + 5)],
         )
 
@@ -418,10 +419,6 @@ async def test_prepare_next_turn_messages_get_lifecycle_events_and_tool_declarat
     second_request = stream.requests[1].context.messages
     prepared = [message for message in second_request if isinstance(message, UserMessage)]
     assert prepared[-1].content == "prepared"
-    system_messages = [message for message in second_request if isinstance(message, SystemMessage)]
-    added = [declaration.name for message in system_messages for declaration in (message.tools_added or [])]
-    assert "late" in added
-    assert "echo" in added
 
 
 # ---------------------------------------------------------------------------

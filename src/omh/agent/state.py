@@ -13,6 +13,7 @@ from omh.llm.types import Model, ModelCost
 from omh.llm.types import ModelThinkingLevel as ThinkingLevel
 from omh.llm.utils.transcript import (
     create_initial_system_message,
+    get_current_system_message,
     get_current_system_prompt,
 )
 
@@ -58,6 +59,12 @@ class AgentState:
             self._messages.insert(0, initial_message)
         self._model = copy.deepcopy(initial.model if initial.model is not None else DEFAULT_MODEL)
         self._thinking_level: ThinkingLevel = initial.thinking_level or "off"
+        replayed_system = get_current_system_message(self._messages)
+        self._system_sections: dict[str, str] = {
+            name: value
+            for name, value in (replayed_system.sections or {}).items()
+            if value is not None
+        } if replayed_system is not None else {}
         self._is_streaming = False
         self._is_busy = False
         self._is_closed = False
@@ -93,6 +100,11 @@ class AgentState:
         return self._thinking_level
 
     @property
+    def system_sections(self) -> dict[str, str]:
+        """Expected named base sections, isolated from the Agent's configuration."""
+        return dict(self._system_sections)
+
+    @property
     def is_streaming(self) -> bool:
         return self._is_streaming
 
@@ -125,6 +137,16 @@ class AgentState:
     @property
     def messages(self) -> tuple[AgentMessage, ...]:
         return copy.deepcopy(tuple(self._messages))
+
+
+def derive_system_sections(messages: list[AgentMessage]) -> dict[str, str]:
+    """Replayed named sections of a transcript, ignoring deleted entries."""
+    replayed = get_current_system_message(messages)
+    if replayed is None:
+        return {}
+    return {
+        name: value for name, value in (replayed.sections or {}).items() if value is not None
+    }
 
 
 def snapshot_tools(tools: list[AgentTool] | tuple[AgentTool, ...]) -> list[AgentTool]:

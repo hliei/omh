@@ -10,7 +10,7 @@ observation cancellation, explicit abort, and the standalone loop entries.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 import pytest
@@ -162,6 +162,7 @@ class ControlledTool:
     started: asyncio.Event = field(default_factory=asyncio.Event)
     release: asyncio.Event = field(default_factory=asyncio.Event)
     gated: bool = True
+    on_release: Callable[[], Awaitable[None]] | None = None
 
     async def execute(
         self,
@@ -175,6 +176,8 @@ class ControlledTool:
         self.started.set()
         if self.gated:
             await self.release.wait()
+        if self.on_release is not None:
+            await self.on_release()
         self.completions.append(self.name)
         return AgentToolResult(content=[TextContent(text=f"{self.name}:{args['value']}")], details={})
 
@@ -261,6 +264,11 @@ async def test_combined_agent_run_tracks_requests_history_and_tools() -> None:
     fast.completions = completions
     gamma.completions = completions
 
+    async def change_tools() -> None:
+        await agent_ref[0].set_tools([slow.agent_tool("slow redefined"), gamma.agent_tool()])
+
+    slow.on_release = change_tools
+
     stream = ScriptedStreamFn(
         [
             lambda: tool_call_message([("c1", "slow", {"value": "a"}), ("c2", "fast", {"value": "b"})]),
@@ -286,9 +294,7 @@ async def test_combined_agent_run_tracks_requests_history_and_tools() -> None:
 
     def prepare_request(request: PrepareRequestContext, signal: AbortSignal | None) -> AgentRequestUpdate | None:
         del request, signal
-        if stream.calls == 0:
-            return AgentRequestUpdate(model=make_model("dyn-model", reasoning=True), thinking_level="high")
-        return None
+        return AgentRequestUpdate(model=make_model("dyn-model", reasoning=True), thinking_level="high")
 
     def prepare_next_turn(context: AgentTurnContext, signal: AbortSignal | None) -> AgentLoopTurnUpdate | None:
         del signal
@@ -296,12 +302,7 @@ async def test_combined_agent_run_tracks_requests_history_and_tools() -> None:
         prepare_calls += 1
         if prepare_calls > 1:
             return None
-        replacement = AgentContext(
-            messages=list(context.context.messages),
-            tools=[slow.agent_tool("slow redefined"), gamma.agent_tool()],
-        )
         return AgentLoopTurnUpdate(
-            context=replacement,
             messages=[SystemMessage(content="", timestamp=20, sections={"style": None, "tone": "warm"})],
         )
 

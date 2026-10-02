@@ -180,6 +180,8 @@ async def _run_loop(
         while has_more_tool_calls or pending_messages:
             if signal is not None:
                 signal.throw_if_aborted()
+            if config.refresh_request is not None:
+                context = config.refresh_request()
             prepared_messages: list[LoopMessage] = []
             if last_completed_turn is not None:
                 completed_turn = last_completed_turn

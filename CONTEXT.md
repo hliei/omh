@@ -128,6 +128,10 @@ _Avoid_: 调用取消上下文
 transcript 中携带系统指令与工具声明的一条消息。首条声明基础 prompt 与初始工具；后续消息追加内容、按名称替换或删除 section，并增删工具。按序重放得到当前 prompt 与工具集合。
 _Avoid_: 最后一条系统消息（代替完整重放）
 
+**Base system sections（基础系统 sections）**:
+Agent 持有的命名 section 期望集合。宿主经 `set_system_sections` 整体替换；运行中的 prompt 保留其快照，下一次新 prompt 才把差异作为普通 SystemMessage 提交，未出现的旧名称同步为删除。裸 system content 仍按序累加，不因此变成整体替换。
+_Avoid_: 立即改写当前 prompt 的 system 指令
+
 **TranscriptContext**:
 规范化后的模型请求输入：prompt 与工具声明位于 system message，而不是独立的 system_prompt／tools 字段。由 `normalize_context` 从公开 Context 简写生成。
 _Avoid_: 未规范化的公开 Context
