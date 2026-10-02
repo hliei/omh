@@ -28,7 +28,12 @@ from omh.agent.events import (
     ToolExecutionStartEvent,
     TurnEndEvent,
 )
-from omh.agent.history import AgentHistory, ConversationHistory
+from omh.agent.history import (
+    AgentHistory,
+    ConversationHistory,
+    project_history,
+    validate_history,
+)
 from omh.agent.hooks import (
     AfterToolCall,
     AgentLoopTurnUpdate,
@@ -49,9 +54,10 @@ from omh.agent.loop import (
 from omh.agent.loop_config import AgentLoopConfig
 from omh.agent.messages import AgentMessage, ConvertToLlm, LoopMessage, TransformContext
 from omh.agent.options import AgentOptions, QueueMode
-from omh.agent.state import AgentState, snapshot_tools
+from omh.agent.state import AgentInitialState, AgentState, snapshot_tools
 from omh.agent.stream_fn import get_default_stream_fn
 from omh.agent.tools import AgentTool, ToolExecutionMode
+from omh.llm.models import clamp_thinking_level
 from omh.llm.types import (
     AbortController,
     AbortSignal,
@@ -132,6 +138,32 @@ class Agent:
         self._history.append_thinking_level(self._state.thinking_level)
         for message in self._state.messages:
             self._history.append_message(message)
+        self._configure(options)
+
+    @classmethod
+    def from_history(cls, history: AgentHistory, options: AgentOptions) -> Agent:
+        """Restore decoded history as an idle Agent with current host dependencies."""
+        settings = validate_history(history)
+        initial = options.initial_state or AgentInitialState()
+        if initial.messages is not None:
+            raise ValueError("from_history does not accept initial_state.messages seeds")
+        if options.conversation_id is not None and options.conversation_id != history.conversation_id:
+            raise ValueError("from_history conversation_id conflicts with history")
+        instance = cls.__new__(cls)
+        instance._history = ConversationHistory.from_snapshot(history)
+        instance._state = AgentState(replace(
+            initial, system_prompt=None,
+            thinking_level=initial.thinking_level if initial.thinking_level is not None
+            else settings.thinking_level,
+        ))
+        instance._state._thinking_level = clamp_thinking_level(
+            instance._state.model, instance._state.thinking_level,
+        )
+        instance._state._messages = project_history(instance._history.snapshot())
+        instance._configure(options)
+        return instance
+
+    def _configure(self, options: AgentOptions) -> None:
         self._listeners: list[AgentListener] = []
         self._active_run: _ActiveRun | None = None
         self._steering_queue = _PendingMessageQueue(options.steering_mode)

@@ -18,7 +18,7 @@ from omh.agent.events import (
     emit_event,
 )
 from omh.agent.loop_config import AgentLoopConfig
-from omh.agent.messages import CustomAgentMessage, LoopMessage
+from omh.agent.messages import CompactionSummaryMessage, CustomAgentMessage, LoopMessage
 from omh.agent.stream_fn import StreamFn
 from omh.llm.types import (
     AbortSignal,
@@ -28,6 +28,7 @@ from omh.llm.types import (
     SimpleStreamOptions,
     StartEvent,
     SystemMessage,
+    TextContent,
     ToolResultMessage,
     TranscriptContext,
     UserMessage,
@@ -57,6 +58,11 @@ def _default_convert_to_llm(messages: list[LoopMessage]) -> list[Message]:
             converted.append(message)
         elif isinstance(message, CustomAgentMessage):
             converted.append(UserMessage(content=message.content, timestamp=message.timestamp))
+        elif isinstance(message, CompactionSummaryMessage):
+            converted.append(UserMessage(content=[TextContent(text=(
+                "The conversation before this point was compacted into the following summary:\n\n"
+                f"<summary>\n{message.summary}\n</summary>"
+            ))], timestamp=message.timestamp))
     return converted
 
 

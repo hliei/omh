@@ -28,10 +28,14 @@ from omh.agent.events import (
 from omh.agent.history import (
     AgentHistory,
     AgentHistoryEntry,
+    AgentHistorySettings,
+    CompactionHistoryEntry,
+    ContextEditHistoryEntry,
     CustomMessageHistoryEntry,
     MessageHistoryEntry,
     ModelChangeHistoryEntry,
     ThinkingLevelChangeHistoryEntry,
+    validate_history,
 )
 from omh.agent.hooks import (
     AfterToolCall,
@@ -61,6 +65,8 @@ from omh.agent.loop import (
 from omh.agent.loop_config import AgentLoopConfig
 from omh.agent.messages import (
     AgentMessage,
+    CompactionSummaryMessage,
+    ContextEditReplacement,
     ConvertToLlm,
     CustomAgentMessage,
     LoopApplicationMessage,
@@ -106,6 +112,7 @@ __all__ = [
     "AgentInitialState",
     "AgentHistory",
     "AgentHistoryEntry",
+    "AgentHistorySettings",
     "AgentLoopConfig",
     "AgentLoopTurnUpdate",
     "AgentMessage",
@@ -125,6 +132,10 @@ __all__ = [
     "BeforeToolCallContext",
     "BeforeToolCallResult",
     "ConvertToLlm",
+    "CompactionHistoryEntry",
+    "CompactionSummaryMessage",
+    "ContextEditHistoryEntry",
+    "ContextEditReplacement",
     "CustomAgentMessage",
     "CustomMessageHistoryEntry",
     "LoopApplicationMessage",
@@ -166,4 +177,5 @@ __all__ = [
     "run_agent_loop_continue",
     "set_default_stream_fn",
     "to_tool_declaration",
+    "validate_history",
 ]
