@@ -19,6 +19,7 @@ from omh.agent import (
     AgentToolResult,
     AgentToolUpdateCallback,
     AgentTurnContext,
+    CustomAgentMessage,
     ToolExecutionEndEvent,
     ToolExecutionMode,
 )
@@ -32,7 +33,6 @@ from omh.llm.types import (
     SimpleStreamOptions,
     StartEvent,
     StopReason,
-    SystemMessage,
     TextContent,
     ToolCall,
     ToolResultMessage,
@@ -247,18 +247,20 @@ def test_queue_interface_defaults_and_preview_priority() -> None:
     assert agent.peek_queued_messages() == [steer_one, steer_two]
 
     agent.follow_up_mode = "all"
-    assert agent.peek_queued_messages()[0] is steer_one
+    assert agent.peek_queued_messages()[0] == steer_one
 
 
-def test_peek_does_not_consume_and_shares_message_objects() -> None:
+def test_peek_does_not_consume_and_returns_isolated_messages() -> None:
     agent = make_agent(ScriptedStreamFn([lambda: text_message("ok")]))
     steer = user_message("s1", 1)
     agent.steer(steer)
 
     first = agent.peek_queued_messages()
     second = agent.peek_queued_messages()
-    assert first[0] is steer
-    assert second[0] is steer
+    assert first[0] == steer
+    assert second[0] == steer
+    assert first[0] is not steer
+    assert second[0] is not first[0]
     assert agent.has_queued_messages() is True
 
 
@@ -294,7 +296,7 @@ async def test_initial_steering_poll_injects_before_first_request() -> None:
     request = stream.requests[0]
     assert [message.role for message in request.context.messages] == ["system", "user", "user"]
     assert [user_text(message) for message in request_users(request)] == ["hello", "steer"]
-    assert request_users(request)[1] is steer
+    assert request_users(request)[1] == steer
     assert [message.role for message in agent.state.messages] == ["system", "user", "user", "assistant"]
 
 
@@ -309,9 +311,9 @@ async def test_one_at_a_time_consumes_one_steering_message_per_boundary() -> Non
     await agent.prompt("hello")
 
     assert stream.calls == 2
-    assert request_users(stream.requests[0])[1] is first
+    assert request_users(stream.requests[0])[1] == first
     assert second not in request_users(stream.requests[0])
-    assert last_user(stream.requests[1]) is second
+    assert last_user(stream.requests[1]) == second
 
 
 async def test_all_mode_drains_every_queued_steering_message_at_once() -> None:
@@ -369,7 +371,7 @@ async def test_steering_during_tool_batch_does_not_skip_remaining_tools() -> Non
         "c2",
     ]
     assert steer not in request_users(stream.requests[0])
-    assert last_user(stream.requests[1]) is steer
+    assert last_user(stream.requests[1]) == steer
 
 
 async def test_consumed_queue_order_matches_preview_and_history() -> None:
@@ -387,10 +389,10 @@ async def test_consumed_queue_order_matches_preview_and_history() -> None:
     assert stream.calls == 2
     users = history_users(agent)
     assert user_text(users[0]) == "hello"
-    assert users[1] is first
-    assert users[2] is second
-    assert request_users(stream.requests[0])[1] is first
-    assert last_user(stream.requests[1]) is second
+    assert users[1] == first
+    assert users[2] == second
+    assert request_users(stream.requests[0])[1] == first
+    assert last_user(stream.requests[1]) == second
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +429,7 @@ async def test_steer_queued_during_turn_preparation_is_picked_up_when_none_was_t
 
     assert stream.calls == 2
     assert steer not in request_users(stream.requests[0])
-    assert last_user(stream.requests[1]) is steer
+    assert last_user(stream.requests[1]) == steer
 
 
 async def test_steer_queued_during_turn_preparation_is_not_double_drained() -> None:
@@ -493,7 +495,7 @@ async def test_follow_up_waits_for_natural_tool_continuation() -> None:
 
     assert stream.calls == 3
     assert follow_up not in request_users(stream.requests[1])
-    assert last_user(stream.requests[2]) is follow_up
+    assert last_user(stream.requests[2]) == follow_up
     # Follow-up continues the same run, so the lifecycle stays a single cycle.
     assert event_count(events, AgentStartEvent) == 1
     assert event_count(events, AgentEndEvent) == 1
@@ -518,7 +520,7 @@ async def test_follow_up_consumed_only_when_run_would_stop() -> None:
     await agent.prompt("hello")
 
     assert stream.calls == 2
-    assert last_user(stream.requests[1]) is follow_up
+    assert last_user(stream.requests[1]) == follow_up
     assert event_count(events, AgentStartEvent) == 1
     assert event_count(events, AgentEndEvent) == 1
 
@@ -571,8 +573,8 @@ async def test_steering_is_consumed_before_follow_up() -> None:
     await agent.prompt("go")
 
     assert stream.calls == 3
-    assert last_user(stream.requests[1]) is steer
-    assert last_user(stream.requests[2]) is follow_up
+    assert last_user(stream.requests[1]) == steer
+    assert last_user(stream.requests[2]) == follow_up
 
 
 async def test_finish_turn_end_leaves_queues_untouched() -> None:
@@ -618,7 +620,7 @@ async def test_finish_turn_continue_satisfied_by_steering_adds_no_extra_request(
     await agent.prompt("hello")
 
     assert stream.calls == 2
-    assert last_user(stream.requests[1]) is steer
+    assert last_user(stream.requests[1]) == steer
 
 
 async def test_finish_turn_continue_satisfied_by_follow_up_adds_no_extra_request() -> None:
@@ -641,7 +643,7 @@ async def test_finish_turn_continue_satisfied_by_follow_up_adds_no_extra_request
     await agent.prompt("hello")
 
     assert stream.calls == 2
-    assert last_user(stream.requests[1]) is follow_up
+    assert last_user(stream.requests[1]) == follow_up
 
 
 # ---------------------------------------------------------------------------
@@ -662,9 +664,9 @@ async def test_continue_assistant_tail_prefers_steering_and_skips_initial_poll()
     # ``first`` becomes the new prompt; the skipped initial poll must not also
     # consume ``second`` into the same request.
     assert stream.calls == 2
-    assert stream.requests[0].context.messages[-1] is first
+    assert stream.requests[0].context.messages[-1] == first
     assert second not in request_users(stream.requests[0])
-    assert last_user(stream.requests[1]) is second
+    assert last_user(stream.requests[1]) == second
 
 
 async def test_continue_assistant_tail_uses_follow_up_when_no_steering() -> None:
@@ -676,7 +678,7 @@ async def test_continue_assistant_tail_uses_follow_up_when_no_steering() -> None
     await agent.continue_()
 
     assert stream.calls == 1
-    assert stream.requests[0].context.messages[-1] is follow_up
+    assert stream.requests[0].context.messages[-1] == follow_up
 
 
 async def test_continue_assistant_tail_prefers_steering_over_follow_up() -> None:
@@ -689,7 +691,7 @@ async def test_continue_assistant_tail_prefers_steering_over_follow_up() -> None
 
     await agent.continue_()
 
-    assert stream.requests[0].context.messages[-1] is steer
+    assert stream.requests[0].context.messages[-1] == steer
     assert follow_up not in request_users(stream.requests[0])
 
 
@@ -775,19 +777,15 @@ async def test_abort_run_retains_unconsumed_queues() -> None:
     assert agent.peek_queued_messages() == [steer]
 
 
-async def test_reset_clears_queues_and_retains_system_baseline() -> None:
+async def test_new_instance_has_separate_queues_and_the_host_system_baseline() -> None:
     stream = ScriptedStreamFn([lambda: text_message("ok")])
+    old = make_agent(stream, system_prompt="Stay")
+    old.steer(user_message("steer", 1))
+    old.follow_up(user_message("later", 2))
     agent = make_agent(stream, system_prompt="Stay")
-    agent.steer(user_message("steer", 1))
-    agent.follow_up(user_message("later", 2))
-
-    agent.reset()
-
     assert agent.has_queued_messages() is False
-    assert len(agent.state.messages) == 1
-    baseline = agent.state.messages[0]
-    assert isinstance(baseline, SystemMessage)
-    assert baseline.content == "Stay"
+    assert old.has_queued_messages() is True
+    assert agent.state.system_prompt == "Stay"
 
 
 # ---------------------------------------------------------------------------
@@ -795,24 +793,18 @@ async def test_reset_clears_queues_and_retains_system_baseline() -> None:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(slots=True)
-class NoticeMessage:
-    text: str
-    role: str = "notice"
-
-
 async def test_queued_custom_message_stays_in_history_and_respects_conversion() -> None:
-    notice = NoticeMessage(text="heads up")
+    notice = CustomAgentMessage(custom_type="notice", content="heads up", timestamp=7)
 
     default_stream = ScriptedStreamFn([lambda: text_message("ok")])
     default_agent = make_agent(default_stream)
     default_agent.steer(notice)
     await default_agent.prompt("hello")
 
-    # The default conversion filters the custom role out of the model request.
-    assert [message.role for message in default_stream.requests[0].context.messages] == ["user"]
+    # The default conversion includes custom content as a user message.
+    assert [message.role for message in default_stream.requests[0].context.messages] == ["user", "user"]
     assert notice not in default_stream.requests[0].context.messages
-    assert any(message is notice for message in default_agent.state.messages)
+    assert notice in default_agent.state.messages
 
     mapped_stream = ScriptedStreamFn([lambda: text_message("ok")])
     mapped_agent = Agent(
@@ -820,7 +812,7 @@ async def test_queued_custom_message_stays_in_history_and_respects_conversion() 
             stream_fn=mapped_stream,
             initial_state=AgentInitialState(model=make_model()),
             convert_to_llm=lambda messages: [
-                user_message(message.text, 7) if isinstance(message, NoticeMessage) else message  # type: ignore[arg-type]
+                user_message(message.content, 7) if isinstance(message, CustomAgentMessage) else message  # type: ignore[arg-type]
                 for message in messages
             ],
         )

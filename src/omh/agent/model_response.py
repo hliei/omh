@@ -18,7 +18,7 @@ from omh.agent.events import (
     emit_event,
 )
 from omh.agent.loop_config import AgentLoopConfig
-from omh.agent.messages import AgentMessage
+from omh.agent.messages import CustomAgentMessage, LoopMessage
 from omh.agent.stream_fn import StreamFn
 from omh.llm.types import (
     AbortSignal,
@@ -49,16 +49,20 @@ _UPDATE_EVENT_TYPES = frozenset(
 )
 
 
-def _default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
-    """Keep standard LLM roles; application-specific roles are dropped by default."""
-    return [
-        message
-        for message in messages
-        if isinstance(message, SystemMessage | UserMessage | AssistantMessage | ToolResultMessage)
-    ]
+def _default_convert_to_llm(messages: list[LoopMessage]) -> list[Message]:
+    """Keep standard roles and SDK custom content; filter open application roles."""
+    converted: list[Message] = []
+    for message in messages:
+        if isinstance(message, SystemMessage | UserMessage | AssistantMessage | ToolResultMessage):
+            converted.append(message)
+        elif isinstance(message, CustomAgentMessage):
+            converted.append(UserMessage(content=message.content, timestamp=message.timestamp))
+    return converted
 
 
 def _record_thinking_level(message: AssistantMessage, config: AgentLoopConfig) -> AssistantMessage:
+    if config._snapshot_response is not None:
+        message = config._snapshot_response(message)
     message.thinking_level = config.reasoning if config.reasoning is not None else "off"
     return message
 
@@ -72,7 +76,7 @@ async def _resolve_api_key(config: AgentLoopConfig) -> str | None:
     return resolved or config.api_key
 
 
-async def _build_request_context(config: AgentLoopConfig, messages: list[AgentMessage], signal: AbortSignal | None) -> TranscriptContext:
+async def _build_request_context(config: AgentLoopConfig, messages: list[LoopMessage], signal: AbortSignal | None) -> TranscriptContext:
     transformed = messages
     if config.transform_context is not None:
         maybe = config.transform_context(messages, signal)

@@ -7,7 +7,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from omh.agent.messages import AgentMessage
+from omh.agent.history import AgentHistoryEntry
+from omh.agent.messages import LoopMessage
 from omh.agent.tools import AgentToolResult
 from omh.llm.types import AbortSignal, AssistantMessageEvent, ToolResultMessage
 
@@ -19,7 +20,7 @@ class AgentStartEvent:
 
 @dataclass(slots=True)
 class AgentEndEvent:
-    messages: list[AgentMessage]
+    messages: list[LoopMessage]
     type: Literal["agent_end"] = "agent_end"
 
 
@@ -30,28 +31,36 @@ class TurnStartEvent:
 
 @dataclass(slots=True)
 class TurnEndEvent:
-    message: AgentMessage
+    message: LoopMessage
     tool_results: list[ToolResultMessage]
     type: Literal["turn_end"] = "turn_end"
 
 
 @dataclass(slots=True)
 class MessageStartEvent:
-    message: AgentMessage
+    message: LoopMessage
     type: Literal["message_start"] = "message_start"
 
 
 @dataclass(slots=True)
 class MessageUpdateEvent:
-    message: AgentMessage
+    message: LoopMessage
     assistant_message_event: AssistantMessageEvent
     type: Literal["message_update"] = "message_update"
 
 
 @dataclass(slots=True)
 class MessageEndEvent:
-    message: AgentMessage
+    message: LoopMessage
     type: Literal["message_end"] = "message_end"
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryCommitEvent:
+    conversation_id: str
+    entries: tuple[AgentHistoryEntry, ...]
+    leaf_id: str
+    type: Literal["history_commit"] = "history_commit"
 
 
 @dataclass(slots=True)
@@ -88,6 +97,7 @@ AgentEvent = (
     | MessageStartEvent
     | MessageUpdateEvent
     | MessageEndEvent
+    | HistoryCommitEvent
     | ToolExecutionStartEvent
     | ToolExecutionUpdateEvent
     | ToolExecutionEndEvent

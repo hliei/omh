@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from omh.agent.messages import AgentMessage
+from omh.agent.messages import LoopMessage
 from omh.agent.tools import AgentTool
 
 
@@ -12,5 +12,5 @@ from omh.agent.tools import AgentTool
 class AgentContext:
     """Context snapshot passed into the low-level agent loop."""
 
-    messages: list[AgentMessage]
+    messages: list[LoopMessage]
     tools: list[AgentTool]

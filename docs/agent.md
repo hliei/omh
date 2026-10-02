@@ -43,11 +43,14 @@ system messages, not by a separate field.
 
 ## Application messages and context conversion
 
-`AgentMessage` is the standard LLM message union plus `CustomAgentMessage`, a
-message that is recognised by its `role` attribute. Custom messages stay in
-`Agent.state.messages`; the default conversion filters them out. Set
-`AgentOptions.convert_to_llm` to map them into model messages, and
-`AgentOptions.transform_context` to prune or inject history first. Each request
+`AgentMessage` is the standard LLM message union plus the SDK dataclass
+`CustomAgentMessage`. It has a fixed `role="custom"`, `custom_type`, text or
+text/image `content`, `display`, JSON `details`, and a millisecond `timestamp`.
+Custom messages stay in history and effective context; default conversion maps
+their content to a user message. `custom_type`, `display`, and `details` remain
+application metadata and are not sent to the model. Set
+`AgentOptions.convert_to_llm` to customize conversion, and
+`AgentOptions.transform_context` to prune or inject request content first. Each request
 runs `transform_context`, then `convert_to_llm`, then transcript normalization,
 so the original application history is never overwritten by a projection.
 
@@ -62,7 +65,56 @@ When `Agent.state.tools` differs from the tools declared in the transcript, the
 loop announces the delta in a `SystemMessage` before the request, emitted
 through the normal message lifecycle. A pending system message passed with a
 prompt has its tool fields coordinated with that delta, so replaying the
-transcript always yields exactly the executable tool set.
+transcript always yields exactly the executable tool set. Use
+`await agent.set_tools(tools)` between runs to replace the complete tool set;
+this command rejects a busy Agent and isolates declaration data while retaining
+host-owned execution callbacks.
+
+## Conversation history
+
+Each new Agent owns one conversation. `AgentOptions.conversation_id` accepts a
+non-empty host-supplied identity; otherwise it defaults to UUIDv7. It is
+independent of the model request's `session_id` option.
+
+`Agent.history` returns an isolated `AgentHistory`: `conversation_id`, UTC
+`created_at`, a read-only tuple of `entries`, and `leaf_id`. Every entry has a
+conversation-unique short `id`, `parent_id`, and UTC `timestamp`. The root has
+no parent; subsequent entries point to the previous leaf and advance it.
+Sequence and parent relationships determine order, not timestamp sorting.
+
+The currently delivered entry types are `MessageHistoryEntry` (`message`),
+`CustomMessageHistoryEntry` (`custom_message`), `ModelChangeHistoryEntry`
+(`model_change`), and `ThinkingLevelChangeHistoryEntry`
+(`thinking_level_change`). Standard messages retain their complete SDK data.
+Custom entries hold `custom_type`, `content`, `display`, and `details`; their UTC
+timestamp represents the custom message's millisecond timestamp. Model records
+contain only `provider` and `model_id`; thinking records contain the selected
+`thinking_level`. Executable models, tools, and credentials are not records.
+
+Initial model selection, default or explicit thinking level, the leading system
+message, and seed messages are recorded before any activity or subscription.
+An unconfigured placeholder model does not create a model-choice record. A host
+must save the initial full history explicitly; subscriptions do not replay
+earlier commits. Seeds create new record identities and are not a history
+restore interface. The current SDK does not yet provide history restoration or
+compaction.
+
+Final messages first commit to complete history and effective context, then emit
+`HistoryCommitEvent` (`history_commit`) before `message_end`. The event contains
+`conversation_id`, the complete new `entries` tuple in commit order, and the
+resulting `leaf_id`. Both notifications see the updated history and context.
+Streaming partials, progress, and unconsumed queue input are excluded from
+history. A commit confirms in-memory ownership; applications own serialization
+and saving.
+
+Agent history extensions, including custom `details`, tool-result `details`,
+tool-call arguments, and declaration schemas, must be JSON pure data: null,
+booleans, finite numbers, strings, lists, and dictionaries with string keys.
+Business objects, tuples, cycles, and non-finite floats are rejected. Invalid
+seed, prompt, or queued input raises `ValueError` before acceptance. Invalid
+model or hook messages end execution through the Agent error lifecycle without
+committing the invalid value. Invalid final tool or after-tool-hook data becomes
+a saveable error tool result; completed side effects remain completed.
 
 ## Credentials and request options
 
@@ -104,20 +156,25 @@ custom `StreamFn` receives the full normalized `TranscriptContext` and the
 
 | Field | Meaning |
 | --- | --- |
-| `messages` | Transcript. Assigning copies the top-level list; message objects are shared, not deep-copied. |
-| `tools` | Executable tool declarations. Assigning copies the top-level list. |
+| `messages` | Effective context as a read-only tuple with isolated message elements. |
+| `tools` | Read-only tuple of tool snapshots; execution callbacks remain host-owned. |
 | `system_prompt` | Read-only prompt replayed from the transcript's system messages. |
-| `model`, `thinking_level` | Configuration for future turns. |
+| `model`, `thinking_level` | Read-only observations of the initial execution configuration. |
 | `is_streaming` | True from run start until terminal listeners settle. |
 | `streaming_message` | Current partial assistant message, if any. |
 | `pending_tool_calls` | Tool call ids currently executing, tracked from tool execution events. |
 | `error_message` | Error text from the most recent failed or aborted turn. |
 
-The Agent passes the loop an independent context snapshot; mutating the snapshot during a run does not mutate `Agent.state.messages`.
+All state fields above are read-only. History and state reads, accepted inputs,
+queue previews, hook message views, provider requests, and each listener's event
+data are isolated. Mutating nested content, arguments, or details in a snapshot
+does not write back to the Agent or affect another listener. Request hooks can
+return explicit projections; mutating their input alone does not change the
+conversation. Long-lived provider and tool resources retain host ownership.
 
 ## Running and continuing
 
-`await agent.prompt(text, images=None)` accepts text, a single message, or a message batch. `await agent.continue_()` continues from an existing transcript whose last message is a user or tool-result message; it rejects empty or system-only history. A busy Agent rejects `prompt`, `continue_`, and `reset`. `reset()` clears the conversation, run state, and both input queues while retaining the replayed system baseline.
+`await agent.prompt(text, images=None)` accepts text, a single SDK message, or a message batch. `await agent.continue_()` continues from an existing transcript whose last message is a user or tool-result message; it rejects empty or system-only history. A busy Agent rejects `prompt` and `continue_`. Create another Agent to start a new conversation; `reset()` has been removed.
 
 An assistant tail normally cannot be continued. It is accepted only when an input queue supplies the next message: steering first, then follow-up. A steering continuation skips the loop's initial steering poll so a second queued steering message is not folded into the same request; with neither queue populated, `continue_()` raises the same rejection as the low-level loop.
 
@@ -130,11 +187,13 @@ Applications can queue messages while the Agent is idle or running:
 
 Both queues are FIFO. `agent.steering_mode` and `agent.follow_up_mode` select how many messages a drain takes and default to `"one-at-a-time"`; `"all"` takes every message currently queued. `agent.has_queued_messages()` reports whether either queue is non-empty, and `agent.peek_queued_messages()` previews the messages selected for the next turn without consuming them, preferring steering over follow-up. `clear_steering_queue()`, `clear_follow_up_queue()`, and `clear_all_queues()` remove queued messages explicitly.
 
-Queue consumption follows the loop's scheduling boundaries. The initial poll injects steering queued before the run starts. After each completed turn, the loop polls steering; a natural tool continuation or a pending steering message keeps the turn going without an extra request. Steering that arrives while `prepare_next_turn` runs is picked up only when the earlier poll returned nothing, so `one-at-a-time` never consumes two messages in the same turn. A truncated or error turn leaves unconsumed queues in place, and an aborted run does not drain them; only explicit clearing or `reset()` removes them.
+Queue consumption follows the loop's scheduling boundaries. The initial poll injects steering queued before the run starts. After each completed turn, the loop polls steering; a natural tool continuation or a pending steering message keeps the turn going without an extra request. Steering that arrives while `prepare_next_turn` runs is picked up only when the earlier poll returned nothing, so `one-at-a-time` never consumes two messages in the same turn. A truncated or error turn leaves unconsumed queues in place, and an aborted run does not drain them; only consumption or explicit clearing removes them.
 
 `finish_turn`'s `"end"` decision still stops without polling either queue. Its `"continue"` decision guarantees at least one next request, which a natural tool continuation, a steering message, or a follow-up can satisfy without an additional request.
 
-Queued messages use the same application-message ownership and conversion rules as a prompt: the stored object becomes part of `Agent.state.messages`, and the default `convert_to_llm` filters custom roles out of the model request.
+Queued messages use the same validation, isolation, and conversion rules as a
+prompt. Consumed input enters history, and custom content enters the default
+model projection as user content.
 
 ## Tools
 
@@ -257,9 +316,9 @@ can replace one between runs.
 
 ## Events and subscribers
 
-`agent.subscribe(listener)` registers a listener and returns an unsubscribe function. After each event the Agent updates public state, then awaits listeners in subscription order. `agent_end` is the final event, but `agent.is_streaming` stays true and `wait_for_idle()` stays pending until its listeners settle.
+`agent.subscribe(listener)` registers a listener and returns an unsubscribe function. After each event the Agent updates public state, then awaits listeners in subscription order, giving each listener an independent event snapshot. `agent_end` is the final event, but `agent.state.is_streaming` stays true and `wait_for_idle()` stays pending until its listeners settle.
 
-The conversation lifecycle emits `agent_start`, `turn_start`, `message_start`, `message_update`, `message_end`, `turn_end`, and `agent_end`. Assistant stream deltas arrive as `message_update` with the provider event attached. Tool execution emits `tool_execution_start`, `tool_execution_update` for live progress, and `tool_execution_end`; the resulting tool-result message uses the ordinary message lifecycle.
+The conversation lifecycle emits `agent_start`, `turn_start`, `message_start`, `message_update`, `history_commit`, `message_end`, `turn_end`, and `agent_end`. Assistant stream deltas arrive as `message_update` with the provider event attached. Tool execution emits `tool_execution_start`, `tool_execution_update` for live progress, and `tool_execution_end`; the resulting tool-result message uses the ordinary message lifecycle.
 
 ## Cancellation
 
@@ -310,6 +369,12 @@ stream never keeps a consumer alive: the producer finishes even when nobody
 reads. The producer-side `push`, `end`, and `fail` methods feed the stream and
 are called by the entries; applications normally consume the stream instead.
 
+The standalone loop uses `LoopMessage` and the open `LoopApplicationMessage`
+protocol (a `role` property), with `LoopConvertToLlm` and `LoopTransformContext`.
+Unknown application roles are filtered by default; applications supply their
+own conversion. Its wide tool payloads and live context ownership remain
+unchanged. Agent history validation and `history_commit` are Agent contracts.
+
 ### Ownership
 
 The Agent, direct execution, and the stream producer own their work differently:
@@ -337,7 +402,9 @@ Applications import the public Agent, loop entries, and contracts from
 | [`tool_declarations.py`](../src/omh/agent/tool_declarations.py) | Synchronizing executable tools with transcript declarations |
 | [`event_stream.py`](../src/omh/agent/event_stream.py) | Event consumers, independent producer tasks, and final result or failure delivery |
 | [`events.py`](../src/omh/agent/events.py) | Event contracts and awaited delivery to an event sink |
-| [`state.py`](../src/omh/agent/state.py) | Initial and mutable public Agent state, including list assignment ownership |
+| [`state.py`](../src/omh/agent/state.py) | Initial values and read-only Agent observations |
+| [`history.py`](../src/omh/agent/history.py) | Conversation identity, append-only records, and history snapshots |
+| [`data.py`](../src/omh/agent/data.py), [`isolation.py`](../src/omh/agent/isolation.py) | Agent history validation and isolated views around the open loop contracts |
 | [`options.py`](../src/omh/agent/options.py), [`loop_config.py`](../src/omh/agent/loop_config.py) | Agent construction options and standalone loop configuration |
 | [`messages.py`](../src/omh/agent/messages.py) | Application messages and model-input conversion contracts |
 | [`tools.py`](../src/omh/agent/tools.py) | Executable tools, result and callback contracts, and model-facing declarations |
@@ -358,8 +425,9 @@ turn scheduling. Provider transport and transcript primitives remain in
 
 ## Supported scope
 
-The main SDK includes the in-process Agent, standalone loop, request/turn/tool
-hooks, input queues, events, and cooperative cancellation. Applications supply
+The main SDK includes the in-process Agent, complete conversation records and
+isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
+events, and cooperative cancellation. Applications supply
 executable tools and own application-level session files, compaction and retry
 policies, resource discovery, and UI/CLI behavior.
 
@@ -370,3 +438,24 @@ tools. See its [overview](durable/README.md) and
 Provider capabilities and transport limits are documented in the
 [LLM contract](llm.md#request-options). Offline tests with controlled providers
 do not validate a live service or performance.
+
+## Migration from mutable Agent state
+
+- Pass initial messages through `AgentInitialState.messages`; use `prompt`,
+  `steer`, or `follow_up` for later input. Assigning or appending to
+  `state.messages` is no longer supported.
+- Replace `reset()` with construction of a new Agent and rebind subscriptions.
+  The old instance retains its history and queues. Before switching a running
+  instance, call `abort()` and await `wait_for_idle()`.
+- Replace tool-list assignment with `await agent.set_tools(tools)` while idle.
+  Select model and thinking level through initial options; their state fields
+  are observations.
+- Convert business message objects to `CustomAgentMessage`, and convert all
+  history extension values to JSON pure data. Use `LoopMessage` for open
+  application objects passed to standalone loops.
+- Compare message values or stable history IDs instead of shared object identity.
+  Mutating hook message views does not apply a context update; return the hook's
+  update value.
+
+Run the offline [history example](../examples/history.py) with
+`python examples/history.py` after installing the SDK.

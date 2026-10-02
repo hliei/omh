@@ -1,4 +1,4 @@
-"""Low-level agent loop that works with :data:`AgentMessage` throughout.
+"""Low-level agent loop that works with :data:`LoopMessage` throughout.
 
 Messages are converted to the LLM transcript only at the model-call boundary.
 Tool declarations live in system messages; the loop announces the difference
@@ -37,7 +37,7 @@ from omh.agent.hooks import (
     PrepareRequestContext,
 )
 from omh.agent.loop_config import AgentLoopConfig as AgentLoopConfig
-from omh.agent.messages import AgentMessage
+from omh.agent.messages import LoopMessage
 from omh.agent.model_response import stream_assistant_response
 from omh.agent.stream_fn import StreamFn, get_default_stream_fn
 from omh.agent.tool_declarations import declare_tool_changes as declare_tool_changes
@@ -53,7 +53,7 @@ from omh.llm.types import ThinkingLevel as ReasoningLevel
 
 
 def agent_loop(
-    prompts: list[AgentMessage],
+    prompts: list[LoopMessage],
     context: AgentContext,
     config: AgentLoopConfig,
     signal: AbortSignal | None = None,
@@ -100,13 +100,13 @@ def _resolve_stream_fn(stream_fn: StreamFn | None) -> StreamFn:
 
 
 async def run_agent_loop(
-    prompts: list[AgentMessage],
+    prompts: list[LoopMessage],
     context: AgentContext,
     config: AgentLoopConfig,
     emit: AgentEventSink,
     signal: AbortSignal | None = None,
     stream_fn: StreamFn | None = None,
-) -> list[AgentMessage]:
+) -> list[LoopMessage]:
     """Run a new prompt against ``context`` and return the messages added by this run.
 
     The caller's task owns execution; cancelling it interrupts the loop. Pass a
@@ -114,7 +114,7 @@ async def run_agent_loop(
     """
     resolved_stream_fn = _resolve_stream_fn(stream_fn)
     initial_messages = declare_tool_changes(context, prompts)
-    new_messages: list[AgentMessage] = list(initial_messages)
+    new_messages: list[LoopMessage] = list(initial_messages)
     current_context = AgentContext(
         messages=[*context.messages, *initial_messages],
         tools=list(context.tools),
@@ -136,7 +136,7 @@ async def run_agent_loop_continue(
     emit: AgentEventSink,
     signal: AbortSignal | None = None,
     stream_fn: StreamFn | None = None,
-) -> list[AgentMessage]:
+) -> list[LoopMessage]:
     """Continue from an existing transcript and return the messages added by this run.
 
     New messages are appended to ``context.messages``; the caller's list is
@@ -145,7 +145,7 @@ async def run_agent_loop_continue(
     _validate_continue_context(context)
     resolved_stream_fn = _resolve_stream_fn(stream_fn)
 
-    new_messages: list[AgentMessage] = []
+    new_messages: list[LoopMessage] = []
     current_context = AgentContext(messages=context.messages, tools=list(context.tools))
 
     await emit_event(emit, AgentStartEvent())
@@ -156,7 +156,7 @@ async def run_agent_loop_continue(
 
 async def _run_loop(
     context: AgentContext,
-    new_messages: list[AgentMessage],
+    new_messages: list[LoopMessage],
     config: AgentLoopConfig,
     signal: AbortSignal | None,
     emit: AgentEventSink,
@@ -176,7 +176,7 @@ async def _run_loop(
 
         # Inner loop: process tool calls, steering, and subsequent requests.
         while has_more_tool_calls or pending_messages:
-            prepared_messages: list[AgentMessage] = []
+            prepared_messages: list[LoopMessage] = []
             if last_completed_turn is not None:
                 update = await _call_prepare_next_turn(config, last_completed_turn)
                 if update is not None:
@@ -306,14 +306,14 @@ async def _call_prepare_next_turn(
     return await maybe_await(hook(turn))
 
 
-async def _call_get_steering_messages(config: AgentLoopConfig) -> list[AgentMessage]:
+async def _call_get_steering_messages(config: AgentLoopConfig) -> list[LoopMessage]:
     hook = config.get_steering_messages
     if hook is None:
         return []
     return list(await maybe_await(hook()))
 
 
-async def _call_get_follow_up_messages(config: AgentLoopConfig) -> list[AgentMessage]:
+async def _call_get_follow_up_messages(config: AgentLoopConfig) -> list[LoopMessage]:
     hook = config.get_follow_up_messages
     if hook is None:
         return []

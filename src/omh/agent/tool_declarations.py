@@ -7,13 +7,13 @@ from dataclasses import replace
 from typing import cast
 
 from omh.agent.context import AgentContext
-from omh.agent.messages import AgentMessage
+from omh.agent.messages import LoopMessage
 from omh.agent.tools import to_tool_declaration
 from omh.llm.types import SystemMessage, Tool, ToolReference
 from omh.llm.utils.transcript import get_current_tools, get_tool_state_changes
 
 
-def declare_tool_changes(context: AgentContext, pending_messages: list[AgentMessage]) -> list[AgentMessage]:
+def declare_tool_changes(context: AgentContext, pending_messages: list[LoopMessage]) -> list[LoopMessage]:
     """Announce the difference between executable and transcript tools before a request.
 
     A pending system message has its tool fields treated as intent and replaced

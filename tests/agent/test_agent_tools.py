@@ -15,6 +15,7 @@ from omh.agent import (
     AgentTool,
     AgentToolResult,
     AgentToolUpdateCallback,
+    HistoryCommitEvent,
     MessageEndEvent,
     MessageStartEvent,
     ToolExecutionEndEvent,
@@ -232,16 +233,20 @@ async def test_tool_call_roundtrip_executes_and_continues_model() -> None:
         AgentStartEvent,
         TurnStartEvent,
         MessageStartEvent,
+        HistoryCommitEvent,
         MessageEndEvent,
         MessageStartEvent,
+        HistoryCommitEvent,
         MessageEndEvent,
         ToolExecutionStartEvent,
         ToolExecutionEndEvent,
         MessageStartEvent,
+        HistoryCommitEvent,
         MessageEndEvent,
         TurnEndEvent,
         TurnStartEvent,
         MessageStartEvent,
+        HistoryCommitEvent,
         MessageEndEvent,
         TurnEndEvent,
         AgentEndEvent,
@@ -611,7 +616,7 @@ async def test_tools_assigned_after_construction_are_declared_to_model() -> None
     tool = RecordingTool()
     stream = ScriptedStreamFn([lambda: text_message("ok")])
     agent = Agent(AgentOptions(stream_fn=stream, initial_state=AgentInitialState(model=make_model())))
-    agent.state.tools = [tool.agent_tool()]
+    await agent.set_tools([tool.agent_tool()])
 
     await agent.prompt("go")
 
@@ -636,7 +641,7 @@ async def test_removed_tools_are_declared_to_model() -> None:
     )
 
     await agent.prompt("one")
-    agent.state.tools = []
+    await agent.set_tools([])
     await agent.prompt("two")
 
     second_request = stream.requests[1].context.messages

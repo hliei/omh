@@ -63,3 +63,4 @@ class AgentOptions:
     thinking_budgets: ThinkingBudgets | None = None
     transport: Transport | None = None
     max_retry_delay_ms: float | None = None
+    conversation_id: str | None = None

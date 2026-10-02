@@ -17,6 +17,7 @@ from omh.agent import (
     AgentOptions,
     AgentStartEvent,
     AgentTool,
+    HistoryCommitEvent,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
@@ -153,9 +154,11 @@ async def test_prompt_runs_without_session_and_exposes_lifecycle() -> None:
         AgentStartEvent,
         TurnStartEvent,
         MessageStartEvent,
+        HistoryCommitEvent,
         MessageEndEvent,
         MessageStartEvent,
         MessageUpdateEvent,
+        HistoryCommitEvent,
         MessageEndEvent,
         TurnEndEvent,
         AgentEndEvent,
@@ -242,36 +245,28 @@ async def test_existing_leading_system_message_is_not_reinjected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A02: state list ownership
+# A02: state snapshot ownership
 # ---------------------------------------------------------------------------
 
 
-def test_state_list_assignment_copies_top_level_and_shares_objects() -> None:
-    agent = Agent(AgentOptions(stream_fn=RecordingStreamFn(), initial_state=AgentInitialState(model=make_model())))
-
-    original_messages: list[AgentMessage] = [
-        SystemMessage(content="s", timestamp=0),
-        UserMessage(content="u", timestamp=1),
-    ]
-    agent.state.messages = original_messages
-    original_messages.append(AssistantMessage(api="a", provider="p", model="m", usage=empty_usage(), stop_reason="stop", timestamp=2))
+def test_initial_messages_and_tools_are_isolated_read_only_snapshots() -> None:
+    messages = [SystemMessage(content="s", timestamp=0), UserMessage(content="u", timestamp=1)]
+    tool = AgentTool(name="t", description="d", parameters={}, label="T", execute=lambda *args: None)
+    agent = Agent(AgentOptions(
+        stream_fn=RecordingStreamFn(),
+        initial_state=AgentInitialState(model=make_model(), messages=messages, tools=[tool]),
+    ))
+    messages.append(text_message("later"))
     assert len(agent.state.messages) == 2
-    assert agent.state.messages[0] is original_messages[0]
-
-    async def execute(
-        tool_call_id: str,
-        args: dict[str, object],
-        signal: AbortSignal | None,
-        on_update: object,
-    ) -> object:
-        del tool_call_id, args, signal, on_update
-        raise AssertionError("tool must not be executed")
-
-    original_tools = [AgentTool(name="t", description="d", parameters={}, label="T", execute=execute)]
-    agent.state.tools = original_tools
-    original_tools.append(AgentTool(name="t2", description="d", parameters={}, label="T2", execute=execute))
-    assert len(agent.state.tools) == 1
-    assert agent.state.tools[0] is original_tools[0]
+    assert agent.state.messages[0] == messages[0]
+    assert agent.state.messages[0] is not messages[0]
+    assert agent.state.tools[0] == tool
+    assert agent.state.tools[0] is not tool
+    assert agent.state.tools[0].execute is tool.execute
+    with pytest.raises(AttributeError):
+        agent.state.messages = []
+    with pytest.raises(AttributeError):
+        agent.state.tools = []
 
 
 async def test_agent_provides_independent_context_snapshot() -> None:
@@ -283,17 +278,17 @@ async def test_agent_provides_independent_context_snapshot() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A03: continue_ and reset
+# A03: continue_ and new conversation
 # ---------------------------------------------------------------------------
 
 
 async def test_continue_from_user_history() -> None:
     stream = RecordingStreamFn()
-    agent = Agent(AgentOptions(stream_fn=stream, initial_state=AgentInitialState(model=make_model())))
-    agent.state.messages = [
+    seeds = [
         SystemMessage(content="p", timestamp=0),
         UserMessage(content="hello", timestamp=1),
     ]
+    agent = Agent(AgentOptions(stream_fn=stream, initial_state=AgentInitialState(model=make_model(), messages=seeds)))
 
     await agent.continue_()
 
@@ -304,8 +299,7 @@ async def test_continue_from_user_history() -> None:
 
 async def test_continue_from_tool_result_history() -> None:
     stream = RecordingStreamFn()
-    agent = Agent(AgentOptions(stream_fn=stream, initial_state=AgentInitialState(model=make_model())))
-    agent.state.messages = [
+    seeds = [
         SystemMessage(content="p", timestamp=0),
         UserMessage(content="run tool", timestamp=1),
         AssistantMessage(
@@ -319,6 +313,7 @@ async def test_continue_from_tool_result_history() -> None:
         ),
         ToolResultMessage(tool_call_id="c1", tool_name="do", content=[TextContent(text="done")], timestamp=3),
     ]
+    agent = Agent(AgentOptions(stream_fn=stream, initial_state=AgentInitialState(model=make_model(), messages=seeds)))
 
     await agent.continue_()
 
@@ -331,19 +326,20 @@ async def test_continue_rejects_empty_system_only_and_assistant_tail() -> None:
     with pytest.raises(ValueError, match="No messages to continue"):
         await agent.continue_()
 
-    agent.state.messages = [SystemMessage(content="only", timestamp=0)]
+    agent = Agent(AgentOptions(stream_fn=RecordingStreamFn(), initial_state=AgentInitialState(model=make_model(), messages=[SystemMessage(content="only", timestamp=0)])))
     with pytest.raises(ValueError, match="No messages to continue"):
         await agent.continue_()
 
-    agent.state.messages = [
+    seeds = [
         SystemMessage(content="only", timestamp=0),
         text_message("done"),
     ]
+    agent = Agent(AgentOptions(stream_fn=RecordingStreamFn(), initial_state=AgentInitialState(model=make_model(), messages=seeds)))
     with pytest.raises(ValueError, match="assistant"):
         await agent.continue_()
 
 
-async def test_busy_agent_rejects_prompt_continue_and_reset() -> None:
+async def test_busy_agent_rejects_prompt_and_continue() -> None:
     gate = asyncio.Event()
 
     def stream_fn(model: Model, context: TranscriptContext, options: SimpleStreamOptions | None) -> AssistantMessageEventStream:
@@ -366,30 +362,21 @@ async def test_busy_agent_rejects_prompt_continue_and_reset() -> None:
         await agent.prompt("again")
     with pytest.raises(RuntimeError, match="already processing"):
         await agent.continue_()
-    with pytest.raises(RuntimeError, match="already processing"):
-        agent.reset()
 
     gate.set()
     await running
 
 
-async def test_reset_clears_conversation_and_keeps_system_baseline() -> None:
+async def test_new_instance_starts_a_new_conversation_and_retains_old_history() -> None:
     stream = RecordingStreamFn()
-    agent = Agent(
-        AgentOptions(
-            stream_fn=stream,
-            initial_state=AgentInitialState(system_prompt="Stay", model=make_model()),
-        )
-    )
-    await agent.prompt("hi")
-    agent.state.error_message = "old"
-
-    agent.reset()
-
+    options = AgentOptions(stream_fn=stream, initial_state=AgentInitialState(system_prompt="Stay", model=make_model()))
+    old = Agent(options)
+    await old.prompt("hi")
+    history = old.history
+    agent = Agent(options)
+    assert agent.history.conversation_id != history.conversation_id
+    assert old.history == history
     assert len(agent.state.messages) == 1
-    baseline = agent.state.messages[0]
-    assert isinstance(baseline, SystemMessage)
-    assert baseline.content == "Stay"
     assert agent.state.system_prompt == "Stay"
     assert agent.state.is_streaming is False
     assert agent.state.error_message is None

@@ -7,13 +7,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 from omh.agent.context import AgentContext
-from omh.agent.messages import AgentMessage
+from omh.agent.messages import LoopMessage
 from omh.agent.tools import AgentToolResult
 from omh.llm.types import (
     AbortSignal,
     AssistantMessage,
     ImageContent,
-    JsonValue,
     Model,
     TextContent,
     ToolCall,
@@ -60,7 +59,7 @@ class AfterToolCallResult:
     """
 
     content: list[TextContent | ImageContent] | None = None
-    details: JsonValue = None
+    details: object | None = None
     is_error: bool | None = None
     usage: Usage | None = None
     terminate: bool | None = None
@@ -100,12 +99,13 @@ class AgentTurnContext:
     results were appended; ``new_messages`` are the messages this run would
     return if it stops at this point. Both are the loop's live objects and may
     grow after the hook returns, so snapshot them when retaining them.
+    Agent callbacks receive isolated snapshots instead of the loop's live data.
     """
 
     message: AssistantMessage
     tool_results: list[ToolResultMessage]
     context: AgentContext
-    new_messages: list[AgentMessage]
+    new_messages: list[LoopMessage]
 
 
 FinishTurn = Callable[
@@ -124,7 +124,7 @@ class AgentLoopTurnUpdate:
     """
 
     context: AgentContext | None = None
-    messages: list[AgentMessage] | None = None
+    messages: list[LoopMessage] | None = None
     model: Model | None = None
     thinking_level: ThinkingLevel | None = None
 
@@ -168,11 +168,11 @@ PrepareNextTurn = Callable[
 
 #: Loop-level steering poll. Returns the messages to inject at a queue drain
 #: point; the default Agent binding drains the steering queue by its mode.
-GetSteeringMessages = Callable[[], list[AgentMessage] | Awaitable[list[AgentMessage]]]
+GetSteeringMessages = Callable[[], list[LoopMessage] | Awaitable[list[LoopMessage]]]
 
 #: Loop-level follow-up poll. Runs when the loop would otherwise stop and no
 #: steering or natural tool continuation is pending.
-GetFollowUpMessages = Callable[[], list[AgentMessage] | Awaitable[list[AgentMessage]]]
+GetFollowUpMessages = Callable[[], list[LoopMessage] | Awaitable[list[LoopMessage]]]
 
 #: Agent-level next-turn preparation without loop context. Receives the run signal.
 PrepareNextTurnWithSignal = Callable[

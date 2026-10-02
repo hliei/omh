@@ -14,6 +14,7 @@ from omh.agent import (
     AgentOptions,
     AgentTool,
     AgentToolResult,
+    CustomAgentMessage,
     MessageEndEvent,
     MessageStartEvent,
     clear_default_stream_fn,
@@ -103,31 +104,24 @@ def _clear_default_stream_fn() -> None:
     clear_default_stream_fn()
 
 
-@dataclass
-class NoticeMessage:
-    text: str
-    role: str = "notice"
-    timestamp: int = NOW
-
-
 # ---------------------------------------------------------------------------
 # A08: custom messages and conversion order
 # ---------------------------------------------------------------------------
 
 
-async def test_custom_messages_stay_in_history_and_default_conversion_filters_them() -> None:
+async def test_custom_messages_stay_in_history_and_default_conversion_projects_content() -> None:
     stream = ScriptedStreamFn()
     agent = Agent(
         AgentOptions(stream_fn=stream, initial_state=AgentInitialState(model=make_model(), system_prompt="Base"))
     )
 
-    await agent.prompt([NoticeMessage(text="app state"), UserMessage(content="hello", timestamp=NOW)])
+    await agent.prompt([CustomAgentMessage(custom_type="notice", content="app state", timestamp=NOW), UserMessage(content="hello", timestamp=NOW)])
 
     roles = [message.role for message in agent.state.messages]
-    assert "notice" in roles
+    assert "custom" in roles
     request_roles = [message.role for message in stream.requests[0].context.messages]
     assert "notice" not in request_roles
-    assert request_roles == ["system", "user"]
+    assert request_roles == ["system", "user", "user"]
 
 
 async def test_transform_then_convert_then_normalize_order_and_original_history_preserved() -> None:
@@ -138,12 +132,12 @@ async def test_transform_then_convert_then_normalize_order_and_original_history_
         messages: list[AgentMessage], signal: AbortSignal | None
     ) -> list[AgentMessage]:
         order.append("transform")
-        assert any(isinstance(message, NoticeMessage) for message in messages)
-        return [message for message in messages if not isinstance(message, NoticeMessage)]
+        assert any(isinstance(message, CustomAgentMessage) for message in messages)
+        return [message for message in messages if not isinstance(message, CustomAgentMessage)]
 
     async def convert_to_llm(messages: list[AgentMessage]) -> list[object]:
         order.append("convert")
-        return [message for message in messages if getattr(message, "role", None) != "notice"]  # type: ignore[misc]
+        return [message for message in messages if getattr(message, "role", None) != "custom"]  # type: ignore[misc]
 
     agent = Agent(
         AgentOptions(
@@ -154,11 +148,11 @@ async def test_transform_then_convert_then_normalize_order_and_original_history_
         )
     )
 
-    await agent.prompt([NoticeMessage(text="app state"), UserMessage(content="hello", timestamp=NOW)])
+    await agent.prompt([CustomAgentMessage(custom_type="notice", content="app state", timestamp=NOW), UserMessage(content="hello", timestamp=NOW)])
 
     assert order == ["transform", "convert"]
     original_roles = [message.role for message in agent.state.messages]
-    assert "notice" in original_roles
+    assert "custom" in original_roles
     request_roles = [message.role for message in stream.requests[0].context.messages]
     assert request_roles == ["system", "user"]
 

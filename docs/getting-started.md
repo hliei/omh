@@ -151,7 +151,7 @@ ADD_TOOL = AgentTool(
 Pass `tools=[ADD_TOOL]` in `AgentInitialState` when creating the Agent. You can also replace the tool list between runs. Inside the async function, using the existing Agent:
 
 ```python
-agent.state.tools = [ADD_TOOL]
+await agent.set_tools([ADD_TOOL])
 await agent.prompt("Use the add tool to calculate 137 + 289, then report the result.")
 if agent.state.error_message:
     raise RuntimeError(agent.state.error_message)

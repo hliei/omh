@@ -29,6 +29,7 @@ from omh.agent import (
     AgentToolResult,
     AgentToolUpdateCallback,
     AgentTurnContext,
+    CustomAgentMessage,
     PrepareRequestContext,
     ToolExecutionEndEvent,
     agent_loop,
@@ -306,11 +307,11 @@ async def test_combined_agent_run_tracks_requests_history_and_tools() -> None:
 
     def transform_context(messages: list[object], signal: AbortSignal | None) -> list[object]:
         del signal
-        return [message for message in messages if not (isinstance(message, NoticeMessage) and message.text == "drop")]
+        return [message for message in messages if not (isinstance(message, CustomAgentMessage) and message.content == "drop")]
 
     def convert_to_llm(messages: list[object]) -> list[Message]:
         return [
-            user_message(f"notice:{message.text}", 5) if isinstance(message, NoticeMessage) else message  # type: ignore[arg-type]
+            user_message(f"notice:{message.content}", 5) if isinstance(message, CustomAgentMessage) else message  # type: ignore[arg-type]
             for message in messages
         ]
 
@@ -334,8 +335,8 @@ async def test_combined_agent_run_tracks_requests_history_and_tools() -> None:
 
     prompts: list[object] = [
         SystemMessage(content="", timestamp=1, sections={"style": "brief"}),
-        NoticeMessage("keep"),
-        NoticeMessage("drop"),
+        CustomAgentMessage(custom_type="notice", content="keep", timestamp=5),
+        CustomAgentMessage(custom_type="notice", content="drop", timestamp=5),
         user_message("work", 2),
     ]
 
@@ -386,9 +387,9 @@ async def test_combined_agent_run_tracks_requests_history_and_tools() -> None:
     assert gamma.calls == []
 
     # The custom message conversion is a request projection only; application history keeps both notices.
-    assert any(isinstance(message, NoticeMessage) and message.text == "keep" for message in agent.state.messages)
-    assert any(isinstance(message, NoticeMessage) and message.text == "drop" for message in agent.state.messages)
-    assert not any(isinstance(message, NoticeMessage) for message in stream.requests[0].context.messages)
+    assert any(isinstance(message, CustomAgentMessage) and message.content == "keep" for message in agent.state.messages)
+    assert any(isinstance(message, CustomAgentMessage) and message.content == "drop" for message in agent.state.messages)
+    assert not any(isinstance(message, CustomAgentMessage) for message in stream.requests[0].context.messages)
     final = agent.state.messages[-1]
     assert isinstance(final, AssistantMessage)
     assert final.content == [TextContent(text="after follow")]
