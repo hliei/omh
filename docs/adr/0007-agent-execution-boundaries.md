@@ -2,6 +2,8 @@
 
 状态：已接受并实施。进程内 Agent、独立 loop、工具、输入队列、请求与回合 hooks、模型适配器集成及 durable 命名空间归位均已交付。当前行为见 [Agent 契约](../agent.md)与[实验性 Durable Agent SDK](../durable/README.md)。
 
+后续设计：[ADR-0009](0009-agent-runtime-policy-ownership.md) 已确定由 Agent 统一拥有进程内压缩、选定的重试策略与有效上下文管理；该扩展尚未实施，下文保留首次建设的范围与已交付契约。
+
 omh 提供进程内有状态的 Agent，作为后续编码助手应用层的执行基础；现有 AgentHarness 的持久化执行路径收束到 `omh.agent.durable`。采用 `durable` 命名，是为了让模块边界直接表达事务、恢复与副作用处理保证。两条路径分别保留自己的执行契约，不因模块整理而改变现有持久化行为。
 
 Session／Memory、持久化 runtime、结构操作和现有 harness 工具随持久化路径归位；SQLite 保持独立后端边界。共享类型与机制仅在语义相容时复用。具体声明与迁移清单在规格中展开。

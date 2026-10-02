@@ -5,11 +5,67 @@
 ## Language
 
 **Agent**:
-持有对话消息、配置、输入队列与运行状态的进程内执行单元，不要求 Session 存储。应用层负责其会话保存与运行策略；Agent 本身不提供跨进程中断恢复保证。
+绑定一份对话的进程内 SDK 运行时入口，拥有该对话的完整历史、有效上下文、运行策略、配置、输入队列与运行状态。宿主提供模型、工具与策略配置，并负责会话保存、读取与选择；Agent 本身不提供跨进程中断恢复保证。
 _Avoid_: AgentHarness、AgentLane
 
+**coding-agent（编码助手应用）**:
+构建于 Agent 之上的编码助手应用，负责工作目录与配置组装、会话选择与切换、历史保存与读取，以及用户交互。
+_Avoid_: Agent（指 SDK 运行时）
+
+**应用会话**:
+coding-agent 保存、读取和选择的一份对话，在当前进程中由独立的 Agent 实例承载。
+_Avoid_: Session（指 Durable Agent SDK 的持久化会话）
+
+**Agent conversation identity（Agent 对话身份）**:
+SDK 随完整对话历史持有的稳定会话身份，保存和恢复时保持，新建对话时重新建立。
+_Avoid_: 文件路径、模型请求的 session_id、Durable Session
+
+**Conversation history（对话历史）**:
+由 Agent 持有的当前对话完整记录，包括原始消息与追加的压缩记录。
+_Avoid_: 有效上下文、单次模型请求输入
+
+**Agent history snapshot（Agent 历史快照）**:
+与 Agent 内部消息数据隔离的对话记录读取结果；修改取得的消息副本不会写回 Agent。
+_Avoid_: 内部可变历史引用
+
+**History commit event（历史提交事件）**:
+Agent 表明新增完整记录已纳入权威内存历史的事件，供宿主保存或观察；磁盘保存结果由宿主负责。
+_Avoid_: 磁盘保存完成通知
+
+**Effective context（有效上下文）**:
+SDK 根据对话历史及压缩记录构建、供对话继续执行的内容，可以省略已被摘要覆盖的原始消息。
+_Avoid_: 完整对话历史、调用取消上下文
+
+**Request projection（请求投影）**:
+在有效上下文基础上为本次模型请求准备的输入，可以包含宿主 hook 的请求覆盖；这些覆盖不改写完整历史或公开模型选择。
+_Avoid_: 对话历史替换、持续的运行配置变更
+
+**Compaction（压缩）**:
+通过摘要缩减有效上下文的操作，保留原始对话历史并追加压缩记录。
+_Avoid_: 删除原始历史
+
+**Compaction recovery（压缩恢复）**:
+进程内 Agent 在上下文溢出或可恢复的响应截断后，通过压缩有效上下文尝试继续对话的恢复过程。
+_Avoid_: 模型响应重试、跨进程执行恢复
+
+**Assistant retry（模型响应重试）**:
+对话响应或压缩摘要遭遇选定的暂时性模型错误后，再次请求模型；与通过压缩恢复上下文容量问题相区分。
+_Avoid_: 工具重试、监听器重试
+
+**Agent activity（Agent 运行活动）**:
+由 Agent 接纳、独占推进当前对话的工作单元，如对话运行或手动压缩；自动压缩与重试可以是活动内部的阶段。
+_Avoid_: Operation（指 Durable AgentLane 的可恢复工作单元）
+
+**Loop run（循环运行）**:
+一次模型与工具循环的执行过程；一个对话活动可以包含多个循环运行，单次循环结束不表示整个活动收束。
+_Avoid_: Agent 运行活动
+
+**Standalone loop（独立循环）**:
+供宿主直接使用的模型与工具循环，不持有完整长对话运行时状态；宿主编排其执行生命周期，完整长对话策略通过 Agent 使用。
+_Avoid_: Agent 运行时
+
 **Steering message（引导消息）**:
-传统 Agent 运行中排入的消息，在队列消费边界注入：初次调度时，以及每个完成回合之后。默认每次一条（one-at-a-time），也支持 all；peek 优先 steering 且不消费；工具批次不会因它跳过剩余调用；finish_turn 的 end 决定停止运行且不消费任何队列；失败或 abort 后未消费部分保留，只有显式清理或 reset 才移除。
+传统 Agent 运行中排入的消息，在队列消费边界注入：初次调度时，以及每个完成回合之后。默认每次一条（one-at-a-time），也支持 all；peek 优先 steering 且不消费；工具批次不会因它跳过剩余调用；finish_turn 的 end 决定停止运行且不消费任何队列；失败或 abort 后未消费部分保留，只有消费或显式清理才移除。
 _Avoid_: 用并发 prompt 抢占当前运行
 
 **Follow-up message（后续消息）**:
@@ -23,6 +79,10 @@ _Avoid_: 用 peek 隐式消费
 **AgentTool**:
 传统 Agent 持有的可执行工具，包含名称、描述、JSON Schema 参数、显示 label、可选参数预处理、execute 回调及可选 execution_mode。发送给模型的声明只含名称、描述与参数；未知工具、预处理或校验失败、before hook 阻断、执行异常成为错误工具结果，不进入副作用。execute 在存活期间可通过 on_update 报告进度。
 _Avoid_: AgentHarnessTool
+
+**Coding tools（编码工具）**:
+SDK 提供工厂的 read、bash、edit、write 工具；宿主按工作目录与配置创建，再作为 AgentTool 注入运行时。
+_Avoid_: Agent 默认工具集合
 
 **Tool batch（工具批次）**:
 一条 assistant 消息中的全部工具调用。默认并行：按来源顺序预检，允许的调用并发执行；tool_execution_end 按完成顺序，工具结果消息按来源顺序。全局 sequential 或任一被调用工具声明 `execution_mode="sequential"` 时整批串行。只有全部已最终结算结果都明确 terminate 时才停止该批次的后续模型回合。
@@ -41,7 +101,7 @@ _Avoid_: 终结后仍写入观察状态
 _Avoid_: 工作流调度平台
 
 **Session**:
-共享对话历史及其持久化状态的会话单元，可包含多个 Branch 和 AgentLane。
+Durable Agent SDK 中共享对话历史及其持久化状态的会话单元，可包含多个 Branch 和 AgentLane。
 
 **Branch**:
 对话树中具有名字和可移动末端的一条路径。
@@ -73,8 +133,12 @@ _Avoid_: 最后一条系统消息（代替完整重放）
 _Avoid_: 未规范化的公开 Context
 
 **CustomAgentMessage（自定义应用消息）**:
-由 `role` 标识、不属于标准 LLM 角色联合的应用消息。它保留在 Agent 历史中；默认模型转换过滤它，应用通过 `convert_to_llm`／`transform_context` 决定它如何进入请求。它不拓宽 durable codec 的接受集合。
-_Avoid_: 把应用消息伪装成标准模型消息
+SDK 定义、保留于 Agent 历史中的数据型应用消息。消息内容可参与模型请求、摘要与上下文预算；应用元数据用于展示或其他业务用途，不因此成为模型内容。
+_Avoid_: 任意业务对象、把应用元数据当作模型内容
+
+**Loop application message（loop 应用消息）**:
+独立 loop 接受的开放应用消息，由应用标识角色并定义模型转换；默认转换过滤未知角色。它不自动具备 Agent 数据型自定义消息的历史与恢复含义。
+_Avoid_: CustomAgentMessage（指 Agent 的数据型消息）
 
 **Default StreamFn（默认流函数）**:
 宿主通过 `set_default_stream_fn` 安装、由 `get_default_stream_fn` 读取的模型流回退。显式传入的 `StreamFn` 优先；未安装且未显式传入时明确失败，不会隐式绑定 provider 目录。
