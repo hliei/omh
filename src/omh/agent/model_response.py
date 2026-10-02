@@ -7,8 +7,7 @@ message in the run result without appending it to the context again.
 
 from __future__ import annotations
 
-import inspect
-
+from omh.agent._async import call_with_signal
 from omh.agent.context import AgentContext
 from omh.agent.events import (
     AgentEventSink,
@@ -73,26 +72,21 @@ def _record_thinking_level(message: AssistantMessage, config: AgentLoopConfig) -
     return message
 
 
-async def _resolve_api_key(config: AgentLoopConfig) -> str | None:
-    if config.get_api_key is None:
+async def _resolve_api_key(config: AgentLoopConfig, signal: AbortSignal | None) -> str | None:
+    get_api_key = config.get_api_key
+    if get_api_key is None:
         return config.api_key
-    resolved = config.get_api_key(config.model.provider)
-    if inspect.isawaitable(resolved):
-        resolved = await resolved
+    resolved = await call_with_signal(lambda: get_api_key(config.model.provider), signal)
     return resolved or config.api_key
 
 
 async def _build_request_context(config: AgentLoopConfig, messages: list[LoopMessage], signal: AbortSignal | None) -> TranscriptContext:
     transformed = messages
-    if config.transform_context is not None:
-        maybe = config.transform_context(messages, signal)
-        if inspect.isawaitable(maybe):
-            maybe = await maybe
-        transformed = maybe
+    transform_context = config.transform_context
+    if transform_context is not None:
+        transformed = await call_with_signal(lambda: transform_context(messages, signal), signal)
     convert = config.convert_to_llm or _default_convert_to_llm
-    llm_messages = convert(transformed)
-    if inspect.isawaitable(llm_messages):
-        llm_messages = await llm_messages
+    llm_messages = await call_with_signal(lambda: convert(transformed), signal)
     return normalize_context(Context(messages=llm_messages))
 
 
@@ -104,9 +98,9 @@ async def stream_assistant_response(
     stream_fn: StreamFn,
 ) -> AssistantMessage:
     transcript = await _build_request_context(config, context.messages, signal)
-    api_key = await _resolve_api_key(config)
+    api_key = await _resolve_api_key(config, signal)
 
-    response = stream_fn(
+    response = await call_with_signal(lambda: stream_fn(
         config.model,
         transcript,
         SimpleStreamOptions(
@@ -121,9 +115,7 @@ async def stream_assistant_response(
             thinking_budgets=config.thinking_budgets,
             max_retry_delay_ms=config.max_retry_delay_ms,
         ),
-    )
-    if inspect.isawaitable(response):
-        response = await response
+    ), signal)
 
     partial_message: AssistantMessage | None = None
     added_partial = False

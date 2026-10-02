@@ -174,6 +174,7 @@ For changes during a conversation, system messages can add instructions, update 
 
 - [Steering and follow-up queues](agent.md#input-queues): inject guidance at a turn boundary or queue a message for when the run would otherwise finish.
 - [Cancellation](agent.md#cancellation): `agent.abort()` requests a cooperative stop. Cancelling a caller waiting on `prompt` only ends that wait.
+- [Permanent closure](agent.md#permanent-closure): retire an instance with `await agent.close()`; run the offline [lifecycle example](../examples/lifecycle.py) to try cancellation and closure.
 - [Request and turn hooks](agent.md#request-and-turn-hooks): prepare model inputs and control whether the conversation continues.
 - [Standalone loop](agent.md#standalone-loop): use direct calls or an event stream when your application owns state and lifecycle.
 - [Durable getting started](durable/getting-started.md): use the experimental SDK when you need Sessions, SQLite persistence, or explicit recovery after interruption.

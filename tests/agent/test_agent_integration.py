@@ -581,10 +581,11 @@ async def test_cancelled_waiter_keeps_observer_and_abort_settles_with_remaining_
     assert agent.state.pending_tool_calls == frozenset()
     assert agent.state.is_streaming is False
     final = agent.state.messages[-1]
-    assert isinstance(final, AssistantMessage)
-    assert final.stop_reason == "aborted"
-    # Abort does not drain the queues; the follow-up queued during the run remains.
+    assert isinstance(final, ToolResultMessage)
+    # Abort stops before another request and preserves both unconsumed queues.
     assert agent.has_queued_messages() is True
+    assert agent.peek_queued_messages() == [steer]
+    agent.clear_steering_queue()
     assert agent.peek_queued_messages() == [follow_up]
 
 

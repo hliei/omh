@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from omh.agent._async import maybe_await
+from omh.agent._async import call_with_signal, maybe_await
 from omh.agent.context import AgentContext
 from omh.agent.event_stream import AgentEventStream as AgentEventStream
 from omh.agent.event_stream import start_producer
@@ -167,6 +167,8 @@ async def _run_loop(
 
     # Steering may already be queued before the run starts; the first request
     # picks it up together with the initial prompt messages.
+    if signal is not None:
+        signal.throw_if_aborted()
     pending_messages = await _call_get_steering_messages(config)
 
     # Outer loop: an explicit ``continue`` decision requests one more turn when
@@ -176,9 +178,16 @@ async def _run_loop(
 
         # Inner loop: process tool calls, steering, and subsequent requests.
         while has_more_tool_calls or pending_messages:
+            if signal is not None:
+                signal.throw_if_aborted()
             prepared_messages: list[LoopMessage] = []
             if last_completed_turn is not None:
-                update = await _call_prepare_next_turn(config, last_completed_turn)
+                completed_turn = last_completed_turn
+                update: AgentLoopTurnUpdate | None = await call_with_signal(
+                    lambda: _call_prepare_next_turn(config, completed_turn), signal,
+                )
+                if signal is not None:
+                    signal.throw_if_aborted()
                 if update is not None:
                     if update.context is not None:
                         context = update.context
@@ -200,6 +209,8 @@ async def _run_loop(
             pending_messages = []
 
             request_update = await _call_prepare_request(config, context, signal)
+            if signal is not None:
+                signal.throw_if_aborted()
             context, config = _apply_request_update(context, config, request_update)
 
             message = await stream_assistant_response(context, config, signal, emit, stream_fn)
@@ -222,7 +233,7 @@ async def _run_loop(
             tool_calls = [block for block in message.content if isinstance(block, ToolCall)]
             tool_results: list[ToolResultMessage] = []
             has_more_tool_calls = False
-            if tool_calls:
+            if tool_calls and not (signal is not None and signal.aborted):
                 if message.stop_reason == "length":
                     batch = await fail_truncated_tool_calls(tool_calls, emit)
                 else:
@@ -243,7 +254,7 @@ async def _run_loop(
             await emit_event(emit, TurnEndEvent(message=message, tool_results=tool_results))
 
             # An ``end`` decision stops without polling either queue.
-            if decision == "end":
+            if decision == "end" or (signal is not None and signal.aborted):
                 await emit_event(emit, AgentEndEvent(messages=new_messages))
                 return
 
@@ -285,15 +296,14 @@ async def _call_prepare_request(
     hook = config.prepare_request
     if hook is None:
         return None
-    result = hook(
+    return await call_with_signal(lambda: hook(
         PrepareRequestContext(
             context=context,
             model=config.model,
             thinking_level=config.reasoning if config.reasoning is not None else "off",
         ),
         signal,
-    )
-    return await maybe_await(result)
+    ), signal)
 
 
 async def _call_prepare_next_turn(
