@@ -2,28 +2,36 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Literal, Protocol, runtime_checkable
 
-from omh.llm.types import AbortSignal, Message
+from omh.llm.types import AbortSignal, ImageContent, JsonValue, Message, TextContent
 
 
-#: Application message union. The traditional Agent starts with the standard LLM
-#: message roles; applications add their own roles by extending the conversion
-#: boundary rather than by widening the LLM message union.
 @runtime_checkable
-class CustomAgentMessage(Protocol):
-    """A message recognised by its ``role`` but outside the standard LLM roles.
+class LoopApplicationMessage(Protocol):
+    """Open application message accepted by the standalone loop."""
 
-    Custom messages live in the application history. The default model conversion
-    filters them out; applications that want them in a request provide
-    ``AgentOptions.convert_to_llm``.
-    """
+    @property
+    def role(self) -> str: ...
 
-    role: str
+
+@dataclass(slots=True)
+class CustomAgentMessage:
+    """Agent history data; only content participates in default model input."""
+
+    custom_type: str
+    content: str | list[TextContent | ImageContent]
+    display: bool = True
+    details: JsonValue = None
+    timestamp: int = field(default_factory=lambda: time.time_ns() // 1_000_000)
+    role: Literal["custom"] = field(default="custom", init=False)
 
 
 AgentMessage = Message | CustomAgentMessage
+LoopMessage = Message | LoopApplicationMessage
 
 #: Converts application messages to LLM messages before transcript normalization.
 ConvertToLlm = Callable[[list[AgentMessage]], list[Message] | Awaitable[list[Message]]]
@@ -32,4 +40,10 @@ ConvertToLlm = Callable[[list[AgentMessage]], list[Message] | Awaitable[list[Mes
 TransformContext = Callable[
     [list[AgentMessage], AbortSignal | None],
     list[AgentMessage] | Awaitable[list[AgentMessage]],
+]
+
+LoopConvertToLlm = Callable[[list[LoopMessage]], list[Message] | Awaitable[list[Message]]]
+LoopTransformContext = Callable[
+    [list[LoopMessage], AbortSignal | None],
+    list[LoopMessage] | Awaitable[list[LoopMessage]],
 ]

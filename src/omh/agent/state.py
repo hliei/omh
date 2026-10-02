@@ -1,9 +1,11 @@
-"""Initial values and mutable public state of an in-process Agent."""
+"""Initial values and read-only, isolated observations of an in-process Agent."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import copy
+from dataclasses import dataclass, replace
 
+from omh.agent.data import snapshot_messages, validate_json
 from omh.agent.messages import AgentMessage
 from omh.agent.tools import AgentTool, to_tool_declaration
 from omh.llm.types import Model, ModelCost
@@ -41,28 +43,23 @@ class AgentInitialState:
 
 
 class AgentState:
-    """Public Agent state with copy-on-assign message and tool lists.
-
-    Assigning :attr:`messages` or :attr:`tools` copies the top-level list; the
-    message and tool objects themselves are shared, not deep-copied. The prompt
-    is replayed from the transcript's system messages and is read-only here.
-    """
+    """Read-only observations. Mutable message elements are isolated copies."""
 
     def __init__(self, initial: AgentInitialState | None = None) -> None:
         initial = initial or AgentInitialState()
-        self._tools: list[AgentTool] = list(initial.tools or [])
-        self._messages: list[AgentMessage] = list(initial.messages or [])
+        self._tools = snapshot_tools(initial.tools or [])
+        self._messages = snapshot_messages(initial.messages or [])
         initial_message = create_initial_system_message(
             initial.system_prompt,
             [to_tool_declaration(tool) for tool in self._tools],
         )
         if (not self._messages or self._messages[0].role != "system") and initial_message is not None:
             self._messages.insert(0, initial_message)
-        self.model: Model = initial.model if initial.model is not None else DEFAULT_MODEL
-        self.thinking_level: ThinkingLevel = initial.thinking_level
-        self.is_streaming: bool = False
-        self.streaming_message: AgentMessage | None = None
-        self.error_message: str | None = None
+        self._model = copy.deepcopy(initial.model if initial.model is not None else DEFAULT_MODEL)
+        self._thinking_level: ThinkingLevel = initial.thinking_level
+        self._is_streaming = False
+        self._streaming_message: AgentMessage | None = None
+        self._error_message: str | None = None
         self._pending_tool_calls: set[str] = set()
 
     @property
@@ -84,17 +81,36 @@ class AgentState:
         self._pending_tool_calls.clear()
 
     @property
-    def tools(self) -> list[AgentTool]:
-        return self._tools
-
-    @tools.setter
-    def tools(self, value: list[AgentTool]) -> None:
-        self._tools = list(value)
+    def model(self) -> Model:
+        return copy.deepcopy(self._model)
 
     @property
-    def messages(self) -> list[AgentMessage]:
-        return self._messages
+    def thinking_level(self) -> ThinkingLevel:
+        return self._thinking_level
 
-    @messages.setter
-    def messages(self, value: list[AgentMessage]) -> None:
-        self._messages = list(value)
+    @property
+    def is_streaming(self) -> bool:
+        return self._is_streaming
+
+    @property
+    def streaming_message(self) -> AgentMessage | None:
+        return copy.deepcopy(self._streaming_message)
+
+    @property
+    def error_message(self) -> str | None:
+        return self._error_message
+
+    @property
+    def tools(self) -> tuple[AgentTool, ...]:
+        return tuple(snapshot_tools(self._tools))
+
+    @property
+    def messages(self) -> tuple[AgentMessage, ...]:
+        return copy.deepcopy(tuple(self._messages))
+
+
+def snapshot_tools(tools: list[AgentTool] | tuple[AgentTool, ...]) -> list[AgentTool]:
+    """Copy declaration data while retaining host-owned execution callbacks."""
+    for tool in tools:
+        validate_json(tool.parameters, f"tools.{tool.name}.parameters")
+    return [replace(tool, parameters=copy.deepcopy(tool.parameters)) for tool in tools]

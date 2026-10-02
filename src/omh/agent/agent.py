@@ -7,16 +7,20 @@ active run. It does not require a Session, Branch, or durable runtime.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import cast
 
 from omh.agent._async import maybe_await
 from omh.agent.context import AgentContext
+from omh.agent.data import snapshot_messages
 from omh.agent.events import (
     AgentEndEvent,
     AgentEvent,
+    HistoryCommitEvent,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
@@ -24,6 +28,7 @@ from omh.agent.events import (
     ToolExecutionStartEvent,
     TurnEndEvent,
 )
+from omh.agent.history import AgentHistory, ConversationHistory
 from omh.agent.hooks import (
     AfterToolCall,
     AgentLoopTurnUpdate,
@@ -36,16 +41,17 @@ from omh.agent.hooks import (
     PrepareNextTurnWithSignal,
     PrepareRequest,
 )
+from omh.agent.isolation import isolate_loop_config, isolate_tools
 from omh.agent.loop import (
     run_agent_loop,
     run_agent_loop_continue,
 )
 from omh.agent.loop_config import AgentLoopConfig
-from omh.agent.messages import AgentMessage, ConvertToLlm, TransformContext
+from omh.agent.messages import AgentMessage, ConvertToLlm, LoopMessage, TransformContext
 from omh.agent.options import AgentOptions, QueueMode
-from omh.agent.state import AgentState
+from omh.agent.state import AgentState, snapshot_tools
 from omh.agent.stream_fn import get_default_stream_fn
-from omh.agent.tools import ToolExecutionMode
+from omh.agent.tools import AgentTool, ToolExecutionMode
 from omh.llm.types import (
     AbortController,
     AbortSignal,
@@ -63,7 +69,6 @@ from omh.llm.types import (
 from omh.llm.types import (
     ThinkingLevel as ReasoningLevel,
 )
-from omh.llm.utils.transcript import get_current_system_message
 
 AgentListener = Callable[[AgentEvent, AbortSignal], Awaitable[None] | None]
 
@@ -90,15 +95,15 @@ class _PendingMessageQueue:
         self._messages: list[AgentMessage] = []
 
     def enqueue(self, message: AgentMessage) -> None:
-        self._messages.append(message)
+        self._messages.extend(snapshot_messages([message]))
 
     def has_items(self) -> bool:
         return bool(self._messages)
 
     def peek(self) -> list[AgentMessage]:
         if self.mode == "all":
-            return list(self._messages)
-        return [self._messages[0]] if self._messages else []
+            return copy.deepcopy(self._messages)
+        return copy.deepcopy(self._messages[:1])
 
     def drain(self) -> list[AgentMessage]:
         drained = self.peek()
@@ -121,6 +126,12 @@ class Agent:
 
     def __init__(self, options: AgentOptions) -> None:
         self._state = AgentState(options.initial_state)
+        self._history = ConversationHistory(options.conversation_id)
+        if options.initial_state is not None and options.initial_state.model is not None:
+            self._history.append_model(self._state.model)
+        self._history.append_thinking_level(self._state.thinking_level)
+        for message in self._state.messages:
+            self._history.append_message(message)
         self._listeners: list[AgentListener] = []
         self._active_run: _ActiveRun | None = None
         self._steering_queue = _PendingMessageQueue(options.steering_mode)
@@ -148,8 +159,13 @@ class Agent:
         self.max_retry_delay_ms: float | None = options.max_retry_delay_ms
 
     @property
+    def history(self) -> AgentHistory:
+        """Complete committed records, isolated from the Agent's history."""
+        return self._history.snapshot()
+
+    @property
     def state(self) -> AgentState:
-        """Current public state. Assigning ``messages``/``tools`` copies the top-level list."""
+        """Read-only state with isolated message and declaration snapshots."""
         return self._state
 
     @property
@@ -167,6 +183,12 @@ class Agent:
                 self._listeners.remove(listener)
 
         return unsubscribe
+
+    async def set_tools(self, tools: list[AgentTool]) -> None:
+        """Replace idle execution tools; declarations commit before the next request."""
+        if self._active_run is not None:
+            raise RuntimeError("Agent is already processing. Wait for completion before setting tools.")
+        self._state._tools = snapshot_tools(tools)
 
     def abort(self) -> None:
         """Cooperatively signal the current run to stop. Has no effect when idle."""
@@ -284,40 +306,27 @@ class Agent:
         assert run.task is not None
         await asyncio.shield(run.task)
 
-    def reset(self) -> None:
-        """Clear conversation and run state while retaining the replayed system baseline."""
-        if self._active_run is not None:
-            raise RuntimeError("Agent is already processing. Wait for completion before resetting.")
-
-        baseline = get_current_system_message(self._state.messages)
-        self._state.messages = [baseline] if baseline is not None else []
-        self._state.is_streaming = False
-        self._state.streaming_message = None
-        self._state.error_message = None
-        self._state._clear_pending_tool_calls()
-        self.clear_all_queues()
-
     def _normalize_prompt_input(
         self,
         message: str | AgentMessage | list[AgentMessage],
         images: list[ImageContent] | None,
     ) -> list[AgentMessage]:
         if isinstance(message, list):
-            return message
+            return snapshot_messages(message)
         if not isinstance(message, str):
-            return [message]
+            return snapshot_messages([message])
         content: list[TextContent | ImageContent] = [TextContent(text=message)]
         if images:
-            content.extend(images)
-        return [UserMessage(content=content, timestamp=_now_ms())]
+            content.extend(copy.deepcopy(images))
+        return snapshot_messages([UserMessage(content=content, timestamp=_now_ms())])
 
     def _begin_run(
         self,
         executor: Callable[[AbortSignal], Awaitable[None]],
     ) -> _ActiveRun:
-        self._state.is_streaming = True
-        self._state.streaming_message = None
-        self._state.error_message = None
+        self._state._is_streaming = True
+        self._state._streaming_message = None
+        self._state._error_message = None
 
         run = _ActiveRun(
             abort_controller=AbortController(),
@@ -338,8 +347,8 @@ class Agent:
             self._finish_run(run)
 
     def _finish_run(self, run: _ActiveRun) -> None:
-        self._state.is_streaming = False
-        self._state.streaming_message = None
+        self._state._is_streaming = False
+        self._state._streaming_message = None
         self._state._clear_pending_tool_calls()
         if not run.idle.done():
             run.idle.set_result(None)
@@ -347,28 +356,29 @@ class Agent:
             self._active_run = None
 
     def _create_context_snapshot(self) -> AgentContext:
-        return AgentContext(messages=list(self._state.messages), tools=list(self._state.tools))
+        return AgentContext(messages=list(self._state.messages), tools=isolate_tools(list(self._state.tools)))
 
     def _create_loop_config(self, *, skip_initial_steering_poll: bool = False) -> AgentLoopConfig:
         thinking_level = self._state.thinking_level
         reasoning: ReasoningLevel | None = None if thinking_level == "off" else thinking_level
         poll_steering = not skip_initial_steering_poll
 
-        def get_steering_messages() -> list[AgentMessage]:
+        def get_steering_messages() -> list[LoopMessage]:
             nonlocal poll_steering
             if not poll_steering:
                 poll_steering = True
                 return []
-            return self._steering_queue.drain()
+            return list(self._steering_queue.drain())
 
-        return AgentLoopConfig(
+        def get_follow_up_messages() -> list[LoopMessage]:
+            return list(self._follow_up_queue.drain())
+
+        config = AgentLoopConfig(
             model=self._state.model,
             reasoning=reasoning,
             tool_execution=self.tool_execution,
             before_tool_call=self.before_tool_call,
             after_tool_call=self.after_tool_call,
-            convert_to_llm=self.convert_to_llm,
-            transform_context=self.transform_context,
             get_api_key=self.get_api_key,
             api_key=self.api_key,
             on_payload=self.on_payload,
@@ -378,12 +388,13 @@ class Agent:
             prepare_request=self.prepare_request,
             prepare_next_turn=self._build_prepare_next_turn(),
             get_steering_messages=get_steering_messages,
-            get_follow_up_messages=self._follow_up_queue.drain,
+            get_follow_up_messages=get_follow_up_messages,
             session_id=self.session_id,
             thinking_budgets=self.thinking_budgets,
             transport=self.transport,
             max_retry_delay_ms=self.max_retry_delay_ms,
         )
+        return isolate_loop_config(config, self.convert_to_llm, self.transform_context)
 
     async def _run_prompt_messages(
         self,
@@ -393,7 +404,7 @@ class Agent:
         skip_initial_steering_poll: bool = False,
     ) -> None:
         await run_agent_loop(
-            messages,
+            list(messages),
             self._create_context_snapshot(),
             self._create_loop_config(skip_initial_steering_poll=skip_initial_steering_poll),
             self._process_events,
@@ -450,22 +461,34 @@ class Agent:
         await self._process_events(AgentEndEvent(messages=[failure_message]))
 
     async def _process_events(self, event: AgentEvent) -> None:
-        self._reduce_state(event)
+        if isinstance(event, MessageEndEvent):
+            message = snapshot_messages([event.message])[0]
+            entry = self._history.append_message(message)
+            event = replace(event, message=message)
+            self._reduce_state(event)
+            await self._notify_listeners(HistoryCommitEvent(
+                conversation_id=self._history.conversation_id, entries=(entry,), leaf_id=entry.id,
+            ))
+        else:
+            self._reduce_state(event)
+        await self._notify_listeners(event)
+
+    async def _notify_listeners(self, event: AgentEvent) -> None:
         run = self._active_run
         if run is None:
             raise RuntimeError("Agent listener invoked outside active run")
         signal = run.abort_controller.signal
         for listener in list(self._listeners):
-            result = listener(event, signal)
+            result = listener(copy.deepcopy(event), signal)
             if inspect.isawaitable(result):
                 await result
 
     def _reduce_state(self, event: AgentEvent) -> None:
         if isinstance(event, (MessageStartEvent, MessageUpdateEvent)):
-            self._state.streaming_message = event.message
+            self._state._streaming_message = cast(AgentMessage, copy.deepcopy(event.message))
         elif isinstance(event, MessageEndEvent):
-            self._state.streaming_message = None
-            self._state.messages.append(event.message)
+            self._state._streaming_message = None
+            self._state._messages.extend(snapshot_messages([event.message]))
         elif isinstance(event, ToolExecutionStartEvent):
             self._state._add_pending_tool_call(event.tool_call_id)
         elif isinstance(event, ToolExecutionEndEvent):
@@ -474,9 +497,9 @@ class Agent:
             message = event.message
             error_message = getattr(message, "error_message", None)
             if getattr(message, "role", None) == "assistant" and error_message:
-                self._state.error_message = error_message
+                self._state._error_message = error_message
         elif isinstance(event, AgentEndEvent):
-            self._state.streaming_message = None
+            self._state._streaming_message = None
 
 
 def _retrieve_task_exception(task: asyncio.Task[None]) -> None:

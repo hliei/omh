@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from omh.agent.events import AgentEvent, AgentEventSink
-from omh.agent.messages import AgentMessage
+from omh.agent.messages import LoopMessage
 
 
 class AgentEventStream:
@@ -27,7 +27,7 @@ class AgentEventStream:
     def __init__(self) -> None:
         self._queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
         self._finished = asyncio.Event()
-        self._result: list[AgentMessage] | None = None
+        self._result: list[LoopMessage] | None = None
         self._error: BaseException | None = None
         self._task: asyncio.Task[None] | None = None
 
@@ -41,7 +41,7 @@ class AgentEventStream:
         if not self._finished.is_set():
             self._queue.put_nowait(event)
 
-    def end(self, messages: list[AgentMessage]) -> None:
+    def end(self, messages: list[LoopMessage]) -> None:
         """Producer-side: finish normally with the messages added by the run."""
         self._result = messages
         self._finish()
@@ -69,11 +69,11 @@ class AgentEventStream:
         if self._error is not None:
             raise self._error
 
-    def result(self) -> Awaitable[list[AgentMessage]]:
+    def result(self) -> Awaitable[list[LoopMessage]]:
         """Return an independent awaitable for the run's added messages."""
         return self._await_result()
 
-    async def _await_result(self) -> list[AgentMessage]:
+    async def _await_result(self) -> list[LoopMessage]:
         await self._finished.wait()
         if self._error is not None:
             raise self._error
@@ -88,7 +88,7 @@ def _retrieve_task_exception(task: asyncio.Task[None]) -> None:
 
 def start_producer(
     stream: AgentEventStream,
-    run: Callable[[AgentEventSink], Awaitable[list[AgentMessage]]],
+    run: Callable[[AgentEventSink], Awaitable[list[LoopMessage]]],
 ) -> None:
     async def produce() -> None:
         try:

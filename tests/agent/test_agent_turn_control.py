@@ -184,6 +184,7 @@ async def test_prepare_request_runs_before_first_request_after_pending_messages(
         ("event", "AgentStartEvent"),
         ("event", "TurnStartEvent"),
         ("event", "MessageStartEvent"),
+        ("event", "HistoryCommitEvent"),
         ("event", "MessageEndEvent"),
     ]
     assert seen == [["system", "user"]]
@@ -406,11 +407,13 @@ async def test_prepare_next_turn_messages_get_lifecycle_events_and_tool_declarat
 
     prepared_start = log.index(("event", "MessageStartEvent"), log.index(("hook", "prepare_next_turn")))
     # A prepared message uses the ordinary lifecycle before the assistant response.
-    assert log[prepared_start + 1] == ("event", "MessageEndEvent")
+    assert log[prepared_start + 1] == ("event", "HistoryCommitEvent")
+    assert log[prepared_start + 2] == ("event", "MessageEndEvent")
 
     second_turn_start = log.index(("event", "TurnStartEvent"), log.index(("hook", "prepare_next_turn")))
     assert log[second_turn_start + 1] == ("event", "MessageStartEvent")
-    assert log[second_turn_start + 2] == ("event", "MessageEndEvent")
+    assert log[second_turn_start + 2] == ("event", "HistoryCommitEvent")
+    assert log[second_turn_start + 3] == ("event", "MessageEndEvent")
 
     second_request = stream.requests[1].context.messages
     prepared = [message for message in second_request if isinstance(message, UserMessage)]

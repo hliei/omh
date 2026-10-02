@@ -13,7 +13,7 @@ These records explain choices across the SDK. The [Agent contract](../agent.md),
 | [0007 — Agent execution boundaries](0007-agent-execution-boundaries.md) | Agent and experimental Durable SDK | Implemented module boundaries, ownership, and cancellation |
 | [0008 — Package verification in CI](0008-package-verification-in-ci.md) | Whole SDK | Distribution contents and installed-wheel checks |
 | [0009 — Agent runtime policy ownership](0009-agent-runtime-policy-ownership.md) | In-process Agent; accepted design, pending implementation | SDK runtime policies and coding-agent responsibilities |
-| [0010 — Agent conversation history and lifetime](0010-agent-conversation-history-and-lifetime.md) | In-process Agent; accepted design, pending implementation | Complete history, compaction records, and one conversation per instance |
+| [0010 — Agent conversation history and lifetime](0010-agent-conversation-history-and-lifetime.md) | In-process Agent; accepted design, partially implemented | Complete history, compaction records, and one conversation per instance |
 | [0011 — Awaited Agent event listeners](0011-agent-awaited-event-listeners.md) | In-process Agent; accepted design, pending implementation | Sequential synchronous and asynchronous public listeners |
 | [0012 — Agent request projection and overrides](0012-agent-request-projection-and-overrides.md) | In-process Agent; accepted design, pending implementation | Fresh effective context and request-scoped hook overrides |
 | [0013 — Explicit Agent activity end](0013-agent-explicit-activity-end.md) | In-process Agent; accepted design, pending implementation | finish_turn end stops the full conversation activity |

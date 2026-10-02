@@ -10,7 +10,6 @@ from typing import Literal
 from omh.llm.types import (
     AbortSignal,
     ImageContent,
-    JsonValue,
     TextContent,
     Tool,
     ToolCall,
@@ -36,7 +35,7 @@ class AgentToolResult:
     """Result returned by an :class:`AgentTool` execution."""
 
     content: list[TextContent | ImageContent]
-    details: JsonValue = None
+    details: object | None = None
     usage: Usage | None = None
     terminate: bool | None = None
 

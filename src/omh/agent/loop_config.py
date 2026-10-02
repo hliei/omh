@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from omh.agent.hooks import (
@@ -14,9 +15,10 @@ from omh.agent.hooks import (
     PrepareNextTurn,
     PrepareRequest,
 )
-from omh.agent.messages import ConvertToLlm, TransformContext
+from omh.agent.messages import LoopConvertToLlm, LoopTransformContext
 from omh.agent.tools import ToolExecutionMode
 from omh.llm.types import (
+    AssistantMessage,
     Model,
     OnPayload,
     OnProviderStreamEvent,
@@ -34,8 +36,8 @@ class AgentLoopConfig:
     tool_execution: ToolExecutionMode = "parallel"
     before_tool_call: BeforeToolCall | None = None
     after_tool_call: AfterToolCall | None = None
-    convert_to_llm: ConvertToLlm | None = None
-    transform_context: TransformContext | None = None
+    convert_to_llm: LoopConvertToLlm | None = None
+    transform_context: LoopTransformContext | None = None
     finish_turn: FinishTurn | None = None
     prepare_request: PrepareRequest | None = None
     prepare_next_turn: PrepareNextTurn | None = None
@@ -50,3 +52,4 @@ class AgentLoopConfig:
     thinking_budgets: ThinkingBudgets | None = None
     transport: Transport | None = None
     max_retry_delay_ms: float | None = None
+    _snapshot_response: Callable[[AssistantMessage], AssistantMessage] | None = None
