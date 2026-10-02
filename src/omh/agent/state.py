@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, replace
+from typing import Literal
 
 from omh.agent.data import snapshot_messages, validate_json
 from omh.agent.messages import AgentMessage
@@ -58,6 +59,9 @@ class AgentState:
         self._model = copy.deepcopy(initial.model if initial.model is not None else DEFAULT_MODEL)
         self._thinking_level: ThinkingLevel = initial.thinking_level or "off"
         self._is_streaming = False
+        self._is_busy = False
+        self._is_closed = False
+        self._activity_kind: Literal["dialogue"] | None = None
         self._streaming_message: AgentMessage | None = None
         self._error_message: str | None = None
         self._pending_tool_calls: set[str] = set()
@@ -91,6 +95,20 @@ class AgentState:
     @property
     def is_streaming(self) -> bool:
         return self._is_streaming
+
+    @property
+    def is_busy(self) -> bool:
+        """Whether an accepted activity, including its listeners, is unsettled."""
+        return self._is_busy
+
+    @property
+    def is_closed(self) -> bool:
+        """Whether permanent closure has finished, including internal cleanup."""
+        return self._is_closed
+
+    @property
+    def activity_kind(self) -> Literal["dialogue"] | None:
+        return self._activity_kind
 
     @property
     def streaming_message(self) -> AgentMessage | None:

@@ -242,7 +242,10 @@ custom `StreamFn` receives the full normalized `TranscriptContext` and the
 | `tools` | Read-only tuple of tool snapshots; execution callbacks remain host-owned. |
 | `system_prompt` | Read-only prompt replayed from the transcript's system messages. |
 | `model`, `thinking_level` | Read-only observations of the initial execution configuration. |
-| `is_streaming` | True from run start until terminal listeners settle. |
+| `is_busy` | True from activity acceptance through preparation, model/tool execution, and terminal listeners. |
+| `activity_kind` | `"dialogue"` while a prompt or continuation is unsettled; otherwise `None`. |
+| `is_streaming` | True throughout the dialogue activity, including request preparation and terminal listeners. |
+| `is_closed` | True after permanent closure finishes; closure rejects new work from its start. |
 | `streaming_message` | Current partial assistant message, if any. |
 | `pending_tool_calls` | Tool call ids currently executing, tracked from tool execution events. |
 | `error_message` | Error text from the most recent failed or aborted turn. |
@@ -400,11 +403,65 @@ can replace one between runs.
 
 `agent.subscribe(listener)` registers a listener and returns an unsubscribe function. After each event the Agent updates public state, then awaits listeners in subscription order, giving each listener an independent event snapshot. `agent_end` is the final event, but `agent.state.is_streaming` stays true and `wait_for_idle()` stays pending until its listeners settle.
 
+A failing terminal listener stops the remaining notifications and propagates
+to the prompt/continuation caller and any close callers awaiting that run.
+Completed history and results remain intact; the Agent does not emit a second
+error turn or repeat `agent_end`. Internal cleanup still releases idle waiters.
+When tool or progress notifications fail, every already started tool and
+accepted progress notification settles before the Agent reports idle or closed.
+
 The conversation lifecycle emits `agent_start`, `turn_start`, `message_start`, `message_update`, `history_commit`, `message_end`, `turn_end`, and `agent_end`. Assistant stream deltas arrive as `message_update` with the provider event attached. Tool execution emits `tool_execution_start`, `tool_execution_update` for live progress, and `tool_execution_end`; the resulting tool-result message uses the ordinary message lifecycle.
 
 ## Cancellation
 
-The Agent owns its run. Cancelling a caller awaiting `prompt`, `continue_`, or `wait_for_idle` ends only that wait; the run and other waiters continue. `agent.abort()` cooperatively signals the current run, and the Agent becomes idle only after the run and its terminal listeners settle. Abort does not preempt uncooperative work or undo side effects.
+The Agent owns its activity. Cancelling a caller awaiting `prompt`, `continue_`,
+or `wait_for_idle` ends only that wait; preparation, execution, and other waiters
+continue. `agent.abort()` sends a cancellation signal without waiting. The
+signal exists before the first callback and covers request/next-turn
+preparation, context transformation, conversion, credential lookup, provider
+setup, the model stream, and tool execution. Pending asynchronous preparation
+is cancelled and awaited through its cleanup before the activity ends. A model
+stream and tools must cooperate with the supplied signal; synchronous blocking
+work cannot be interrupted.
+
+Abort prevents subsequent automatic requests and queue consumption. Input
+already consumed into history remains there, while unconsumed steering and
+follow-ups remain queued. A completed tool result is preserved even when abort
+stops the next request; no extra assistant response is needed after that result.
+Cancellation does not roll back side effects. The Agent becomes idle after
+execution, child tasks, and terminal listeners settle; idle waiters are released
+even if terminal notification raises. Queues alone do not keep an Agent busy.
+
+## Permanent closure
+
+`await agent.close()` permanently retires the instance. Once the close coroutine
+starts, it rejects `prompt`, `continue_`, queue input, configuration methods and
+public configuration assignments (including hooks and queue modes), and new
+subscriptions. It signals abort and awaits current work and terminal listeners,
+then detaches subscriptions and sets `state.is_closed=True`. It never starts or
+migrates queued work and never saves history for the application.
+
+Closure belongs to the Agent. Cancelling one close waiter ends only that wait;
+other callers and later `close()` calls await the same closure and receive the
+same result or exception. Terminal listener failure still leaves the instance
+closed. History, effective context, queue previews, modes, and queue presence
+remain readable; explicit queue clearing and existing unsubscribe functions
+remain usable. `abort()` and `wait_for_idle()` remain safe after close.
+
+Close owns internal execution and bindings. The host still owns shared provider
+clients, connection pools, and long-lived tool resources. Each tool invocation
+must release its own handles or processes before returning. Uncooperative work
+can delay closure; closure does not preempt it or undo effects.
+
+Awaiting `close()` or `wait_for_idle()` from the current activity's own callbacks
+or child work raises `RuntimeError`, since completion depends on that work
+returning. Callers outside the activity can await cleanup; callbacks can use
+the non-waiting `abort()` signal. Ordinary callback prompts still encounter the
+busy rejection.
+
+Run the offline [lifecycle example](../examples/lifecycle.py) with
+`python examples/lifecycle.py` to see waiter cancellation, permanent closure,
+and retained queues and history.
 
 ## Standalone loop
 
@@ -464,6 +521,7 @@ The Agent, direct execution, and the stream producer own their work differently:
 | Entry | Owner | Cancelling a waiter or task | Stopping cooperatively |
 | --- | --- | --- | --- |
 | `Agent.prompt` / `Agent.continue_` | the Agent | ends only that wait; the run and other waiters continue | `agent.abort()` |
+| `Agent.close` | the Agent | ends only that wait; permanent closure and other waiters continue | signals the active run and awaits cleanup |
 | `run_agent_loop` / `run_agent_loop_continue` | the caller's task | the task's cancellation interrupts the loop; no full terminal event sequence is promised | pass a signal and await completion |
 | `agent_loop` / `agent_loop_continue` | an independent producer task | stopping the read, cancelling a reader, or cancelling one result waiter does not cancel the producer or other waiters | pass a signal; the producer stops at the next cooperative check |
 
@@ -528,7 +586,8 @@ do not validate a live service or performance.
   `state.messages` is no longer supported.
 - Replace `reset()` with construction of a new Agent and rebind subscriptions.
   The old instance retains its history and queues. Before switching a running
-  instance, call `abort()` and await `wait_for_idle()`.
+  instance, use `await old.close()` to retire it permanently. Use `abort()` and
+  `wait_for_idle()` when the same instance should remain usable.
 - Replace tool-list assignment with `await agent.set_tools(tools)` while idle.
   Select model and thinking level through initial options; their state fields
   are observations.
@@ -538,6 +597,10 @@ do not validate a live service or performance.
 - Compare message values or stable history IDs instead of shared object identity.
   Mutating hook message views does not apply a context update; return the hook's
   update value.
+- Use `state.is_busy` to observe the entire accepted activity and
+  `state.is_closed` for completed retirement. After tool cancellation, preserve
+  its final result without expecting another model request or an extra aborted
+  assistant message. Await lifecycle cleanup outside Agent-owned callbacks.
 
 Run the offline [history example](../examples/history.py) with
 `python examples/history.py` after installing the SDK.

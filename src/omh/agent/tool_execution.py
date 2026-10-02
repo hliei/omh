@@ -12,6 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
+from omh.agent._async import gather_settled
 from omh.agent.context import AgentContext
 from omh.agent.events import (
     AgentEventSink,
@@ -132,7 +133,7 @@ async def _execute_tool_calls_parallel(
             return entry
         return await entry()
 
-    ordered = list(await asyncio.gather(*(resolve(entry) for entry in entries)))
+    ordered = await gather_settled(resolve(entry) for entry in entries)
     messages: list[ToolResultMessage] = []
     for finalized in ordered:
         message = _create_tool_result_message(finalized)
@@ -325,10 +326,10 @@ async def _execute_prepared_tool_call(
         executed: tuple[AgentToolResult, bool] = (result, False)
     except Exception as error:  # noqa: BLE001 - tool failures become error tool results
         executed = (_create_error_tool_result(str(error)), True)
-
-    accepting_updates = False
-    if pending_updates:
-        await asyncio.gather(*pending_updates)
+    finally:
+        accepting_updates = False
+        if pending_updates:
+            await gather_settled(pending_updates)
     return executed
 
 

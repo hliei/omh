@@ -11,6 +11,7 @@ import copy
 import inspect
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -88,6 +89,10 @@ class _ActiveRun:
     abort_controller: AbortController
     idle: asyncio.Future[None]
     task: asyncio.Task[None] | None = None
+    ending: bool = False
+
+
+_current_run: ContextVar[_ActiveRun | None] = ContextVar("agent_current_run", default=None)
 
 
 class _PendingMessageQueue:
@@ -130,6 +135,12 @@ class Agent:
     wait, while :meth:`abort` cooperatively signals the run to stop.
     """
 
+    def __setattr__(self, name: str, value: object) -> None:
+        # Existing public attributes configure host callbacks and request options.
+        if not name.startswith("_"):
+            self._ensure_open()
+        super().__setattr__(name, value)
+
     def __init__(self, options: AgentOptions) -> None:
         self._state = AgentState(options.initial_state)
         self._history = ConversationHistory(options.conversation_id)
@@ -166,6 +177,7 @@ class Agent:
     def _configure(self, options: AgentOptions) -> None:
         self._listeners: list[AgentListener] = []
         self._active_run: _ActiveRun | None = None
+        self._close_task: asyncio.Task[None] | None = None
         self._steering_queue = _PendingMessageQueue(options.steering_mode)
         self._follow_up_queue = _PendingMessageQueue(options.follow_up_mode)
         self.stream_fn = options.stream_fn if options.stream_fn is not None else get_default_stream_fn()
@@ -208,6 +220,7 @@ class Agent:
 
     def subscribe(self, listener: AgentListener) -> Callable[[], None]:
         """Register a lifecycle listener and return an unsubscribe function."""
+        self._ensure_open()
         self._listeners.append(listener)
 
         def unsubscribe() -> None:
@@ -218,6 +231,7 @@ class Agent:
 
     async def set_tools(self, tools: list[AgentTool]) -> None:
         """Replace idle execution tools; declarations commit before the next request."""
+        self._ensure_open()
         if self._active_run is not None:
             raise RuntimeError("Agent is already processing. Wait for completion before setting tools.")
         self._state._tools = snapshot_tools(tools)
@@ -233,7 +247,40 @@ class Agent:
         run = self._active_run
         if run is None:
             return
+        self._reject_self_wait(run)
         await asyncio.shield(run.idle)
+
+    async def close(self) -> None:
+        """Permanently reject new work and await Agent-owned cooperative cleanup.
+
+        Cancelling a close waiter only ends that wait. Every caller awaits the
+        same result; injected provider and long-lived tool resources stay owned
+        by the host. History and unconsumed queues remain readable.
+        """
+        if self._active_run is not None:
+            self._reject_self_wait(self._active_run)
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close(self._active_run))
+            self._close_task.add_done_callback(_retrieve_task_exception)
+            self.abort()
+        await asyncio.shield(self._close_task)
+
+    async def _close(self, run: _ActiveRun | None) -> None:
+        try:
+            if run is not None:
+                assert run.task is not None
+                await run.task
+        finally:
+            self._listeners.clear()
+            self._state._is_closed = True
+
+    def _ensure_open(self) -> None:
+        if getattr(self, "_close_task", None) is not None:
+            raise RuntimeError("Agent is closing or closed.")
+
+    def _reject_self_wait(self, run: _ActiveRun) -> None:
+        if _current_run.get() is run:
+            raise RuntimeError("Cannot wait for this Agent from its own activity callback.")
 
     @property
     def steering_mode(self) -> QueueMode:
@@ -242,6 +289,7 @@ class Agent:
 
     @steering_mode.setter
     def steering_mode(self, mode: QueueMode) -> None:
+        self._ensure_open()
         self._steering_queue.mode = mode
 
     @property
@@ -251,14 +299,17 @@ class Agent:
 
     @follow_up_mode.setter
     def follow_up_mode(self, mode: QueueMode) -> None:
+        self._ensure_open()
         self._follow_up_queue.mode = mode
 
     def steer(self, message: AgentMessage) -> None:
         """Queue a message to inject at the next drain point (the initial poll or a completed turn)."""
+        self._ensure_open()
         self._steering_queue.enqueue(message)
 
     def follow_up(self, message: AgentMessage) -> None:
         """Queue a message to run only when the Agent would otherwise stop."""
+        self._ensure_open()
         self._follow_up_queue.enqueue(message)
 
     def clear_steering_queue(self) -> None:
@@ -292,6 +343,7 @@ class Agent:
         images: list[ImageContent] | None = None,
     ) -> None:
         """Start a new prompt from text, a single message, or a batch of messages."""
+        self._ensure_open()
         if self._active_run is not None:
             raise RuntimeError(
                 "Agent is already processing a prompt. Wait for completion before prompting again."
@@ -309,6 +361,7 @@ class Agent:
         only when a queue supplies the next input: steering first, then
         follow-up; with neither queued it is rejected like the low-level loop.
         """
+        self._ensure_open()
         if self._active_run is not None:
             raise RuntimeError("Agent is already processing. Wait for completion before continuing.")
 
@@ -357,6 +410,8 @@ class Agent:
         executor: Callable[[AbortSignal], Awaitable[None]],
     ) -> _ActiveRun:
         self._state._is_streaming = True
+        self._state._is_busy = True
+        self._state._activity_kind = "dialogue"
         self._state._streaming_message = None
         self._state._error_message = None
 
@@ -371,15 +426,21 @@ class Agent:
 
     async def _runner(self, executor: Callable[[AbortSignal], Awaitable[None]], run: _ActiveRun) -> None:
         signal = run.abort_controller.signal
+        token = _current_run.set(run)
         try:
             await executor(signal)
         except Exception as error:  # noqa: BLE001 - traditional error boundary
+            if run.ending:
+                raise
             await self._handle_run_failure(error, signal.aborted)
         finally:
             self._finish_run(run)
+            _current_run.reset(token)
 
     def _finish_run(self, run: _ActiveRun) -> None:
         self._state._is_streaming = False
+        self._state._is_busy = False
+        self._state._activity_kind = None
         self._state._streaming_message = None
         self._state._clear_pending_tool_calls()
         if not run.idle.done():
@@ -493,6 +554,9 @@ class Agent:
         await self._process_events(AgentEndEvent(messages=[failure_message]))
 
     async def _process_events(self, event: AgentEvent) -> None:
+        if isinstance(event, AgentEndEvent):
+            assert self._active_run is not None
+            self._active_run.ending = True
         if isinstance(event, MessageEndEvent):
             message = snapshot_messages([event.message])[0]
             entry = self._history.append_message(message)

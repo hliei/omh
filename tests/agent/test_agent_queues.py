@@ -739,6 +739,7 @@ async def test_error_run_retains_unconsumed_queues() -> None:
 
 
 async def test_abort_run_retains_unconsumed_queues() -> None:
+    entered = asyncio.Event()
     holder: dict[str, Agent] = {}
     steer = user_message("steer", 1)
     follow_up = user_message("later", 2)
@@ -760,13 +761,14 @@ async def test_abort_run_retains_unconsumed_queues() -> None:
             stream.push(ErrorEvent(reason="aborted", error=aborted))  # type: ignore[arg-type]
 
         options.signal.add_callback(on_abort)
+        entered.set()
         return stream
 
     agent = Agent(AgentOptions(stream_fn=stream_fn, initial_state=AgentInitialState(model=make_model())))
     holder["agent"] = agent
 
     run = asyncio.create_task(agent.prompt("hello"))
-    await asyncio.sleep(0)
+    await asyncio.wait_for(entered.wait(), timeout=1)
     agent.abort()
     await asyncio.wait_for(run, timeout=1)
 
