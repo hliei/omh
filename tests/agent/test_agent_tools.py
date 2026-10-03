@@ -16,6 +16,7 @@ from omh.agent import (
     AgentTool,
     AgentToolResult,
     AgentToolUpdateCallback,
+    CompactionSettings,
     HistoryCommitEvent,
     MessageEndEvent,
     MessageStartEvent,
@@ -449,6 +450,7 @@ async def test_truncated_tool_call_is_not_executed_and_model_can_reissue() -> No
         AgentOptions(
             stream_fn=stream,
             initial_state=AgentInitialState(model=make_model(), tools=[tool.agent_tool()]),
+            compaction=CompactionSettings(enabled=False),
         )
     )
 

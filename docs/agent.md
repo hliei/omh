@@ -514,7 +514,7 @@ when an assistant is present. Before a subsequent turn, the Agent checks the
 completed assistant, all tool results, and committed custom context, then calls
 the host's next-turn hook with the refreshed projection and live tools. A large
 tool result is therefore budgeted before the next model request. After a loop
-ends, dialogue retry has priority over threshold compaction; eligible queued
+ends, dialogue retry has priority over response recovery and threshold compaction; eligible queued
 input can then continue using the new projection and live configuration.
 An effective `finish_turn="end"` or activity cancellation stops subsequent
 automatic compaction and queue consumption.
@@ -547,12 +547,69 @@ uncancelled preflight or next turn can still send its original input. Listener
 and save failures propagate and stop advancement, preserving committed data.
 Abort or an aborted summary prevents automatic continuation.
 
-Use `CompactionSettings(enabled=False)` to disable threshold scheduling while
+Use `CompactionSettings(enabled=False)` to disable automatic compaction while
 keeping manual `compact()` available. The offline
 [automatic compaction example](../examples/auto_compaction.py) demonstrates
 preflight, safe custom submission, and a tool result crossing the threshold.
-Overflow and truncated-response recovery are separate capabilities and remain
-outside the delivered Agent scope.
+
+## Overflow and truncated-response recovery
+
+With automatic compaction enabled, the Agent can compact and resume after an
+explicit provider context-overflow error or a recoverable `length` response.
+Capacity comes from the model captured for that dialogue request. A `length`
+response is recoverable when its output usage is below that model's original
+`max_tokens`; a smaller provider context clamp is not the comparison target.
+Reaching the original output limit does not trigger recovery. Selected explicit
+overflow patterns exclude temporary throttling and rate-limit errors; those
+remain eligible for the separate dialogue retry policy.
+
+Usage also detects successful `stop` responses whose `input + cache_read`
+exceeds the request model's context window, and zero-output `length` responses
+whose input reaches 99% of that window. A successful silent overflow triggers
+compaction only: the Agent preserves the completed response and sends no repeat
+request. New queued input can drive a later response. Responses from a previous
+model selection cannot trigger overflow recovery for the current selection.
+An intentional `prepare_request` model override is eligible while the public
+selection remains the one captured for that request; its own model limits apply.
+Responses preceding the latest compaction, omitted responses, and input usage
+invalidated by later context edits cannot retrigger recovery from stale usage.
+
+An unresolved recovery chain gets one compact-and-retry attempt. New committed
+user input or an assistant with a stop reason other than `error` or `length`
+resets that allowance, including a successful tool-call response. Custom context,
+a new activity, summary retry and another error do not reset it. If the response
+still overflows or ends below the output limit, the Agent emits an unsuccessful
+`compaction_end` explaining the exhausted recovery allowance, without another
+summary or repeat request. Dialogue and summary retry budgets remain independent.
+The allowance is in-process execution state and is not restored from history.
+
+Before summarizing a failed response, the Agent appends omissions for the selected
+assistant and its associated tool results as one `history_commit` batch, then
+refreshes effective context. Raw records remain in history and completed tool
+effects are preserved; recovery provides no execution replay or rollback guarantee. Failed or
+cancelled summaries leave these omissions in place and add no compaction record.
+Ordinary summary failure reports the recovery error and does not repeat the
+failed response. Committed history reconstructs the same context with
+`Agent.from_history`, including after summary or saving failure.
+
+Recoverable truncated turns exit the Agent's inner loop before queues or natural
+tool continuation can issue another request, so the activity coordinator selects
+recovery first. Truncated tool calls are still rejected without execution.
+Recovery then prepares a fresh request from canonical history and live
+model/thinking/tools, runs `prepare_request` again, and preserves the current
+prompt's base sections. The standalone loop keeps its existing tool reissue and
+queue behavior; hosts using it own any compaction recovery policy.
+
+Recovery uses the same summary algorithm, capture rules, busy state and cleanup
+as other automatic compaction. Events use `reason="overflow"` for both overflow
+and recoverable length. Start events set `will_retry=True` for a planned repeat;
+end events set it only when a repeat remains possible. Silent success uses false.
+Automatic end notifications reject callback prompts, and `agent_settled` signals
+final completion. Abort, close, effective `finish_turn="end"`, and awaited
+listener or saving failure stop automatic advancement. Cancelling a waiter alone
+leaves the activity running. The offline
+[recovery example](../examples/overflow_recovery.py) demonstrates bounded recovery,
+retained history, and reconstruction without replaying tools.
 
 ## Input queues
 
@@ -563,7 +620,7 @@ Applications can queue messages while the Agent is idle or running:
 
 Both queues are FIFO. `agent.steering_mode` and `agent.follow_up_mode` select how many messages a drain takes and default to `"one-at-a-time"`; `"all"` takes every message currently queued. `agent.has_queued_messages()` reports whether either queue is non-empty, and `agent.peek_queued_messages()` previews the messages selected for the next turn without consuming them, preferring steering over follow-up. `clear_steering_queue()`, `clear_follow_up_queue()`, and `clear_all_queues()` remove queued messages explicitly.
 
-Queue consumption follows the loop's scheduling boundaries. The initial poll injects steering queued before the run starts. After each completed turn, the loop polls steering; a natural tool continuation or a pending steering message keeps the turn going without an extra request. Steering that arrives while `prepare_next_turn` runs is picked up only when the earlier poll returned nothing, so `one-at-a-time` never consumes two messages in the same turn. An error response exits the inner loop; the Agent selects retry first, then may consume eligible queued input at the outer boundary even when retries are exhausted or disabled. A truncated turn leaves unconsumed queues in place, and an aborted run does not drain them; only consumption or explicit clearing removes them. Standalone loops exit on errors without this outer coordination.
+Queue consumption follows the loop's scheduling boundaries. The initial poll injects steering queued before the run starts. After each completed turn, the loop polls steering; a natural tool continuation or a pending steering message keeps the turn going without an extra request. Steering that arrives while `prepare_next_turn` runs is picked up only when the earlier poll returned nothing, so `one-at-a-time` never consumes two messages in the same turn. An error response exits the inner loop; the Agent selects retry, response recovery and threshold compaction before eligible queued input at the outer boundary, even when retries or recovery are exhausted. A recoverable truncated turn uses that same coordination when automatic compaction is enabled. Other truncated turns leave late unconsumed queues in place, and an aborted run does not drain them; only consumption or explicit clearing removes them. Standalone loops exit on errors without this outer coordination.
 
 `finish_turn`'s `"end"` decision still stops without polling either queue. Its `"continue"` decision guarantees at least one next request, which a natural tool continuation, a steering message, or a follow-up can satisfy without an additional request.
 
@@ -944,10 +1001,10 @@ turn scheduling. Provider transport and transcript primitives remain in
 
 The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
-events, bounded dialogue and summary retries, manual and threshold compaction, and cooperative
-cancellation. Applications supply executable tools and retry configuration and
-own application-level session files, resource discovery, and UI/CLI behavior.
-Overflow compaction and truncated-response recovery are not yet delivered.
+events, bounded dialogue and summary retries, manual and automatic compaction,
+one-attempt overflow and truncated-response recovery, and cooperative cancellation.
+Applications supply executable tools and retry configuration and own
+application-level session files, resource discovery, and UI/CLI behavior.
 
 The experimental Durable Agent SDK owns persistent Sessions, recovery,
 compaction, tree navigation, resource loading, and built-in filesystem/process
@@ -964,6 +1021,14 @@ do not validate a live service or performance.
   Pass `AgentOptions.retry=RetryPolicy(enabled=False)` to retain one response
   attempt per chain. Observe `agent_settled` for final completion and `retry_start`/
   `retry_end` for progress. Exhaustion permits eligible queued input to continue.
+- Overflow and recoverable-length compaction recovery is enabled with automatic
+  compaction. It can add summary and dialogue requests, omission batches and a
+  compaction record after a failed response. The recovery allowance is separate
+  from retry budgets. A successful silent overflow only summarizes. Pass
+  `CompactionSettings(enabled=False)` to disable both threshold and response
+  recovery; manual compaction remains available. With automatic compaction enabled,
+  truncated tool calls below the original output limit reach recovery before
+  natural tool reissue or queue consumption. The standalone loop is unchanged.
 - Summary retry is also enabled by default and uses the same `RetryPolicy`.
   A transient summary failure can add requests and backoff before `compact()`
   returns. Disable retry before starting compaction to use one attempt per
