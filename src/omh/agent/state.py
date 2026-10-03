@@ -68,7 +68,7 @@ class AgentState:
         self._is_streaming = False
         self._is_busy = False
         self._is_closed = False
-        self._activity_kind: Literal["dialogue"] | None = None
+        self._activity_kind: Literal["dialogue", "manual_compaction"] | None = None
         self._streaming_message: AgentMessage | None = None
         self._error_message: str | None = None
         self._pending_tool_calls: set[str] = set()
@@ -119,7 +119,7 @@ class AgentState:
         return self._is_closed
 
     @property
-    def activity_kind(self) -> Literal["dialogue"] | None:
+    def activity_kind(self) -> Literal["dialogue", "manual_compaction"] | None:
         return self._activity_kind
 
     @property

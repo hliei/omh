@@ -179,8 +179,9 @@ targets outside the record's ancestor chain, non-editable targets, unknown
 records, non-UTC record timestamps, and mismatched SDK payload types. It never
 skips semantic errors to guess a usable projection. `leaf_id=None` selects an
 empty context while preserving all records. The SDK defines decoded data and
-restoration; applications own JSON codecs and file I/O. Compaction execution
-and editing commands are not yet exposed. See the runnable offline
+restoration; applications own JSON codecs and file I/O. Compaction execution is
+available through [`Agent.compact`](#manual-compaction); editing commands are
+not exposed. See the runnable offline
 [history example](../examples/history.py) for save-by-snapshot and restoration.
 
 Final messages first commit to complete history and effective context, then emit
@@ -246,8 +247,8 @@ custom `StreamFn` receives the full normalized `TranscriptContext` and the
 | `model`, `thinking_level` | Read-only observations of the current execution configuration. |
 | `system_sections` | Read-only copy of the expected named base sections applied at the next new prompt. |
 | `is_busy` | True from activity acceptance through preparation, execution, terminal listeners, and their accepted prompt chain; also true while an idle custom submission and its notifications settle. |
-| `activity_kind` | `"dialogue"` while a prompt or continuation is unsettled; `None` during an idle custom submission or when idle. |
-| `is_streaming` | True throughout the dialogue activity, including request preparation, retry backoff, and terminal listeners. |
+| `activity_kind` | `"dialogue"` while a prompt or continuation is unsettled; `"manual_compaction"` while a manual compaction is unsettled; `None` during an idle custom submission or when idle. |
+| `is_streaming` | True throughout the dialogue activity, including request preparation, retry backoff, and terminal listeners; false during a manual compaction. |
 | `is_closed` | True after permanent closure finishes; closure rejects new work from its start. |
 | `streaming_message` | Current partial assistant message, if any. |
 | `pending_tool_calls` | Tool call ids currently executing, tracked from tool execution events. |
@@ -408,6 +409,67 @@ scheduled attempt or change its delay. Exhaustion alone does not cancel the
 activity; eligible queued input may continue at the outer loop boundary.
 The whole activity emits one final `agent_settled` after all loops and retry
 notifications finish. See the offline [retry example](../examples/retry.py).
+
+## Manual compaction
+
+`await agent.compact(custom_instructions=None)` summarizes the older effective
+context and retains a recent tail without editing the original records. It
+returns a `CompactionResult` with `summary`, `first_kept_entry_id`,
+`tokens_before`, `estimated_tokens_after`, optional `usage`, and JSON `details`
+(the standard `readFiles` and `modifiedFiles` lists). It requires an executable
+model with positive capacity. The returned usage and details are isolated from
+the committed history.
+
+Any accepted activity is cooperatively cancelled and fully settled first, so the
+interrupted assistant and its tool results are committed before the summary
+input is captured; the handoff never exposes an idle window that a third
+activity could enter. Old callbacks retain their activity's signal and results;
+their failures are reported to that activity's caller. A `compact()` call
+supersedes and settles an earlier compaction instead of overwriting its
+controller. Compact does not resume the interrupted dialogue and does not
+consume steering or follow-up.
+
+The cut point comes from the canonical projection. It never begins the retained
+tail on a tool result, so an assistant tool call stays with its results; a cut
+inside a turn summarizes the older history and the turn prefix separately and
+combines them. When a previous compaction exists, its summary is supplied as the
+previous summary and its file details are merged. Usage from multiple summary
+requests is added. Usage preceding the latest compaction or context edit is not
+reused to estimate the rebuilt context. The compaction captures the model,
+thinking level, stream function, credential source, request options, and
+settings before `compaction_start`; a change made while it runs affects later
+compactions only. The summary request uses the captured stream
+function with its own serialization and does not run `prepare_request`,
+`transform_context`, or `convert_to_llm`.
+
+On success the Agent appends the `compaction` record and its checkpoint, updates
+effective context, emits `history_commit`, and then `compaction_end`. A failure
+or cancellation before the commit appends no record; a model error, an empty
+compaction prefix (`Nothing to compact`), or a just-completed compaction
+(`Already compacted`) raises `CompactionFailure`. A successful compaction whose
+later notification fails keeps its record and projection and reports the
+notification error to the caller. Cancellation waits for an accepted summary
+stream to finish its cooperative cleanup before the Agent becomes idle or closed.
+
+`CompactionStartEvent` (`type="compaction_start"`) carries `reason` (`"manual"`
+here) and `will_retry`; `CompactionEndEvent` (`type="compaction_end"`) adds
+`result`, `aborted`, and `error_message`. A `prompt` awaited inside a
+`compaction_end` listener only confirms acceptance and runs as a separate
+activity after all listeners return; `compact()` waits for this compaction and
+its notifications, not for that new activity, while `wait_for_idle()` waits for
+both. `submit_custom_message` is rejected during manual compaction, ordinary
+`prompt` and `continue_` calls are rejected, and `compact()` cannot be awaited
+from its own callback. If compact supersedes a dialogue whose final callbacks
+accepted prompts, the original prompt and existing idle waiters still wait for those prompts to
+finish after compaction.
+
+`CompactionSettings(enabled=True, reserve_tokens=16384,
+keep_recent_tokens=20000)` configures retention and the automatic threshold.
+`AgentOptions.compaction` sets the initial value and
+`await agent.set_compaction_settings(settings)` updates later compactions; both
+may run while busy. Disabling automatic compaction does not disable explicit
+`compact()`. Automatic threshold compaction is not yet delivered. See the
+offline [compaction example](../examples/compaction.py).
 
 ## Input queues
 
@@ -585,6 +647,24 @@ entire chain; no idle window appears between activities. Prompt calls in
 `agent_end` or other ordinary events still raise the busy rejection, as do
 calls from outside the settled callback while the Agent is busy.
 
+An accepted callback prompt remembers the final listeners that led to it.
+A listener cannot submit another prompt from the completion of its own prompt
+or any descendant in that callback chain: `prompt()` raises `RuntimeError`
+containing `recursive`. This rejects an unconditional completion callback and
+cycles across several listeners. A listener may accept multiple FIFO prompts
+from the same original notification; each follows its own callback ancestry.
+An independent host prompt starts a fresh ancestry. The check applies to
+`compaction_end` callback prompts too, and survives a compaction handoff.
+Rejected input is not recorded or executed. If the listener lets the error
+propagate, the original dialogue caller receives it after accepted work settles;
+history remains intact and idle waiters are released.
+
+Migration: repeated submission from one listener across its own callback chain
+now raises instead of continuing indefinitely. Use a final callback for bounded
+follow-on work; let the host explicitly start a new prompt after completion when
+repeated orchestration is needed. Cancelling a prompt waiter alone still does
+not stop Agent-owned work.
+
 Ordinary notification failures stop progression and cooperatively abort the
 activity. Accepted model streams, started tools, and progress notifications
 settle before final notification and idle/closure. The original exception is
@@ -606,7 +686,9 @@ enter history or emit execution events.
 
 The conversation lifecycle emits `agent_start`, `turn_start`, `message_start`,
 `message_update`, `history_commit`, `message_end`, `turn_end`, `agent_end`, and
-finally `agent_settled`. An explicit configuration change additionally emits
+finally `agent_settled`. A manual compaction emits `compaction_start`,
+`history_commit` for the committed record, and `compaction_end` instead of the
+dialogue lifecycle. An explicit configuration change additionally emits
 `history_commit` for its record, then `ModelChangeEvent`
 (`type="model_change"`) or `ThinkingLevelChangeEvent`
 (`type="thinking_level_change"`). Assistant stream deltas arrive as
@@ -623,11 +705,12 @@ assistant errors; handle saving errors at the application boundary.
 ## Cancellation
 
 The Agent owns its activity. Cancelling a caller awaiting `prompt`, `continue_`,
-or `wait_for_idle` ends only that wait; preparation, execution, and other waiters
-continue. `agent.abort()` sends a cancellation signal without waiting. The
+`compact`, or `wait_for_idle` ends only that wait; preparation, execution, and
+other waiters continue. `agent.abort()` sends a cancellation signal without
+waiting. The
 signal exists before the first callback and covers request/next-turn
 preparation, context transformation, conversion, credential lookup, provider
-setup, the model stream, and tool execution. Pending asynchronous preparation
+setup, the model stream, summary requests, and tool execution. Pending asynchronous preparation
 is cancelled and awaited through its cleanup before the activity ends. A model
 stream and tools must cooperate with the supplied signal; synchronous blocking
 work cannot be interrupted.
@@ -643,7 +726,7 @@ even if terminal notification raises. Queues alone do not keep an Agent busy.
 ## Permanent closure
 
 `await agent.close()` permanently retires the instance. Once the close coroutine
-starts, it rejects `prompt`, `continue_`, queue input, configuration methods and
+starts, it rejects `prompt`, `continue_`, `compact`, queue input, configuration methods and
 public configuration assignments (including hooks and queue modes), and new
 subscriptions. It signals abort and awaits current work and terminal listeners,
 then detaches subscriptions and sets `state.is_closed=True`. It never starts or
@@ -754,6 +837,7 @@ Applications import the public Agent, loop entries, and contracts from
 | [`state.py`](../src/omh/agent/state.py) | Initial values and read-only Agent observations |
 | [`history.py`](../src/omh/agent/history.py) | Conversation identity, append-only records, and history snapshots |
 | [`retry.py`](../src/omh/agent/retry.py) | Selected provider-response classification, retry policy, and cancellable backoff |
+| [`compaction.py`](../src/omh/agent/compaction.py) | Compaction settings and results, projection-based cut points, and summary requests |
 | [`data.py`](../src/omh/agent/data.py), [`isolation.py`](../src/omh/agent/isolation.py) | Agent history validation and isolated views around the open loop contracts |
 | [`options.py`](../src/omh/agent/options.py), [`loop_config.py`](../src/omh/agent/loop_config.py) | Agent construction options and standalone loop configuration |
 | [`messages.py`](../src/omh/agent/messages.py) | Application messages and model-input conversion contracts |
@@ -777,9 +861,10 @@ turn scheduling. Provider transport and transcript primitives remain in
 
 The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
-events, bounded dialogue retries, and cooperative cancellation. Applications supply
-executable tools and retry configuration and own application-level session files,
-compaction, resource discovery, and UI/CLI behavior.
+events, bounded dialogue retries, manual compaction, and cooperative
+cancellation. Applications supply executable tools and retry configuration and
+own application-level session files, resource discovery, and UI/CLI behavior.
+Automatic threshold and overflow compaction are not yet delivered.
 
 The experimental Durable Agent SDK owns persistent Sessions, recovery,
 compaction, tree navigation, resource loading, and built-in filesystem/process
@@ -821,6 +906,13 @@ do not validate a live service or performance.
 - Compare message values or stable history IDs instead of shared object identity.
   Mutating hook message views does not apply a context update; return the hook's
   update value.
+- Compaction now runs through `await agent.compact(...)` instead of an
+  application-side summary. It appends a `compaction` record and refreshes
+  effective context; the original records remain. Configure retention with
+  `AgentOptions.compaction=CompactionSettings(...)` or
+  `await agent.set_compaction_settings(settings)`. Automatic threshold
+  compaction is not yet delivered, so long conversations still need an explicit
+  `compact()` call.
 - Use `state.is_busy` to observe the entire accepted activity and
   `state.is_closed` for completed retirement. After tool cancellation, preserve
   its final result without expecting another model request or an extra aborted

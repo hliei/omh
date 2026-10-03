@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from omh.agent.compaction import CompactionSettings
 from omh.agent.hooks import (
     AfterToolCall,
     BeforeToolCall,
@@ -66,3 +67,4 @@ class AgentOptions:
     max_retry_delay_ms: float | None = None
     conversation_id: str | None = None
     retry: RetryPolicy | None = None
+    compaction: CompactionSettings | None = None

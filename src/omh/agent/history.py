@@ -111,7 +111,8 @@ def _timestamp_ms(timestamp: datetime) -> int:
     return (timestamp - datetime(1970, 1, 1, tzinfo=UTC)) // timedelta(milliseconds=1)
 
 
-def _history_path(history: AgentHistory) -> list[AgentHistoryEntry]:
+def history_path(history: AgentHistory) -> list[AgentHistoryEntry]:
+    """Return the selected leaf's records from root to leaf."""
     by_id = {entry.id: entry for entry in history.entries}
     path: list[AgentHistoryEntry] = []
     current = history.leaf_id
@@ -197,7 +198,7 @@ def validate_history(history: AgentHistory) -> AgentHistorySettings:
     model_id: str | None = None
     level: ThinkingLevel = "off"
     has_level = False
-    for entry in _history_path(history):
+    for entry in history_path(history):
         if isinstance(entry, ModelChangeHistoryEntry):
             provider, model_id = entry.provider, entry.model_id
         elif isinstance(entry, MessageHistoryEntry) and isinstance(entry.message, AssistantMessage):
@@ -207,23 +208,23 @@ def validate_history(history: AgentHistory) -> AgentHistorySettings:
     return AgentHistorySettings(provider, model_id, level, has_level)
 
 
-def project_history(history: AgentHistory) -> list[AgentMessage]:
-    """Build effective messages from an already validated history."""
-    path = _history_path(history)
+def project_history_records(history: AgentHistory) -> list[tuple[str | None, AgentMessage]]:
+    """Effective context paired with the source record id (``None`` for derived data)."""
+    path = history_path(history)
     compaction_index = next((
         index for index in range(len(path) - 1, -1, -1)
         if isinstance(path[index], CompactionHistoryEntry)
     ), None)
-    messages: list[AgentMessage] = []
+    records: list[tuple[str | None, AgentMessage]] = []
     if compaction_index is not None:
         compaction = path[compaction_index]
         assert isinstance(compaction, CompactionHistoryEntry)
         if compaction.system_message is not None:
-            messages.append(compaction.system_message)
-        messages.append(CompactionSummaryMessage(
+            records.append((None, compaction.system_message))
+        records.append((None, CompactionSummaryMessage(
             summary=compaction.summary, tokens_before=compaction.tokens_before,
             timestamp=_timestamp_ms(compaction.timestamp),
-        ))
+        )))
         first_kept_index = next(
             index for index, entry in enumerate(path) if entry.id == compaction.first_kept_entry_id
         )
@@ -251,8 +252,13 @@ def project_history(history: AgentHistory) -> list[AgentMessage]:
                 content = [TextContent(text=content)]
             # Target-specific content types are checked by validate_history.
             message = replace(message, content=copy.deepcopy(content))  # type: ignore[arg-type]
-        messages.append(message)
-    return snapshot_messages(messages)
+        records.append((entry.id, message))
+    return records
+
+
+def project_history(history: AgentHistory) -> list[AgentMessage]:
+    """Build effective messages from an already validated history."""
+    return snapshot_messages([message for _, message in project_history_records(history)])
 
 
 class ConversationHistory:
@@ -317,6 +323,24 @@ class ConversationHistory:
         return self._append(ContextEditHistoryEntry(
             id=entry_id, parent_id=parent_id, timestamp=timestamp,
             target_id=target_id, replacement=None,
+        ))
+
+    def append_compaction(
+        self,
+        *,
+        summary: str,
+        first_kept_entry_id: str,
+        tokens_before: int,
+        system_message: SystemMessage | None,
+        usage: Usage | None = None,
+        details: JsonValue = None,
+    ) -> AgentHistoryEntry:
+        entry_id, parent_id, timestamp = self._entry_fields()
+        return self._append(CompactionHistoryEntry(
+            id=entry_id, parent_id=parent_id, timestamp=timestamp,
+            summary=summary, first_kept_entry_id=first_kept_entry_id,
+            tokens_before=tokens_before, system_message=copy.deepcopy(system_message),
+            usage=copy.deepcopy(usage), details=copy.deepcopy(details),
         ))
 
     def append_thinking_level(self, level: ThinkingLevel) -> AgentHistoryEntry:
