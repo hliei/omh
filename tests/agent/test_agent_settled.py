@@ -20,6 +20,7 @@ from omh.agent import (
     AgentToolUpdateCallback,
     AgentTurnContext,
     AgentTurnDecision,
+    CompactionSettings,
     MessageHistoryEntry,
 )
 from omh.llm.types import (
@@ -263,6 +264,105 @@ async def test_settled_accepts_fifo_prompts_after_all_callbacks_and_waiters_incl
                      "start", "second listener"]
     users = [message.content for message in agent.state.messages if message.role == "user"]
     assert users == [[TextContent(text=text)] for text in ("first", "second", "third")]
+
+
+@pytest.mark.parametrize("compact_handoff", [False, True])
+async def test_unconditional_settled_prompt_rejects_recursive_submission(compact_handoff: bool) -> None:
+    stream = RecordingStreamFn()
+    agent = Agent(AgentOptions(
+        stream_fn=stream, initial_state=AgentInitialState(model=make_model()),
+        compaction=CompactionSettings(keep_recent_tokens=0),
+    ))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    settles = 0
+
+    async def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        nonlocal settles
+        if isinstance(event, AgentSettledEvent):
+            settles += 1
+            assert settles <= 6, "unbounded settled callback chain"
+            await agent.prompt("callback prompt")
+            if settles == 1 and compact_handoff:
+                entered.set()
+                await release.wait()
+
+    agent.subscribe(listener)
+    prompt = asyncio.create_task(agent.prompt("first"))
+    if compact_handoff:
+        await asyncio.wait_for(entered.wait(), 1)
+        compact = asyncio.create_task(agent.compact())
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(compact, 1)
+    with pytest.raises(RuntimeError, match="recursive"):
+        await asyncio.wait_for(prompt, 1)
+    await asyncio.wait_for(agent.wait_for_idle(), 1)
+    assert settles == 2
+    assert stream.calls == 2 + int(compact_handoff)
+    assert not agent.state.is_busy and agent.state.error_message is None
+    assert all(message.stop_reason == "stop" for message in agent.state.messages if message.role == "assistant")
+
+
+async def test_alternating_settled_callbacks_reject_a_cycle() -> None:
+    stream = RecordingStreamFn()
+    agent = Agent(AgentOptions(stream_fn=stream, initial_state=AgentInitialState(model=make_model())))
+    settles = 0
+
+    def count(event: AgentEvent, signal: AbortSignal) -> None:
+        nonlocal settles
+        if isinstance(event, AgentSettledEvent):
+            settles += 1
+            assert settles <= 6, "unbounded alternating callback chain"
+
+    async def first(event: AgentEvent, signal: AbortSignal) -> None:
+        if isinstance(event, AgentSettledEvent) and settles % 2 == 1:
+            await agent.prompt("from first")
+
+    async def second(event: AgentEvent, signal: AbortSignal) -> None:
+        if isinstance(event, AgentSettledEvent) and settles % 2 == 0:
+            await agent.prompt("from second")
+
+    agent.subscribe(count)
+    agent.subscribe(first)
+    agent.subscribe(second)
+    with pytest.raises(RuntimeError, match="recursive"):
+        await asyncio.wait_for(agent.prompt("root"), 1)
+    await asyncio.wait_for(agent.wait_for_idle(), 1)
+    assert settles == stream.calls == 3
+
+
+async def test_callback_ancestry_uses_identity_and_resets_for_host_prompts() -> None:
+    stream = RecordingStreamFn()
+    agent = Agent(AgentOptions(stream_fn=stream, initial_state=AgentInitialState(model=make_model())))
+    settles = 0
+
+    def count(event: AgentEvent, signal: AbortSignal) -> None:
+        nonlocal settles
+        if isinstance(event, AgentSettledEvent):
+            settles += 1
+
+    class Listener:
+        __hash__ = None
+
+        def __init__(self, at: int) -> None:
+            self.at = at
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, Listener)
+
+        async def __call__(self, event: AgentEvent, signal: AbortSignal) -> None:
+            if isinstance(event, AgentSettledEvent) and settles == self.at:
+                await agent.prompt(f"from listener {self.at}")
+
+    agent.subscribe(count)
+    agent.subscribe(Listener(1))
+    agent.subscribe(Listener(2))
+    for index in range(2):
+        settles = 0
+        await asyncio.wait_for(agent.prompt(f"host {index}"), 1)
+        assert settles == 3 and not agent.state.is_busy
+    assert stream.calls == 6
 
 
 @pytest.mark.parametrize("phase", ["agent_start", "history_commit", "message_end"])

@@ -928,6 +928,32 @@ async def test_compaction_end_notification_failure_keeps_the_successful_record()
     assert not agent.state.is_busy
 
 
+async def test_manual_end_prompt_cannot_recursively_reenter_its_listener() -> None:
+    stream = SummaryStreamFn(replies=[text_message("after compact")])
+    agent = seeded_agent(stream)
+    errors: list[RuntimeError] = []
+    completions = 0
+
+    async def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        nonlocal completions
+        if event.type in {"compaction_end", "agent_settled"}:
+            completions += 1
+            assert completions <= 6, "unbounded manual-end callback chain"
+            try:
+                await agent.prompt("callback prompt")
+            except RuntimeError as error:
+                errors.append(error)
+                raise
+
+    agent.subscribe(listener)
+    result = await asyncio.wait_for(agent.compact(), 1)
+    await asyncio.wait_for(agent.wait_for_idle(), 1)
+    assert result.summary and stream.dialogue_calls == 1
+    assert completions == 2 and len(errors) == 1
+    assert "recursive" in str(errors[0])
+    assert not agent.state.is_busy
+
+
 async def test_self_dependent_compact_is_rejected_inside_a_callback() -> None:
     stream = SummaryStreamFn()
     agent = seeded_agent(stream)

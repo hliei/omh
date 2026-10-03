@@ -140,6 +140,13 @@ def _require_executable_model(model: Model, action: str) -> None:
 
 
 @dataclass(slots=True)
+class _AcceptedPrompt:
+    messages: list[AgentMessage]
+    system_sections: dict[str, str]
+    callbacks: tuple[AgentListener, ...]
+
+
+@dataclass(slots=True)
 class _ActiveRun:
     abort_controller: AbortController
     idle: asyncio.Future[None]
@@ -147,7 +154,8 @@ class _ActiveRun:
     ending: bool = False
     messages: list[AgentMessage] = field(default_factory=list)
     settling: bool = False
-    pending_prompts: deque[tuple[list[AgentMessage], dict[str, str]]] = field(default_factory=deque)
+    pending_prompts: deque[_AcceptedPrompt] = field(default_factory=deque)
+    callbacks: tuple[AgentListener, ...] = ()
     notification_error: BaseException | None = None
     stop: bool = False
     dialogue: bool = True
@@ -248,6 +256,7 @@ class Agent:
         self._listeners: list[AgentListener] = []
         self._active_run: _ActiveRun | None = None
         self._current_run: ContextVar[_ActiveRun | None] = ContextVar("agent_current_run", default=None)
+        self._current_listener: ContextVar[AgentListener | None] = ContextVar("agent_current_listener", default=None)
         self._close_task: asyncio.Task[None] | None = None
         self._steering_queue = _PendingMessageQueue(options.steering_mode)
         self._follow_up_queue = _PendingMessageQueue(options.follow_up_mode)
@@ -767,22 +776,23 @@ class Agent:
             run.settling = False
 
     def _start_accepted_prompts(self, run: _ActiveRun) -> None:
-        messages, sections = run.pending_prompts.popleft()
+        prompt = run.pending_prompts.popleft()
         remaining = list(run.pending_prompts)
         run.pending_prompts.clear()
         active = self._active_run
         if active is not None and active is not run:
             # A newer accepted activity superseded this compaction; keep the
             # accepted prompts in FIFO order under the live activity.
-            active.pending_prompts.append((messages, sections))
+            active.pending_prompts.append(prompt)
             active.pending_prompts.extend(remaining)
             active.inherited_runs.extend([run, *run.inherited_runs])
             run.idle_transferred = True
             return
         new_run = self._begin_run(
             lambda signal: self._run_prompt_messages(
-                messages, signal, system_sections=sections,
-            )
+                prompt.messages, signal, system_sections=prompt.system_sections,
+            ),
+            callbacks=prompt.callbacks,
         )
         new_run.pending_prompts.extend(remaining)
         new_run.idle = run.idle
@@ -798,10 +808,17 @@ class Agent:
         self._ensure_open()
         if self._active_run is not None:
             run = self._callback_run()
-            if run is not None and run.settling:
-                run.pending_prompts.append((
+            listener = self._current_listener.get()
+            if run is not None and run.settling and listener is not None:
+                if any(listener is ancestor for ancestor in run.callbacks):
+                    raise RuntimeError(
+                        "Cannot submit a recursive prompt from the same final listener "
+                        "in its own callback chain."
+                    )
+                run.pending_prompts.append(_AcceptedPrompt(
                     self._normalize_prompt_input(message, images),
                     dict(self._state._system_sections),
+                    (*run.callbacks, listener),
                 ))
                 return
             raise RuntimeError(
@@ -870,12 +887,14 @@ class Agent:
         executor: Callable[[AbortSignal], Awaitable[None]],
         *,
         dialogue: bool = True,
+        callbacks: tuple[AgentListener, ...] = (),
     ) -> _ActiveRun:
         self._reset_run_state()
         run = _ActiveRun(
             abort_controller=AbortController(),
             idle=asyncio.get_running_loop().create_future(),
             dialogue=dialogue,
+            callbacks=callbacks,
         )
         if not dialogue:
             self._state._is_streaming = False
@@ -964,17 +983,20 @@ class Agent:
                         first_error = RuntimeError("Agent closed before an accepted prompt could start.")
                     run.pending_prompts.clear()
                     break
-                messages, sections = run.pending_prompts.popleft()
+                prompt = run.pending_prompts.popleft()
                 run = _ActiveRun(
                     abort_controller=AbortController(), idle=run.idle,
                     task=run.task, pending_prompts=run.pending_prompts,
                     inherited_runs=run.inherited_runs,
+                    callbacks=prompt.callbacks,
                 )
                 self._active_run = run
                 self._reset_run_state()
 
-                async def executor(signal: AbortSignal, sections: dict[str, str] = sections) -> None:
-                    await self._run_prompt_messages(messages, signal, system_sections=sections)
+                async def executor(signal: AbortSignal, prompt: _AcceptedPrompt = prompt) -> None:
+                    await self._run_prompt_messages(
+                        prompt.messages, signal, system_sections=prompt.system_sections,
+                    )
             if first_error is not None:
                 raise first_error
         finally:
@@ -1291,6 +1313,9 @@ class Agent:
         run = self._callback_run() or self._active_run
         signal = run.abort_controller.signal if run is not None else AbortController().signal
         for listener in list(self._listeners):
+            token = self._current_listener.set(
+                listener if isinstance(event, AgentSettledEvent | CompactionEndEvent) else None
+            )
             try:
                 result = listener(copy.deepcopy(event), signal)
                 if inspect.isawaitable(result):
@@ -1307,6 +1332,8 @@ class Agent:
                     elif not run.ending and not run.settling:
                         run.abort_controller.abort()
                 raise
+            finally:
+                self._current_listener.reset(token)
 
     def _reduce_state(self, event: AgentEvent) -> None:
         if isinstance(event, (MessageStartEvent, MessageUpdateEvent)):

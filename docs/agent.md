@@ -647,6 +647,24 @@ entire chain; no idle window appears between activities. Prompt calls in
 `agent_end` or other ordinary events still raise the busy rejection, as do
 calls from outside the settled callback while the Agent is busy.
 
+An accepted callback prompt remembers the final listeners that led to it.
+A listener cannot submit another prompt from the completion of its own prompt
+or any descendant in that callback chain: `prompt()` raises `RuntimeError`
+containing `recursive`. This rejects an unconditional completion callback and
+cycles across several listeners. A listener may accept multiple FIFO prompts
+from the same original notification; each follows its own callback ancestry.
+An independent host prompt starts a fresh ancestry. The check applies to
+`compaction_end` callback prompts too, and survives a compaction handoff.
+Rejected input is not recorded or executed. If the listener lets the error
+propagate, the original dialogue caller receives it after accepted work settles;
+history remains intact and idle waiters are released.
+
+Migration: repeated submission from one listener across its own callback chain
+now raises instead of continuing indefinitely. Use a final callback for bounded
+follow-on work; let the host explicitly start a new prompt after completion when
+repeated orchestration is needed. Cancelling a prompt waiter alone still does
+not stop Agent-owned work.
+
 Ordinary notification failures stop progression and cooperatively abort the
 activity. Accepted model streams, started tools, and progress notifications
 settle before final notification and idle/closure. The original exception is
