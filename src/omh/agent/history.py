@@ -312,6 +312,13 @@ class ConversationHistory:
             provider=model.provider, model_id=model.id,
         ))
 
+    def append_omission(self, target_id: str) -> AgentHistoryEntry:
+        entry_id, parent_id, timestamp = self._entry_fields()
+        return self._append(ContextEditHistoryEntry(
+            id=entry_id, parent_id=parent_id, timestamp=timestamp,
+            target_id=target_id, replacement=None,
+        ))
+
     def append_thinking_level(self, level: ThinkingLevel) -> AgentHistoryEntry:
         entry_id, parent_id, timestamp = self._entry_fields()
         return self._append(ThinkingLevelChangeHistoryEntry(
