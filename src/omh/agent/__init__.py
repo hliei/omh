@@ -15,6 +15,7 @@ from omh.agent.coding_tools import (
     ReadImageProcessorResult,
     ReadImageProcessorSuccess,
     ReadToolOptions,
+    create_edit_tool,
     create_read_tool,
     create_write_tool,
 )
@@ -129,6 +130,7 @@ __all__ = [
     "ReadImageProcessorResult",
     "ReadImageProcessorSuccess",
     "ReadToolOptions",
+    "create_edit_tool",
     "create_read_tool",
     "create_write_tool",
     "AfterToolCall",

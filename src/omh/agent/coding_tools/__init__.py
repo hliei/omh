@@ -1,5 +1,6 @@
 """Local coding tools, explicitly created and injected by the host."""
 
+from omh.agent.coding_tools.edit import create_edit_tool
 from omh.agent.coding_tools.read import (
     ReadImageProcessor,
     ReadImageProcessorFailure,
@@ -18,6 +19,7 @@ __all__ = [
     "ReadImageProcessorResult",
     "ReadImageProcessorSuccess",
     "ReadToolOptions",
+    "create_edit_tool",
     "create_read_tool",
     "create_write_tool",
 ]

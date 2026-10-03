@@ -685,20 +685,24 @@ executing it, so the model can re-issue complete calls. Error results join the
 transcript like any other tool result, letting the model recover in a later
 request.
 
-### Built-in read and write
+### Built-in read, edit, and write
 
-`create_read_tool(cwd, options=None)` and `create_write_tool(cwd)` return ordinary
+`create_read_tool(cwd, options=None)`, `create_edit_tool(cwd)`, and
+`create_write_tool(cwd)` return ordinary
 `AgentTool` instances, with no default installation. Import them from `omh.agent`
 or `omh.agent.coding_tools`, then pass the selected tools through
 `AgentInitialState.tools` or `await agent.set_tools(...)`:
 
 ```python
-from omh.agent import AgentInitialState, ReadToolOptions, create_read_tool, create_write_tool
+from omh.agent import (
+    AgentInitialState, ReadToolOptions, create_edit_tool, create_read_tool, create_write_tool,
+)
 
 initial = AgentInitialState(
     model=my_model,
     tools=[
         create_read_tool("/path/to/project", ReadToolOptions(auto_resize_images=False)),
+        create_edit_tool("/path/to/project"),
         create_write_tool("/path/to/project"),
     ],
 )
@@ -735,27 +739,68 @@ No image conversion library or model-specific resize profile is installed.
 The LLM provider's existing non-vision projection decides whether an attachment
 is sent to its model; the tool result in history retains the image.
 
+Edit accepts `path` and a non-empty `edits` list whose objects contain string
+`oldText` and `newText` fields. Every replacement matches the same original file,
+including when earlier replacements would introduce another edit's target.
+All targets must be unique and disjoint; adjacent targets are allowed. Missing,
+ambiguous (including overlapping occurrences), overlapping, empty-target, and
+no-change replacements raise before any write. All replacements are validated
+before the tool writes the resulting content once:
+
+```python
+edit = create_edit_tool("/path/to/project")
+result = await edit.execute("edit-1", {
+    "path": "notes.txt",
+    "edits": [
+        {"oldText": "first note", "newText": "updated first note"},
+        {"oldText": "last note", "newText": "updated last note"},
+    ],
+}, None, lambda update: None)
+print(result.details)  # JSON diff, patch, and firstChangedLine
+```
+
+The Agent invokes edit's `prepare_arguments` before schema validation. It accepts
+a single replacement object in `edits`, a JSON string encoding a replacement
+list or single object, and legacy top-level `oldText`/`newText`. A top-level
+replacement is appended to the prepared list; malformed supplied `edits` or an
+incomplete legacy pair raises. Preparation preserves the original arguments in
+history. Hosts directly calling `execute` pass the documented list shape, or
+first call `edit.prepare_arguments(raw_arguments)`.
+
+Edit decodes UTF-8 with replacement for invalid bytes, retains a leading BOM,
+normalizes CRLF/CR to LF for matching, and restores the file's first detected
+LF or CRLF style on write. Matching tries exact text first, then NFKC Unicode
+normalization, trailing-whitespace removal, and normalization of smart quotes,
+dashes, and selected spaces. Uniqueness is checked in normalized space. If any
+target needs fuzzy matching, touched lines use the normalized base; untouched
+lines retain their original text. Result details contain a display `diff`, a
+unified `patch` (including missing-final-newline markers), and 1-based
+`firstChangedLine` in the new file. Missing files and directories become ordinary
+Agent error tool results.
+
 Write accepts `path` and UTF-8 `content`, creates parent directories, and creates
 or overwrites the file without newline translation. Its success has JSON-null
-details. Writes across factory instances and cwd values in one asyncio event
-loop share canonical-path coordination, including symlink files, existing
+details. Edit and write across factory instances and cwd values in one asyncio
+event loop share canonical-path coordination, including symlink files, existing
 symlink parents of missing files, and case aliases on case-insensitive macOS
-volumes. Canonicalization and registration preserve submission order. Writes to
+volumes. Edit holds this coordination across its read, validation, and write.
+Canonicalization and registration preserve submission order. Mutations to
 different files may run concurrently once registered.
 These are process-local boundaries, not cross-process filesystem locks.
 
 Filesystem calls run in worker threads. Abort is checked between calls;
 cancelling an execute task waits for its in-flight file call, even under repeated
-cancellation, before releasing coordination. An aborted queued write checks its
+cancellation, before releasing coordination. An aborted queued mutation checks its
 signal after its predecessor settles and does not start file operations. Abort
 does not undo completed writes. Processor cancellation awaits its async cleanup.
 File or processor exceptions use the existing Agent error-tool-result behavior.
 
 Migration: these factories return `AgentTool`; existing
-`omh.durable.create_read_tool` and `create_write_tool` retain their
+`omh.durable.create_read_tool`, `create_edit_tool`, and `create_write_tool` retain
+their
 `AgentHarnessTool` contracts and execution context. Neither adapter can be passed
-as the other's tool type. Only pure path, text-budget, argument, and MIME
-mechanisms are shared; importing the main factories does not load durable
+as the other's tool type. Only pure path, text-budget, argument, MIME, and
+edit/diff mechanisms are shared; importing the main factories does not load durable
 execution or add checkpoints or replay guarantees. Run the offline
 [file-tools example](../examples/file_tools.py) with `python examples/file_tools.py`.
 
@@ -1056,7 +1101,7 @@ Applications import the public Agent, loop entries, and contracts from
 | [`options.py`](../src/omh/agent/options.py), [`loop_config.py`](../src/omh/agent/loop_config.py) | Agent construction options and standalone loop configuration |
 | [`messages.py`](../src/omh/agent/messages.py) | Application messages and model-input conversion contracts |
 | [`tools.py`](../src/omh/agent/tools.py) | Executable tools, result and callback contracts, and model-facing declarations |
-| [`coding_tools/`](../src/omh/agent/coding_tools/) | Host-selected read/write factories, local file I/O ownership, and canonical-path mutation coordination |
+| [`coding_tools/`](../src/omh/agent/coding_tools/) | Host-selected read/edit/write factories, local file I/O ownership, and canonical-path mutation coordination |
 | [`context.py`](../src/omh/agent/context.py) | Conversation messages and executable tools passed to the loop |
 | [`hooks.py`](../src/omh/agent/hooks.py) | Request, turn, tool, credential, and queue hooks with their inputs and results |
 | [`stream_fn.py`](../src/omh/agent/stream_fn.py) | Model stream function contract and host-installed default |
@@ -1077,7 +1122,7 @@ turn scheduling. Provider transport and transcript primitives remain in
 The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
 events, bounded dialogue and summary retries, manual and automatic compaction,
-one-attempt overflow and truncated-response recovery, host-selected read/write
+one-attempt overflow and truncated-response recovery, host-selected read/edit/write
 tools, and cooperative cancellation.
 Applications supply executable tools and retry configuration and own
 application-level session files, resource discovery, and UI/CLI behavior.
