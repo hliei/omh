@@ -19,10 +19,12 @@ from typing import Literal, cast
 from omh.agent._async import call_with_signal, maybe_await
 from omh.agent.compaction import (
     CompactionFailure,
+    CompactionPreparation,
     CompactionResult,
     CompactionSettings,
     SummaryRequest,
     compact_with_request,
+    estimate_history_tokens,
     prepare_compaction,
 )
 from omh.agent.context import AgentContext
@@ -667,6 +669,8 @@ class Agent:
 
     async def _execute_compaction(
         self, custom_instructions: str | None, run: _ActiveRun,
+        *, reason: Literal["manual", "threshold"] = "manual",
+        preparation: CompactionPreparation | None = None,
     ) -> CompactionResult:
         signal = run.abort_controller.signal
         model = self._state.model
@@ -675,12 +679,13 @@ class Agent:
         system_message = get_current_system_message(self._state.messages)
         snapshot = self._history.snapshot()
         request = self._summary_request(model, signal)
-        await self._notify_listeners(CompactionStartEvent(reason="manual", will_retry=False))
+        await self._notify_listeners(CompactionStartEvent(reason=reason, will_retry=False))
         signal.throw_if_aborted()
         path = history_path(snapshot)
         if path and isinstance(path[-1], CompactionHistoryEntry):
             raise CompactionFailure("already_compacted", "Already compacted")
-        preparation = prepare_compaction(snapshot, settings)
+        if preparation is None:
+            preparation = prepare_compaction(snapshot, settings)
         if preparation is None:
             raise CompactionFailure("nothing_to_compact", "Nothing to compact")
         result = await compact_with_request(
@@ -702,13 +707,50 @@ class Agent:
             details=result.details,
         )
         self._state._messages = project_history(self._history.snapshot())
-        run.compaction_result = result
+        if reason == "manual":
+            run.compaction_result = result
         await self._notify_listeners(HistoryCommitEvent(
             conversation_id=self._history.conversation_id,
             entries=(entry,),
             leaf_id=entry.id,
         ))
         return result
+
+    async def _auto_compact(self, run: _ActiveRun) -> None:
+        """Run one threshold check inside the owning dialogue activity."""
+        signal = run.abort_controller.signal
+        if signal.aborted or run.stop or not self._compaction_settings.enabled:
+            return
+        snapshot = self._history.snapshot()
+        if estimate_history_tokens(snapshot) <= (
+            self._state.model.context_window - self._compaction_settings.reserve_tokens
+        ):
+            return
+        preparation = prepare_compaction(snapshot, self._compaction_settings)
+        if preparation is None:
+            return
+        result: CompactionResult | None = None
+        error: BaseException | None = None
+        try:
+            result = await self._execute_compaction(
+                None, run, reason="threshold", preparation=preparation,
+            )
+        except (Exception, asyncio.CancelledError) as caught:
+            if run.notification_error is not None:
+                raise
+            if isinstance(caught, asyncio.CancelledError) and not signal.aborted:
+                raise
+            error = caught
+            if isinstance(error, CompactionFailure) and error.code == "aborted":
+                run.abort_controller.abort()
+        await self._notify_listeners(CompactionEndEvent(
+            reason="threshold", will_retry=False, result=result,
+            aborted=signal.aborted or (
+                isinstance(error, CompactionFailure) and error.code == "aborted"
+            ),
+            error_message=str(error) if error is not None else None,
+        ))
+        await self._flush_custom_messages()
 
     def _summary_request(self, model: Model, signal: AbortSignal) -> SummaryRequest:
         policy = self._retry_policy
@@ -1096,6 +1138,9 @@ class Agent:
             await self._finish_retry("exhausted")
             if signal.aborted:
                 break
+            await self._auto_compact(run)
+            if signal.aborted:
+                break
             messages = self._steering_queue.drain()
             steering = bool(messages)
             if not messages:
@@ -1199,6 +1244,13 @@ class Agent:
         skip_initial_steering_poll: bool = False,
         system_sections: dict[str, str] | None = None,
     ) -> None:
+        if system_sections is not None:
+            await self._flush_custom_messages()
+            if any(isinstance(message, AssistantMessage) for message in self._state.messages):
+                run = self._current_run.get()
+                assert run is not None
+                await self._auto_compact(run)
+            signal.throw_if_aborted()
         prompt_messages: list[LoopMessage] = list(messages)
         if system_sections is not None:
             delta = self._section_delta(system_sections)
@@ -1272,16 +1324,19 @@ class Agent:
         """
         prepare_with_context = self.prepare_next_turn_with_context
         prepare_signal = self.prepare_next_turn
-        if prepare_with_context is None and prepare_signal is None:
-            return None
-
         async def prepare_next_turn(context: AgentTurnContext) -> AgentLoopTurnUpdate | None:
             signal = self.signal
+            run = self._current_run.get()
+            assert run is not None
+            await self._auto_compact(run)
+            run.abort_controller.signal.throw_if_aborted()
+            context = replace(context, context=self._create_context_snapshot())
             if prepare_with_context is not None:
                 result = prepare_with_context(context, signal)
-            else:
-                assert prepare_signal is not None
+            elif prepare_signal is not None:
                 result = prepare_signal(signal)
+            else:
+                return None
             update = await maybe_await(result)
             if update is not None:
                 unsupported = [

@@ -201,6 +201,8 @@ async def _run_loop(
                 # would deliver two messages in this turn.
                 if not pending_messages:
                     pending_messages = await _call_get_steering_messages(config)
+                if config.refresh_request is not None:
+                    context = config.refresh_request()
                 await emit_event(emit, TurnStartEvent())
 
             for message in declare_tool_changes(context, [*prepared_messages, *pending_messages]):

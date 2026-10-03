@@ -203,6 +203,23 @@ def estimate_projection_tokens(messages: Sequence[AgentMessage]) -> int:
     return sum(estimate_tokens(message) for message in messages)
 
 
+def estimate_history_tokens(history: AgentHistory) -> int:
+    """Budget the canonical projection using only usage after its last edit."""
+    path = history_path(history)
+    projected = project_history_records(history)
+    context_change = next((
+        index for index in range(len(path) - 1, -1, -1)
+        if isinstance(path[index], CompactionHistoryEntry | ContextEditHistoryEntry)
+    ), -1)
+    fresh_ids = {entry.id for entry in path[context_change + 1:]}
+    usage_start = next((
+        index for index, (entry_id, _) in enumerate(projected) if entry_id in fresh_ids
+    ), len(projected))
+    return estimate_context_tokens(
+        [message for _, message in projected], usage_start=usage_start,
+    )
+
+
 def _cut_points(records: Sequence[tuple[str | None, AgentMessage]]) -> list[int]:
     return [
         index
@@ -286,14 +303,6 @@ def prepare_compaction(
         None,
     )
     projected = project_history_records(history)
-    context_change = next((
-        index for index in range(len(path) - 1, -1, -1)
-        if isinstance(path[index], CompactionHistoryEntry | ContextEditHistoryEntry)
-    ), -1)
-    fresh_ids = {entry.id for entry in path[context_change + 1:]}
-    usage_start = next((
-        index for index, (entry_id, _) in enumerate(projected) if entry_id in fresh_ids
-    ), len(projected))
     records = [
         (entry_id, message)
         for entry_id, message in projected
@@ -321,9 +330,7 @@ def prepare_compaction(
         retained_tail=tuple(message for _, message in records[cut_index:]),
         first_kept_entry_id=first_kept_entry_id,
         is_split_turn=is_split_turn,
-        tokens_before=estimate_context_tokens(
-            [message for _, message in projected], usage_start=usage_start,
-        ),
+        tokens_before=estimate_history_tokens(history),
         previous_summary=previous.summary if previous is not None else None,
         read_files=read_files,
         modified_files=modified_files,
