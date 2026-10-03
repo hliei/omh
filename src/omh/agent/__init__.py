@@ -8,6 +8,16 @@ not imported from here.
 from __future__ import annotations
 
 from omh.agent.agent import Agent
+from omh.agent.coding_tools import (
+    ReadImageProcessor,
+    ReadImageProcessorFailure,
+    ReadImageProcessorOptions,
+    ReadImageProcessorResult,
+    ReadImageProcessorSuccess,
+    ReadToolOptions,
+    create_read_tool,
+    create_write_tool,
+)
 from omh.agent.compaction import (
     CompactionFailure,
     CompactionResult,
@@ -113,6 +123,14 @@ from omh.llm.types import ModelThinkingLevel as ThinkingLevel
 from omh.llm.types import OnPayload, OnProviderStreamEvent, OnResponse
 
 __all__ = [
+    "ReadImageProcessor",
+    "ReadImageProcessorFailure",
+    "ReadImageProcessorOptions",
+    "ReadImageProcessorResult",
+    "ReadImageProcessorSuccess",
+    "ReadToolOptions",
+    "create_read_tool",
+    "create_write_tool",
     "AfterToolCall",
     "AfterToolCallContext",
     "AfterToolCallResult",

@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-import re
-import unicodedata
-
+from omh._tool_utils.path_utils import (
+    normalize_tool_path as normalize_tool_path,
+)
+from omh._tool_utils.path_utils import (
+    read_path_variants,
+)
 from omh.durable.context import Context
 from omh.durable.execution_env import ExecutionEnv, get_or_throw
-
-_UNICODE_SPACES = re.compile("[\u00a0\u2000-\u200a\u202f\u205f\u3000]")
-_NARROW_NO_BREAK_SPACE = "\u202f"
-_AM_PM = re.compile(r" (AM|PM)\.", re.IGNORECASE)
-
-
-def normalize_tool_path(path: str) -> str:
-    """Normalize user-visible path text before resolving it."""
-    normalized = _UNICODE_SPACES.sub(" ", path)
-    return normalized[1:] if normalized.startswith("@") else normalized
 
 
 async def resolve_tool_path(
@@ -31,14 +24,7 @@ async def resolve_read_tool_path(
 ) -> str:
     """Resolve a read path, trying common Unicode and macOS variants."""
     resolved = await resolve_tool_path(env, path, context)
-    variants = [
-        resolved,
-        _AM_PM.sub(f"{_NARROW_NO_BREAK_SPACE}\\1.", resolved),
-        unicodedata.normalize("NFD", resolved),
-        resolved.replace("'", "\u2019"),
-        unicodedata.normalize("NFD", resolved).replace("'", "\u2019"),
-    ]
-    for variant in dict.fromkeys(variants):
+    for variant in read_path_variants(resolved):
         if get_or_throw(await env.exists(variant, context)):
             return variant
     return resolved

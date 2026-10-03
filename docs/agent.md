@@ -685,6 +685,80 @@ executing it, so the model can re-issue complete calls. Error results join the
 transcript like any other tool result, letting the model recover in a later
 request.
 
+### Built-in read and write
+
+`create_read_tool(cwd, options=None)` and `create_write_tool(cwd)` return ordinary
+`AgentTool` instances, with no default installation. Import them from `omh.agent`
+or `omh.agent.coding_tools`, then pass the selected tools through
+`AgentInitialState.tools` or `await agent.set_tools(...)`:
+
+```python
+from omh.agent import AgentInitialState, ReadToolOptions, create_read_tool, create_write_tool
+
+initial = AgentInitialState(
+    model=my_model,
+    tools=[
+        create_read_tool("/path/to/project", ReadToolOptions(auto_resize_images=False)),
+        create_write_tool("/path/to/project"),
+    ],
+)
+```
+
+Each factory captures its cwd as an absolute path. Calls accept relative or
+absolute paths and expand `~`, remove a leading `@`, and normalize selected
+Unicode spaces. Read also tries the selected macOS screenshot, decomposed
+Unicode, and curly-apostrophe filename variants. Cwd is a resolution base;
+absolute paths and `..` can reach files outside it. Tools use the host's
+filesystem permissions.
+
+Read accepts `path`, optional `offset` (a 1-based starting line), and optional
+`limit` (a line count). Both line arguments must be positive integers after the
+loop's normal schema conversion. Text uses UTF-8 with replacement for invalid
+bytes, retaining the head up to 2000 lines or 50 KiB. A continuation notice gives
+the next offset, including when a user limit stops early. An offset beyond the
+file raises. A first line exceeding the byte budget returns a size explanation
+and a bounded shell-reading suggestion. Truncation details contain JSON values
+with camelCase fields such as `truncatedBy`, `outputBytes`, and `maxLines`;
+the notice is additional to the retained-text budget. Empty files and trailing
+newlines remain readable.
+
+Supported JPEG, PNG, GIF, and WebP signatures produce SDK `ImageContent` with
+base64 data; BMP requires conversion. `ReadToolOptions.image_processor` is an
+async callable accepting `(data: bytes, mime_type: str, options:
+ReadImageProcessorOptions, signal: AbortSignal | None)`. It returns
+`ReadImageProcessorSuccess(data, mime_type, hints)` or
+`ReadImageProcessorFailure(message)`. Success carries an attachment and hints;
+failure carries the explanatory text alone. `auto_resize_images` defaults to
+true and is passed to the processor. Without a processor, supported attachments
+remain at their original size and BMP is omitted with a configuration note.
+No image conversion library or model-specific resize profile is installed.
+The LLM provider's existing non-vision projection decides whether an attachment
+is sent to its model; the tool result in history retains the image.
+
+Write accepts `path` and UTF-8 `content`, creates parent directories, and creates
+or overwrites the file without newline translation. Its success has JSON-null
+details. Writes across factory instances and cwd values in one asyncio event
+loop share canonical-path coordination, including symlink files, existing
+symlink parents of missing files, and case aliases on case-insensitive macOS
+volumes. Canonicalization and registration preserve submission order. Writes to
+different files may run concurrently once registered.
+These are process-local boundaries, not cross-process filesystem locks.
+
+Filesystem calls run in worker threads. Abort is checked between calls;
+cancelling an execute task waits for its in-flight file call, even under repeated
+cancellation, before releasing coordination. An aborted queued write checks its
+signal after its predecessor settles and does not start file operations. Abort
+does not undo completed writes. Processor cancellation awaits its async cleanup.
+File or processor exceptions use the existing Agent error-tool-result behavior.
+
+Migration: these factories return `AgentTool`; existing
+`omh.durable.create_read_tool` and `create_write_tool` retain their
+`AgentHarnessTool` contracts and execution context. Neither adapter can be passed
+as the other's tool type. Only pure path, text-budget, argument, and MIME
+mechanisms are shared; importing the main factories does not load durable
+execution or add checkpoints or replay guarantees. Run the offline
+[file-tools example](../examples/file_tools.py) with `python examples/file_tools.py`.
+
 ### Batch execution
 
 Tool calls from one assistant message form a batch. The default is `parallel`:
@@ -982,6 +1056,7 @@ Applications import the public Agent, loop entries, and contracts from
 | [`options.py`](../src/omh/agent/options.py), [`loop_config.py`](../src/omh/agent/loop_config.py) | Agent construction options and standalone loop configuration |
 | [`messages.py`](../src/omh/agent/messages.py) | Application messages and model-input conversion contracts |
 | [`tools.py`](../src/omh/agent/tools.py) | Executable tools, result and callback contracts, and model-facing declarations |
+| [`coding_tools/`](../src/omh/agent/coding_tools/) | Host-selected read/write factories, local file I/O ownership, and canonical-path mutation coordination |
 | [`context.py`](../src/omh/agent/context.py) | Conversation messages and executable tools passed to the loop |
 | [`hooks.py`](../src/omh/agent/hooks.py) | Request, turn, tool, credential, and queue hooks with their inputs and results |
 | [`stream_fn.py`](../src/omh/agent/stream_fn.py) | Model stream function contract and host-installed default |
@@ -1002,7 +1077,8 @@ turn scheduling. Provider transport and transcript primitives remain in
 The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
 events, bounded dialogue and summary retries, manual and automatic compaction,
-one-attempt overflow and truncated-response recovery, and cooperative cancellation.
+one-attempt overflow and truncated-response recovery, host-selected read/write
+tools, and cooperative cancellation.
 Applications supply executable tools and retry configuration and own
 application-level session files, resource discovery, and UI/CLI behavior.
 
