@@ -51,9 +51,12 @@ from omh.agent.history import (
     AgentHistory,
     AgentHistoryEntry,
     CompactionHistoryEntry,
+    ContextEditHistoryEntry,
     ConversationHistory,
+    MessageHistoryEntry,
     history_path,
     project_history,
+    project_history_records,
     validate_history,
 )
 from omh.agent.hooks import (
@@ -87,6 +90,8 @@ from omh.agent.messages import (
 from omh.agent.options import AgentOptions, QueueMode
 from omh.agent.retry import (
     RetryPolicy,
+    is_context_overflow,
+    is_recoverable_length,
     is_retryable_assistant_error,
     retry_delay_ms,
     wait_for_retry,
@@ -115,6 +120,8 @@ from omh.llm.types import (
     SystemMessage,
     TextContent,
     ThinkingBudgets,
+    ToolCall,
+    ToolResultMessage,
     TranscriptContext,
     Transport,
     UserMessage,
@@ -170,6 +177,10 @@ class _ActiveRun:
     custom_messages: deque[CustomAgentMessage] = field(default_factory=deque)
     last_assistant: AssistantMessage | None = None
     last_assistant_id: str | None = None
+    request_model: Model | None = None
+    request_selection: Model | None = None
+    last_assistant_model: Model | None = None
+    last_assistant_selection: Model | None = None
     retry_attempt: int = 0
     retry: RetryStartEvent | None = None
 
@@ -256,6 +267,7 @@ class Agent:
 
     def _configure(self, options: AgentOptions) -> None:
         self._listeners: list[AgentListener] = []
+        self._overflow_recovery_attempted = False
         self._active_run: _ActiveRun | None = None
         self._current_run: ContextVar[_ActiveRun | None] = ContextVar("agent_current_run", default=None)
         self._current_listener: ContextVar[AgentListener | None] = ContextVar("agent_current_listener", default=None)
@@ -669,7 +681,8 @@ class Agent:
 
     async def _execute_compaction(
         self, custom_instructions: str | None, run: _ActiveRun,
-        *, reason: Literal["manual", "threshold"] = "manual",
+        *, reason: Literal["manual", "threshold", "overflow"] = "manual",
+        will_retry: bool = False,
         preparation: CompactionPreparation | None = None,
     ) -> CompactionResult:
         signal = run.abort_controller.signal
@@ -679,7 +692,7 @@ class Agent:
         system_message = get_current_system_message(self._state.messages)
         snapshot = self._history.snapshot()
         request = self._summary_request(model, signal)
-        await self._notify_listeners(CompactionStartEvent(reason=reason, will_retry=False))
+        await self._notify_listeners(CompactionStartEvent(reason=reason, will_retry=will_retry))
         signal.throw_if_aborted()
         path = history_path(snapshot)
         if path and isinstance(path[-1], CompactionHistoryEntry):
@@ -716,24 +729,27 @@ class Agent:
         ))
         return result
 
-    async def _auto_compact(self, run: _ActiveRun) -> None:
-        """Run one threshold check inside the owning dialogue activity."""
+    async def _auto_compact(
+        self, run: _ActiveRun, *, reason: Literal["threshold", "overflow"] = "threshold",
+        will_retry: bool = False,
+    ) -> bool:
+        """Run automatic compaction inside the owning dialogue activity."""
         signal = run.abort_controller.signal
         if signal.aborted or run.stop or not self._compaction_settings.enabled:
-            return
+            return False
         snapshot = self._history.snapshot()
-        if estimate_history_tokens(snapshot) <= (
+        if reason == "threshold" and estimate_history_tokens(snapshot) <= (
             self._state.model.context_window - self._compaction_settings.reserve_tokens
         ):
-            return
+            return False
         preparation = prepare_compaction(snapshot, self._compaction_settings)
-        if preparation is None:
-            return
+        if preparation is None and reason == "threshold":
+            return False
         result: CompactionResult | None = None
         error: BaseException | None = None
         try:
             result = await self._execute_compaction(
-                None, run, reason="threshold", preparation=preparation,
+                None, run, reason=reason, will_retry=will_retry, preparation=preparation,
             )
         except (Exception, asyncio.CancelledError) as caught:
             if run.notification_error is not None:
@@ -743,14 +759,70 @@ class Agent:
             error = caught
             if isinstance(error, CompactionFailure) and error.code == "aborted":
                 run.abort_controller.abort()
+        error_message = str(error) if error is not None else None
+        if reason == "overflow" and error_message is not None and not signal.aborted:
+            error_message = f"Context overflow recovery failed: {error_message}"
+            self._state._error_message = error_message
         await self._notify_listeners(CompactionEndEvent(
-            reason="threshold", will_retry=False, result=result,
+            reason=reason, will_retry=will_retry and result is not None and not signal.aborted,
+            result=result,
             aborted=signal.aborted or (
                 isinstance(error, CompactionFailure) and error.code == "aborted"
             ),
-            error_message=str(error) if error is not None else None,
+            error_message=error_message,
         ))
         await self._flush_custom_messages()
+        return result is not None and not signal.aborted
+
+    async def _check_response_compaction(self, run: _ActiveRun) -> bool:
+        message = run.last_assistant
+        model = run.last_assistant_model
+        snapshot = self._history.snapshot()
+        path = history_path(snapshot)
+        assistant_index = next((index for index, entry in enumerate(path) if entry.id == run.last_assistant_id), None)
+        after = path[assistant_index + 1:] if assistant_index is not None else []
+        projected = any(entry_id == run.last_assistant_id for entry_id, _ in project_history_records(snapshot))
+        current = projected and not any(isinstance(entry, CompactionHistoryEntry) for entry in after)
+        usage_current = current and not any(isinstance(entry, ContextEditHistoryEntry) for entry in after)
+        overflow = message is not None and model is not None and (
+            is_context_overflow(message) or (usage_current and is_context_overflow(message, model.context_window))
+        )
+        length = message is not None and model is not None and is_recoverable_length(message, model.max_tokens)
+        if (
+            message is not None and model is not None
+            and models_are_equal(run.last_assistant_selection, self._state.model)
+            and (message.provider, message.model) == (model.provider, model.id)
+            and self._compaction_settings.enabled and current and (overflow or length)
+        ):
+            if message.stop_reason == "stop":
+                await self._auto_compact(run, reason="overflow")
+                return False
+            if self._overflow_recovery_attempted:
+                self._state._error_message = (
+                    "Context overflow recovery failed after one compact-and-retry attempt. "
+                    "Try reducing context or switching to a larger-context model."
+                    if overflow else "Truncated response recovery failed after one compact-and-retry attempt."
+                )
+                await self._notify_listeners(CompactionEndEvent(
+                    reason="overflow", will_retry=False, result=None, aborted=False,
+                    error_message=self._state.error_message,
+                ))
+                return False
+            self._overflow_recovery_attempted = True
+            assert run.last_assistant_id is not None
+            call_ids = {block.id for block in message.content if isinstance(block, ToolCall)}
+            targets = [run.last_assistant_id, *(
+                entry.id for entry in after if isinstance(entry, MessageHistoryEntry)
+                and isinstance(entry.message, ToolResultMessage) and entry.message.tool_call_id in call_ids
+            )]
+            entries = tuple(self._history.append_omission(target) for target in targets)
+            self._state._messages = project_history(self._history.snapshot())
+            await self._notify_listeners(HistoryCommitEvent(
+                conversation_id=self._history.conversation_id, entries=entries, leaf_id=entries[-1].id,
+            ))
+            return await self._auto_compact(run, reason="overflow", will_retry=True)
+        await self._auto_compact(run)
+        return False
 
     def _summary_request(self, model: Model, signal: AbortSignal) -> SummaryRequest:
         policy = self._retry_policy
@@ -1138,7 +1210,10 @@ class Agent:
             await self._finish_retry("exhausted")
             if signal.aborted:
                 break
-            await self._auto_compact(run)
+            if await self._check_response_compaction(run):
+                run.ending = False
+                await self._run_prompt_messages([], signal)
+                continue
             if signal.aborted:
                 break
             messages = self._steering_queue.drain()
@@ -1226,14 +1301,19 @@ class Agent:
     async def _finish_turn(
         self, context: AgentTurnContext, signal: AbortSignal | None,
     ) -> AgentTurnDecision | None:
-        if self.finish_turn is None:
-            return None
+        run = self._current_run.get()
+        assert run is not None
         can_end = getattr(context.message, "stop_reason", None) not in {"error", "aborted"}
-        decision = await maybe_await(self.finish_turn(context, signal))
+        decision = await maybe_await(self.finish_turn(context, signal)) if self.finish_turn is not None else None
         if decision == "end" and can_end:
-            run = self._current_run.get()
-            assert run is not None
             run.stop = True
+        if (
+            isinstance(context.message, AssistantMessage) and self._compaction_settings.enabled
+            and run.request_model is not None and is_recoverable_length(context.message, run.request_model.max_tokens)
+        ):
+            # Let the activity coordinator select bounded recovery before tools
+            # or queues can drive another request with the truncated response.
+            return "end"
         return decision
 
     async def _run_prompt_messages(
@@ -1310,6 +1390,10 @@ class Agent:
             )
             context = update.context if update is not None else None
             _require_executable_model(model, "prepare_request")
+            run = self._current_run.get()
+            assert run is not None
+            run.request_model = model
+            run.request_selection = self._state.model
             return AgentRequestUpdate(context=context, model=model, thinking_level=thinking)
 
         return prepare
@@ -1397,6 +1481,12 @@ class Agent:
             if isinstance(message, AssistantMessage):
                 run.last_assistant = message
                 run.last_assistant_id = entry.id
+                run.last_assistant_model = run.request_model
+                run.last_assistant_selection = run.request_selection
+                if message.stop_reason not in {"error", "length"}:
+                    self._overflow_recovery_attempted = False
+            elif isinstance(message, UserMessage):
+                self._overflow_recovery_attempted = False
             await self._notify_listeners(HistoryCommitEvent(
                 conversation_id=self._history.conversation_id, entries=(entry,), leaf_id=entry.id,
             ))
@@ -1452,9 +1542,14 @@ class Agent:
             self._state._remove_pending_tool_call(event.tool_call_id)
         elif isinstance(event, TurnEndEvent):
             message = event.message
-            if getattr(message, "stop_reason", None) in {"aborted", "length"}:
-                run = self._current_run.get()
-                assert run is not None
+            run = self._current_run.get()
+            assert run is not None
+            if getattr(message, "stop_reason", None) == "aborted" or (
+                isinstance(message, AssistantMessage) and message.stop_reason == "length" and (
+                    not self._compaction_settings.enabled or run.last_assistant_model is None
+                    or not is_recoverable_length(message, run.last_assistant_model.max_tokens)
+                )
+            ):
                 run.stop = True
             error_message = getattr(message, "error_message", None)
             if getattr(message, "role", None) == "assistant" and error_message:

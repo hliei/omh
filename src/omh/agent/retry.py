@@ -1,4 +1,4 @@
-"""Selected provider-response errors and bounded Agent retry policy.
+"""Provider-response classification for bounded Agent retry and recovery.
 
 Provider error patterns adapted from pi, licensed under the MIT License:
 Copyright (c) 2025 Mario Zechner
@@ -70,9 +70,10 @@ _OVERFLOW = re.compile(
     r"context window exceeds limit|exceeded model token limit|"
     r"prompt has [\d,]+ tokens?, but the configured context size|model_context_window_exceeded|"
     r"range of input length should be|context[_ ]length[_ ]exceeded|too many tokens|"
-    r"token limit exceeded|^4(?:00|13)\s*(?:status code)?\s*\(no body\)|^http 4(?:00|13):\s*$",
+    r"token limit exceeded",
     re.IGNORECASE,
 )
+_BODYLESS_OVERFLOW = re.compile(r"^4(?:00|13)\s*(?:status code)?\s*\(no body\)", re.IGNORECASE)
 _TRANSIENT = re.compile(
     r"overloaded|currently experiencing high demand|rate.?limit|too many requests|"
     r"\b(?:429|500|502|503|504|520|524)\b|service.?unavailable|server.?error|internal.?error|"
@@ -98,8 +99,37 @@ def is_retryable_assistant_error(message: AssistantMessage) -> bool:
     return bool(
         message.stop_reason == "error" and text
         and not _PERMANENT.search(text)
-        and not (_OVERFLOW.search(text) and not _THROTTLING.search(text))
+        and not is_context_overflow(message)
         and _TRANSIENT.search(text)
+    )
+
+
+def is_context_overflow(message: AssistantMessage, context_window: int | None = None) -> bool:
+    """Recognize explicit capacity errors and usage-backed silent overflow."""
+    text = message.error_message
+    if (
+        message.stop_reason == "error" and text
+        and not _THROTTLING.search(text) and (
+            _OVERFLOW.search(text) or (message.provider == "cerebras" and _BODYLESS_OVERFLOW.search(text))
+        )
+    ):
+        return True
+    if context_window is None or context_window <= 0:
+        return False
+    input_tokens = message.usage.input + message.usage.cache_read
+    if message.stop_reason == "stop":
+        return input_tokens > context_window
+    return (
+        message.stop_reason == "length" and message.usage.output == 0
+        and input_tokens >= context_window * 0.99
+    )
+
+
+def is_recoverable_length(message: AssistantMessage, desired_max_output: int) -> bool:
+    """Compare a truncated response with the original, unclamped output target."""
+    return (
+        message.stop_reason == "length" and desired_max_output > 0
+        and message.usage.output < desired_max_output
     )
 
 

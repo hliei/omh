@@ -14,6 +14,7 @@ from omh.agent import (
     AgentRequestUpdate,
     AgentTool,
     AgentToolResult,
+    CompactionSettings,
     ContextEditHistoryEntry,
     CustomAgentMessage,
     HistoryCommitEvent,
@@ -136,7 +137,7 @@ async def test_selected_transient_response_errors_retry(text: str) -> None:
 ])
 async def test_permanent_capacity_and_unselected_response_errors_do_not_retry(text: str) -> None:
     stream = ScriptedStreamFn([lambda: error(text), lambda: text_message("never")])
-    agent = make_agent(stream)
+    agent = make_agent(stream, compaction=CompactionSettings(enabled=False))
     await agent.prompt("go")
     assert stream.calls == 1
     assert not any(isinstance(entry, ContextEditHistoryEntry) for entry in agent.history.entries)

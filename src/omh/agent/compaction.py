@@ -66,7 +66,7 @@ class CompactionSettings:
     """Threshold and retention budgets for compaction.
 
     Defaults mirror the accepted baseline. Manual compaction runs even when
-    ``enabled`` is false; the flag only gates automatic threshold compaction.
+    ``enabled`` is false; the flag gates automatic threshold and response recovery.
     """
 
     enabled: bool = True
