@@ -723,7 +723,7 @@ class Agent:
     ) -> None:
         aborted = (
             isinstance(error, AbortError | asyncio.CancelledError)
-            or isinstance(error, CompactionFailure) and error.code == "aborted"
+            or (isinstance(error, CompactionFailure) and error.code == "aborted")
         )
         run.settling = True
         try:

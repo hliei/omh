@@ -39,6 +39,11 @@ from omh.llm.types import (
     UserMessage,
 )
 from omh.llm.types import ModelThinkingLevel as ThinkingLevel
+from omh.llm.utils.estimate import (
+    CHARS_PER_TOKEN,
+    ESTIMATED_IMAGE_CHARS,
+    calculate_context_tokens,
+)
 
 _SUMMARIZATION_SYSTEM_PROMPT = (
     "You are a context summarization assistant. Read the conversation and produce "
@@ -51,7 +56,8 @@ _UPDATE_SUMMARIZATION_PROMPT = """Update the existing structured summary with th
 _TURN_PREFIX_SUMMARIZATION_PROMPT = """This is the prefix of a turn whose suffix is retained. Summarize the original request, early progress, and context needed to understand the retained suffix."""
 
 _MAX_SAFE_INTEGER = 2**53 - 1
-_IMAGE_CHARS = 4_800
+_READ_FILES_KEY = "readFiles"
+_MODIFIED_FILES_KEY = "modifiedFiles"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +138,7 @@ def _content_chars(content: str | Sequence[object]) -> int:
         if isinstance(block, TextContent):
             chars += len(block.text)
         else:
-            chars += _IMAGE_CHARS
+            chars += ESTIMATED_IMAGE_CHARS
     return chars
 
 
@@ -165,20 +171,14 @@ def estimate_tokens(message: AgentMessage) -> int:
             chars += len(tool.name) + len(tool.description) + len(
                 json.dumps(tool.parameters, ensure_ascii=False, default=str)
             )
-    return math.ceil(chars / 4)
-
-
-def _context_tokens(usage: Usage) -> int:
-    return usage.total_tokens or (
-        usage.input + usage.output + usage.cache_read + usage.cache_write
-    )
+    return (chars + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
 
 
 def _valid_usage(message: AgentMessage) -> Usage | None:
     if (
         isinstance(message, AssistantMessage)
         and message.stop_reason not in {"aborted", "error"}
-        and _context_tokens(message.usage) > 0
+        and calculate_context_tokens(message.usage) > 0
     ):
         return message.usage
     return None
@@ -191,10 +191,15 @@ def estimate_context_tokens(messages: Sequence[AgentMessage]) -> int:
     for index in range(len(messages) - 1, -1, -1):
         usage = _valid_usage(messages[index])
         if usage is not None:
-            usage_tokens = _context_tokens(usage)
+            usage_tokens = calculate_context_tokens(usage)
             start = index + 1
             break
     return usage_tokens + sum(estimate_tokens(message) for message in messages[start:])
+
+
+def estimate_projection_tokens(messages: Sequence[AgentMessage]) -> int:
+    """Estimate a rebuilt projection without reusing pre-compaction usage."""
+    return sum(estimate_tokens(message) for message in messages)
 
 
 def _cut_points(records: Sequence[tuple[str | None, AgentMessage]]) -> list[int]:
@@ -238,8 +243,8 @@ def _file_operations(
     read: set[str] = set()
     modified: set[str] = set()
     if previous is not None and isinstance(previous.details, dict):
-        previous_read = previous.details.get("readFiles")
-        previous_modified = previous.details.get("modifiedFiles")
+        previous_read = previous.details.get(_READ_FILES_KEY)
+        previous_modified = previous.details.get(_MODIFIED_FILES_KEY)
         if isinstance(previous_read, list):
             read.update(path for path in previous_read if isinstance(path, str))
         if isinstance(previous_modified, list):
@@ -457,7 +462,7 @@ async def compact_with_request(
 ) -> CompactionResult:
     """Run the summarization requests and build one committed compaction result."""
     if preparation.is_split_turn and preparation.turn_prefix_messages:
-        history_text = "No prior history."
+        history_text = preparation.previous_summary or "No prior history."
         history_usage: Usage | None = None
         if preparation.messages_to_summarize:
             history_text, history_usage = await _generate_summary(
@@ -474,7 +479,7 @@ async def compact_with_request(
             model,
             reserve_tokens,
             None,
-            None,
+            custom_instructions,
             thinking_level,
             request,
             turn_prefix=True,
@@ -508,23 +513,10 @@ async def compact_with_request(
         summary=summary,
         first_kept_entry_id=preparation.first_kept_entry_id,
         tokens_before=preparation.tokens_before,
-        estimated_tokens_after=estimate_context_tokens(after),
+        estimated_tokens_after=estimate_projection_tokens(after),
         usage=usage,
         details={
-            "readFiles": list(preparation.read_files),
-            "modifiedFiles": list(preparation.modified_files),
+            _READ_FILES_KEY: list(preparation.read_files),
+            _MODIFIED_FILES_KEY: list(preparation.modified_files),
         },
     )
-
-
-__all__ = [
-    "CompactionFailure",
-    "CompactionPreparation",
-    "CompactionResult",
-    "CompactionSettings",
-    "SummaryRequest",
-    "compact_with_request",
-    "estimate_context_tokens",
-    "estimate_tokens",
-    "prepare_compaction",
-]

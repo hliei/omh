@@ -698,12 +698,56 @@ async def test_split_turn_summarizes_prefix_and_merges_usage() -> None:
         text_message("assistant-1"),
     ])
 
-    result = await agent.compact()
+    result = await agent.compact("focus on the open question")
 
     assert stream.summary_calls == 2
     assert "Turn Context (split turn)" in result.summary
     assert result.usage is not None
     assert result.usage.input == 20 and result.usage.output == 10
+    # The manual focus reaches both the history and the turn-prefix requests.
+    assert all(
+        "focus on the open question" in _request_text(request)
+        for request in stream.summary_requests
+    )
+
+
+async def test_split_turn_with_no_history_keeps_the_previous_summary() -> None:
+    stream = SummaryStreamFn(replies=[text_message("ok")])
+    agent = seeded_agent(stream, keep_recent_tokens=101, messages=[
+        UserMessage(content="q0", timestamp=NOW),
+        text_message("a0" * 400),
+        UserMessage(content="q1", timestamp=NOW + 10),
+        text_message("a" * 400),
+    ])
+    first = await agent.compact()
+    assert [message.role for message in agent.state.messages] == ["compactionSummary", "user", "assistant"]
+
+    await agent.prompt("u")
+    await agent.set_compaction_settings(CompactionSettings(keep_recent_tokens=50))
+    second = await agent.compact()
+
+    assert stream.summary_calls == 2
+    # The cut landed inside the first retained turn, so the previous summary is
+    # carried forward instead of being replaced by "No prior history.".
+    assert first.summary in second.summary
+    assert "No prior history." not in second.summary
+
+
+async def test_estimated_tokens_after_does_not_reuse_pre_compaction_usage() -> None:
+    stream = SummaryStreamFn()
+    heavy = replace(text_message("a1"), usage=usage(25_000, 25_000))
+    agent = seeded_agent(stream, keep_recent_tokens=2, messages=[
+        UserMessage(content="q0", timestamp=NOW),
+        text_message("a0"),
+        UserMessage(content="q1", timestamp=NOW + 10),
+        heavy,
+    ])
+
+    result = await agent.compact()
+
+    # The retained assistant's usage measured the pre-compaction context, so the
+    # public estimate must be rebuilt from the new projection instead.
+    assert result.estimated_tokens_after < 100
 
 
 async def test_compaction_settings_are_captured_at_the_start() -> None:
