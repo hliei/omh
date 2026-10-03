@@ -685,30 +685,31 @@ executing it, so the model can re-issue complete calls. Error results join the
 transcript like any other tool result, letting the model recover in a later
 request.
 
-### Built-in read, edit, and write
+### Built-in read, bash, edit, and write
 
-`create_read_tool(cwd, options=None)`, `create_edit_tool(cwd)`, and
-`create_write_tool(cwd)` return ordinary
+`create_read_tool(cwd, options=None)`, `create_bash_tool(cwd, options=None)`,
+`create_edit_tool(cwd)`, and `create_write_tool(cwd)` return ordinary
 `AgentTool` instances, with no default installation. Import them from `omh.agent`
 or `omh.agent.coding_tools`, then pass the selected tools through
 `AgentInitialState.tools` or `await agent.set_tools(...)`:
 
 ```python
 from omh.agent import (
-    AgentInitialState, ReadToolOptions, create_edit_tool, create_read_tool, create_write_tool,
+    AgentInitialState, ReadToolOptions, create_bash_tool, create_edit_tool, create_read_tool, create_write_tool,
 )
 
 initial = AgentInitialState(
     model=my_model,
     tools=[
         create_read_tool("/path/to/project", ReadToolOptions(auto_resize_images=False)),
+        create_bash_tool("/path/to/project"),
         create_edit_tool("/path/to/project"),
         create_write_tool("/path/to/project"),
     ],
 )
 ```
 
-Each factory captures its cwd as an absolute path. Calls accept relative or
+Each factory captures its cwd as an absolute path. File-tool calls accept relative or
 absolute paths and expand `~`, remove a leading `@`, and normalize selected
 Unicode spaces. Read also tries the selected macOS screenshot, decomposed
 Unicode, and curly-apostrophe filename variants. Cwd is a resolution base;
@@ -795,9 +796,46 @@ signal after its predecessor settles and does not start file operations. Abort
 does not undo completed writes. Processor cancellation awaits its async cleanup.
 File or processor exceptions use the existing Agent error-tool-result behavior.
 
+Bash accepts `command` and an optional `timeout` in seconds. There is no default
+timeout. After the loop's usual schema conversion, timeout must be a finite,
+positive number at most 2147483.647 seconds. Direct `execute` calls reject
+booleans, strings, and explicit `None`; omit the key for no timeout. Invalid
+arguments are rejected before spawning. `BashToolOptions(command_prefix=...,
+shell_path=...)` optionally prepends setup commands and selects the executable;
+the default is `/bin/bash`. Bash runs with `-c`, inherits the host environment,
+and has closed stdin. Each invocation uses its own process group on macOS/Linux.
+
+Stdout and stderr share one pipe. `on_update` receives bounded cumulative text
+snapshots while the command runs; through the Agent these become
+`tool_execution_update` events. UTF-8 is decoded incrementally, replacing invalid
+or incomplete sequences. The retained tail is at most 2000 lines or 50 KiB,
+whichever limits it first. A long final line may be retained partially at a
+UTF-8 character boundary. Truncation adds an explanatory suffix and JSON
+`details.truncation` (including `totalLines`, `totalBytes`, `outputLines`,
+`outputBytes`, `truncatedBy`, and `lastLinePartial`) plus `details.fullOutputPath`.
+The suffix is outside the retained-output budget. Byte counts describe decoded
+UTF-8 text; the spill file preserves the complete original output bytes. Spill
+files are created only when truncated, flushed during capture, and closed before
+completion. They remain available after Agent closure; the host owns deletion.
+Empty successful output returns `(no output)`.
+
+Nonzero exit codes, signal termination, timeout, abort, and execution failures
+become ordinary Agent error tool results. Command failures preserve captured
+output and, when truncated, its JSON details and file path. Abort and timeout
+kill the invocation's process group, reap the shell, drain and close its output
+pipe, and close the spill handle before settling. Shell exit also cleans up
+remaining group members. A descendant that leaves the group cannot keep the
+invocation waiting forever by retaining the output pipe: after shell exit the
+reader gets up to one second to drain before the pipe closes. Progress ends
+before invocation settlement. Direct cancellation of the tool's execute task
+requests the same cleanup and propagates cancellation only after it finishes,
+including repeated cancellation. Cancelling a `prompt` waiter still only stops
+that wait; call `agent.abort()` and await `agent.wait_for_idle()` or
+`agent.close()` to confirm Agent-owned execution cleanup.
+
 Migration: these factories return `AgentTool`; existing
-`omh.durable.create_read_tool`, `create_edit_tool`, and `create_write_tool` retain
-their
+`omh.durable.create_read_tool`, `create_bash_tool`, `create_edit_tool`, and
+`create_write_tool` retain their
 `AgentHarnessTool` contracts and execution context. Neither adapter can be passed
 as the other's tool type. Only pure path, text-budget, argument, MIME, and
 edit/diff mechanisms are shared; importing the main factories does not load durable
@@ -1101,7 +1139,7 @@ Applications import the public Agent, loop entries, and contracts from
 | [`options.py`](../src/omh/agent/options.py), [`loop_config.py`](../src/omh/agent/loop_config.py) | Agent construction options and standalone loop configuration |
 | [`messages.py`](../src/omh/agent/messages.py) | Application messages and model-input conversion contracts |
 | [`tools.py`](../src/omh/agent/tools.py) | Executable tools, result and callback contracts, and model-facing declarations |
-| [`coding_tools/`](../src/omh/agent/coding_tools/) | Host-selected read/edit/write factories, local file I/O ownership, and canonical-path mutation coordination |
+| [`coding_tools/`](../src/omh/agent/coding_tools/) | Host-selected read/bash/edit/write factories, local process and file I/O ownership, and canonical-path mutation coordination |
 | [`context.py`](../src/omh/agent/context.py) | Conversation messages and executable tools passed to the loop |
 | [`hooks.py`](../src/omh/agent/hooks.py) | Request, turn, tool, credential, and queue hooks with their inputs and results |
 | [`stream_fn.py`](../src/omh/agent/stream_fn.py) | Model stream function contract and host-installed default |
@@ -1122,7 +1160,7 @@ turn scheduling. Provider transport and transcript primitives remain in
 The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
 events, bounded dialogue and summary retries, manual and automatic compaction,
-one-attempt overflow and truncated-response recovery, host-selected read/edit/write
+one-attempt overflow and truncated-response recovery, host-selected read/bash/edit/write
 tools, and cooperative cancellation.
 Applications supply executable tools and retry configuration and own
 application-level session files, resource discovery, and UI/CLI behavior.

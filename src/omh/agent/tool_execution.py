@@ -25,7 +25,12 @@ from omh.agent.events import (
 )
 from omh.agent.hooks import AfterToolCallContext, BeforeToolCallContext
 from omh.agent.loop_config import AgentLoopConfig
-from omh.agent.tools import AgentTool, AgentToolResult, to_tool_declaration
+from omh.agent.tools import (
+    AgentTool,
+    AgentToolResult,
+    _AgentToolResultError,
+    to_tool_declaration,
+)
 from omh.llm.types import (
     AbortSignal,
     AssistantMessage,
@@ -324,6 +329,8 @@ async def _execute_prepared_tool_call(
         if inspect.isawaitable(result):
             result = await result
         executed: tuple[AgentToolResult, bool] = (result, False)
+    except _AgentToolResultError as error:
+        executed = (error.result, True)
     except Exception as error:  # noqa: BLE001 - tool failures become error tool results
         executed = (_create_error_tool_result(str(error)), True)
     finally:
