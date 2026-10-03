@@ -61,7 +61,13 @@ from omh.agent.loop import (
     run_agent_loop_continue,
 )
 from omh.agent.loop_config import AgentLoopConfig
-from omh.agent.messages import AgentMessage, ConvertToLlm, LoopMessage, TransformContext
+from omh.agent.messages import (
+    AgentMessage,
+    ConvertToLlm,
+    CustomAgentMessage,
+    LoopMessage,
+    TransformContext,
+)
 from omh.agent.options import AgentOptions, QueueMode
 from omh.agent.state import (
     AgentInitialState,
@@ -121,6 +127,8 @@ class _ActiveRun:
     pending_prompts: deque[tuple[list[AgentMessage], dict[str, str]]] = field(default_factory=deque)
     notification_error: BaseException | None = None
     stop: bool = False
+    dialogue: bool = True
+    custom_messages: deque[CustomAgentMessage] = field(default_factory=deque)
 
 
 _current_run: ContextVar[_ActiveRun | None] = ContextVar("agent_current_run", default=None)
@@ -435,6 +443,60 @@ class Agent:
         steering = self._steering_queue.peek()
         return steering if steering else self._follow_up_queue.peek()
 
+    async def submit_custom_message(self, message: CustomAgentMessage) -> None:
+        """Commit custom context without requesting a model response.
+
+        While a dialogue is busy, return after acceptance for its next safe
+        boundary. Idle submissions await their Agent-owned commit and notices.
+        """
+        self._ensure_open()
+        if type(message) is not CustomAgentMessage:
+            raise ValueError("submit_custom_message requires a CustomAgentMessage")
+        accepted = cast(CustomAgentMessage, snapshot_messages([message])[0])
+        run = self._active_run
+        if run is None:
+            run = self._begin_run(lambda signal: self._flush_custom_messages(), dialogue=False)
+        run.custom_messages.append(accepted)
+        if not run.dialogue and _current_run.get() is not run:
+            assert run.task is not None
+            await asyncio.shield(run.task)
+
+    async def _flush_custom_messages(self) -> None:
+        assert self._active_run is not None
+        run = self._active_run
+        first_error: BaseException | None = None
+        while run.custom_messages:
+            message = run.custom_messages.popleft()
+            entry = self._history.append_message(message)
+            self._state._messages.extend(snapshot_messages([message]))
+            run.messages.extend(snapshot_messages([message]))
+            try:
+                await self._notify_listeners(HistoryCommitEvent(
+                    conversation_id=self._history.conversation_id, entries=(entry,), leaf_id=entry.id,
+                ))
+                await self._notify_listeners(MessageStartEvent(message=message))
+                await self._notify_listeners(MessageEndEvent(message=message))
+            except (Exception, asyncio.CancelledError) as error:
+                # Accepted context still gets committed if a preceding notice
+                # failed. Report the first failure after the queue is settled.
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
+
+    async def _custom_submission_runner(
+        self, executor: Callable[[AbortSignal], Awaitable[None]], run: _ActiveRun,
+    ) -> None:
+        token = _current_run.set(run)
+        try:
+            await executor(run.abort_controller.signal)
+        except (Exception, asyncio.CancelledError) as error:
+            self._state._error_message = str(error)
+            raise
+        finally:
+            _current_run.reset(token)
+            self._finish_run(run)
+
     async def prompt(
         self,
         message: str | AgentMessage | list[AgentMessage],
@@ -518,14 +580,21 @@ class Agent:
     def _begin_run(
         self,
         executor: Callable[[AbortSignal], Awaitable[None]],
+        *,
+        dialogue: bool = True,
     ) -> _ActiveRun:
         self._reset_run_state()
         run = _ActiveRun(
             abort_controller=AbortController(),
             idle=asyncio.get_running_loop().create_future(),
+            dialogue=dialogue,
         )
+        if not dialogue:
+            self._state._is_streaming = False
+            self._state._activity_kind = None
         self._active_run = run
-        run.task = asyncio.create_task(self._runner(executor, run))
+        runner = self._runner if dialogue else self._custom_submission_runner
+        run.task = asyncio.create_task(runner(executor, run))
         run.task.add_done_callback(_retrieve_task_exception)
         return run
 
@@ -559,6 +628,11 @@ class Agent:
                     if first_error is None:
                         first_error = reported_error
                 finally:
+                    try:
+                        await self._flush_custom_messages()
+                    except (Exception, asyncio.CancelledError) as error:
+                        if first_error is None:
+                            first_error = error
                     if not run.ending:
                         try:
                             await self._process_events(AgentEndEvent(messages=list(run.messages)))
@@ -577,6 +651,11 @@ class Agent:
                             first_error = error
                     finally:
                         run.settling = False
+                        try:
+                            await self._flush_custom_messages()
+                        except (Exception, asyncio.CancelledError) as error:
+                            if first_error is None:
+                                first_error = error
                         _current_run.reset(token)
                 if self._close_task is not None or not run.pending_prompts:
                     if run.pending_prompts and first_error is None:
@@ -832,6 +911,8 @@ class Agent:
         else:
             self._reduce_state(event)
         await self._notify_listeners(event)
+        if isinstance(event, (TurnEndEvent, AgentEndEvent)):
+            await self._flush_custom_messages()
 
     async def _notify_listeners(self, event: AgentEvent) -> None:
         run = self._active_run

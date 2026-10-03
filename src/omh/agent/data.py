@@ -6,7 +6,7 @@ import copy
 import math
 from collections.abc import Sequence
 from dataclasses import fields, is_dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import cache
 from types import UnionType
 from typing import Literal, Union, cast, get_args, get_origin, get_type_hints
@@ -100,6 +100,12 @@ def snapshot_messages(messages: Sequence[LoopMessage]) -> list[AgentMessage]:
         if expected_role is None or message.role != expected_role:
             raise ValueError("Agent history requires SDK messages; convert application objects to CustomAgentMessage")
         _validate_data(message, f"messages[{index}]", set())
+        if isinstance(message, CustomAgentMessage):
+            validate_typed_data(message, CustomAgentMessage, f"messages[{index}]")
+            try:
+                datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=message.timestamp)
+            except OverflowError as error:
+                raise ValueError(f"messages[{index}].timestamp is outside the history UTC range") from error
     return copy.deepcopy(cast(list[AgentMessage], list(messages)))
 
 

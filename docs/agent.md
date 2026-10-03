@@ -245,8 +245,8 @@ custom `StreamFn` receives the full normalized `TranscriptContext` and the
 | `system_prompt` | Read-only prompt replayed from the transcript's system messages. |
 | `model`, `thinking_level` | Read-only observations of the current execution configuration. |
 | `system_sections` | Read-only copy of the expected named base sections applied at the next new prompt. |
-| `is_busy` | True from activity acceptance through preparation, execution, terminal listeners, and their accepted prompt chain. |
-| `activity_kind` | `"dialogue"` while a prompt or continuation is unsettled; otherwise `None`. |
+| `is_busy` | True from activity acceptance through preparation, execution, terminal listeners, and their accepted prompt chain; also true while an idle custom submission and its notifications settle. |
+| `activity_kind` | `"dialogue"` while a prompt or continuation is unsettled; `None` during an idle custom submission or when idle. |
 | `is_streaming` | True throughout the dialogue activity, including request preparation and terminal listeners. |
 | `is_closed` | True after permanent closure finishes; closure rejects new work from its start. |
 | `streaming_message` | Current partial assistant message, if any. |
@@ -297,6 +297,56 @@ request without it ends through the ordinary Agent error lifecycle.
 `await agent.prompt(text, images=None)` accepts text, a single SDK message, or a message batch. `await agent.continue_()` continues from an existing transcript whose last message is a user or tool-result message; it rejects empty or system-only history. A busy Agent rejects ordinary `prompt` and `continue_` calls. A prompt awaited inside an `agent_settled` listener only confirms acceptance; see [events and subscribers](#events-and-subscribers) for scheduling and waiting rules. Create another Agent to start a new conversation; `reset()` has been removed.
 
 An assistant tail normally cannot be continued. It is accepted only when an input queue supplies the next message: steering first, then follow-up. A steering continuation skips the loop's initial steering poll so a second queued steering message is not folded into the same request; with neither queue populated, `continue_()` raises the same rejection as the low-level loop.
+
+### Recording custom context without a response
+
+`await agent.submit_custom_message(message)` accepts a `CustomAgentMessage`
+without requesting a model response. When idle, it waits for the history and
+effective-context commit and the awaited notifications. An executable model is
+not required. For example:
+
+```python
+from omh.agent import CustomAgentMessage
+
+await agent.submit_custom_message(CustomAgentMessage(
+    custom_type="workspace_note",
+    content="The test fixtures have been regenerated.",
+    details={"display_color": "blue"},
+))
+await agent.prompt("Check the updated fixtures.")
+```
+
+During a dialogue, the call returns after accepting an isolated input snapshot.
+Pending custom messages commit in FIFO order at the completed turn boundary,
+after the current assistant and all its tool results, before the next request
+projection. They also settle when the dialogue ends, including submissions from
+terminal listeners. A submission does not consume steering or follow-up, and
+does not itself cause another turn. `wait_for_idle()` waits for pending custom
+work and notifications to finish. Until then, pending input is absent from
+history, effective context, and message events.
+
+Each custom commit updates history and context, then emits `history_commit`,
+`message_start`, and `message_end`. All three notifications see committed data;
+idle submissions emit no dialogue or turn lifecycle events. Content enters
+the next model projection by default; `custom_type`, `display`, and `details`
+remain application data. Inputs use the same JSON pure-data checks and isolation
+as ordinary prompts. Custom fields must match the SDK envelope types, and their
+millisecond timestamp must fit the history's UTC datetime range; invalid input
+raises `ValueError` before acceptance.
+
+Idle submission work belongs to the Agent. Cancelling a submission waiter ends
+only that wait. Other callers submitting during its awaited notifications wait
+for the shared drain; an awaited callback on that work only confirms acceptance,
+so it cannot wait on itself. Ordinary prompt and continuation calls reject while
+that work is busy; `is_streaming` stays false and `activity_kind` stays `None`.
+`abort()` and `close()` still settle accepted custom context after the current
+work has cleaned up. Closing rejects new submissions from its start. A listener
+failure propagates without rolling back history or fabricating an assistant
+response; remaining accepted custom context commits during cleanup, although
+failed notifications can prevent subsequent notices for that message.
+
+The runnable offline [history example](../examples/history.py) demonstrates
+both idle submission and submission from a tool.
 
 ## Input queues
 
@@ -679,7 +729,8 @@ do not validate a live service or performance.
 ## Migration from mutable Agent state
 
 - Pass initial messages through `AgentInitialState.messages`; use `prompt`,
-  `steer`, or `follow_up` for later input. Assigning or appending to
+  `steer`, or `follow_up` for later input, or `await submit_custom_message(...)`
+  to record custom context without a model response. Assigning or appending to
   `state.messages` is no longer supported.
 - Replace `reset()` with construction of a new Agent and rebind subscriptions.
   The old instance retains its history and queues. Before switching a running

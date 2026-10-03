@@ -47,9 +47,14 @@ async def main() -> None:
         stream.push(DoneEvent(reason=message.stop_reason, message=message))
         return stream
 
-    def double(call_id, args, signal, on_update):
+    async def double(call_id, args, signal, on_update):
         value = args["value"] * 2
         on_update(AgentToolResult(content=[TextContent(text="working")]))
+        # Busy submission confirms acceptance; it commits after this tool result
+        # and becomes visible in the natural continuation's model request.
+        await agent.submit_custom_message(CustomAgentMessage(
+            custom_type="tool_note", content="The tool calculated the answer.",
+        ))
         return AgentToolResult(content=[TextContent(text=str(value))], details={"value": value})
 
     agent = Agent(AgentOptions(
@@ -70,9 +75,14 @@ async def main() -> None:
             print(f"Committed {event.entries[-1].type}: {event.leaf_id}")
 
     agent.subscribe(observe)
-    await agent.prompt([
-        CustomAgentMessage(custom_type="note", content="Use the double tool.", details={"display_color": "blue"}),
-    ])
+    await agent.submit_custom_message(CustomAgentMessage(
+        custom_type="note", content="Use the double tool.", details={"display_color": "blue"},
+    ))
+    assert requests == 0
+    await agent.prompt("Double 21.")
+    assert [message.role for message in agent.state.messages] == [
+        "system", "custom", "user", "assistant", "toolResult", "custom", "assistant",
+    ]
     assert tuple(recorded) == agent.history.entries
     snapshot = agent.state.messages
     snapshot[-1].content[0].text = "changed copy"
