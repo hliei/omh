@@ -321,7 +321,10 @@ During a dialogue, the call returns after accepting an isolated input snapshot.
 Pending custom messages commit in FIFO order at the completed turn boundary,
 after the current assistant and all its tool results, before the next request
 projection. They also settle when the dialogue ends, including submissions from
-terminal listeners. A submission does not consume steering or follow-up, and
+terminal listeners. During preflight or automatic summary/retry, submissions
+remain pending until the summary finishes; they cannot change its captured
+input. Accepted custom context still commits when cancellation or a listener
+failure stops the dialogue. A submission does not consume steering or follow-up, and
 does not itself cause another turn. `wait_for_idle()` waits for pending custom
 work and notifications to finish. Until then, pending input is absent from
 history, effective context, and message events.
@@ -494,8 +497,62 @@ keep_recent_tokens=20000)` configures retention and the automatic threshold.
 `AgentOptions.compaction` sets the initial value and
 `await agent.set_compaction_settings(settings)` updates later compactions; both
 may run while busy. Disabling automatic compaction does not disable explicit
-`compact()`. Automatic threshold compaction is not yet delivered. See the
+`compact()`. See the
 offline [compaction example](../examples/compaction.py).
+
+## Automatic threshold compaction
+
+Automatic compaction is enabled by default. It runs when the canonical effective
+context exceeds `model.context_window - reserve_tokens`; equality does not
+trigger it. The default reserve is 16384 tokens and the recent retention budget
+is 20000 tokens. Small-window models use those same budgets; hosts can supply
+`CompactionSettings` appropriate to their model. If there is no summary prefix
+to compact, execution proceeds without adding an empty compaction record.
+
+A new prompt checks existing context before adding its accepted user input,
+when an assistant is present. Before a subsequent turn, the Agent checks the
+completed assistant, all tool results, and committed custom context, then calls
+the host's next-turn hook with the refreshed projection and live tools. A large
+tool result is therefore budgeted before the next model request. After a loop
+ends, dialogue retry has priority over threshold compaction; eligible queued
+input can then continue using the new projection and live configuration.
+An effective `finish_turn="end"` or activity cancellation stops subsequent
+automatic compaction and queue consumption.
+
+Budgeting uses the latest successful, nonzero assistant usage plus estimates
+for trailing messages. A nonzero `total_tokens` takes priority; otherwise input,
+output, cache-read and cache-write are added. Error, aborted and all-zero usage
+are excluded. Usage preceding the latest compaction or context edit cannot
+describe the rebuilt projection, so its messages are estimated until a new
+valid response supplies usage. Text, thinking and serialized tool arguments
+use chars/4; images cost approximately 1200 tokens. Custom messages contribute
+their content, with application metadata excluded.
+
+Threshold summaries share the manual algorithm, captured configuration and
+independent summary retry policy. The dialogue stays busy and streaming through
+preflight, summary requests, backoff and awaited notifications. Ordinary
+`prompt`/`continue_` calls reject. Queues may accept input and custom messages
+may be accepted for the safe boundary after summarization. Changes to model,
+tools and policies affect subsequent requests or compactions; they do not
+change a summary already prepared.
+
+Automatic `compaction_start` and `compaction_end` have `reason="threshold"`
+and `will_retry=False`: threshold compaction itself does not repeat a response.
+Its end event is an ordinary dialogue event, so callback prompts reject and
+`agent_settled` remains the final completion signal. On success, the compaction
+record and refreshed projection commit before `history_commit` and
+`compaction_end`, with original records preserved. An ordinary summary failure
+reports an end event with `error_message` and no new compaction record; an
+uncancelled preflight or next turn can still send its original input. Listener
+and save failures propagate and stop advancement, preserving committed data.
+Abort or an aborted summary prevents automatic continuation.
+
+Use `CompactionSettings(enabled=False)` to disable threshold scheduling while
+keeping manual `compact()` available. The offline
+[automatic compaction example](../examples/auto_compaction.py) demonstrates
+preflight, safe custom submission, and a tool result crossing the threshold.
+Overflow and truncated-response recovery are separate capabilities and remain
+outside the delivered Agent scope.
 
 ## Input queues
 
@@ -887,10 +944,10 @@ turn scheduling. Provider transport and transcript primitives remain in
 
 The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
-events, bounded dialogue and summary retries, manual compaction, and cooperative
+events, bounded dialogue and summary retries, manual and threshold compaction, and cooperative
 cancellation. Applications supply executable tools and retry configuration and
 own application-level session files, resource discovery, and UI/CLI behavior.
-Automatic threshold and overflow compaction are not yet delivered.
+Overflow compaction and truncated-response recovery are not yet delivered.
 
 The experimental Durable Agent SDK owns persistent Sessions, recovery,
 compaction, tree navigation, resource loading, and built-in filesystem/process
@@ -943,9 +1000,12 @@ do not validate a live service or performance.
   application-side summary. It appends a `compaction` record and refreshes
   effective context; the original records remain. Configure retention with
   `AgentOptions.compaction=CompactionSettings(...)` or
-  `await agent.set_compaction_settings(settings)`. Automatic threshold
-  compaction is not yet delivered, so long conversations still need an explicit
-  `compact()` call.
+  `await agent.set_compaction_settings(settings)`. Threshold compaction is
+  enabled by default and can add summary requests and compaction records before
+  new user input, between turns, or after a loop ends. Pass
+  `CompactionSettings(enabled=False)` to retain explicit-only compaction.
+  Automatic `compaction_end` does not settle the dialogue or allow a callback
+  prompt; observe `agent_settled` for completion.
 - Use `state.is_busy` to observe the entire accepted activity and
   `state.is_closed` for completed retirement. After tool cancellation, preserve
   its final result without expecting another model request or an extra aborted
