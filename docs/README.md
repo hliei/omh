@@ -8,6 +8,7 @@ The [Agent contract](agent.md) describes the stateful Agent and its standalone l
 
 - [State and ownership](agent.md#state-and-ownership), [running and continuing](agent.md#running-and-continuing).
 - [Input queues](agent.md#input-queues), [tools](agent.md#tools), [request and turn hooks](agent.md#request-and-turn-hooks).
+- [Built-in read and write](agent.md#built-in-read-and-write), with an offline [file-tools example](../examples/file_tools.py).
 - [Events](agent.md#events-and-subscribers), [cancellation](agent.md#cancellation), [standalone loop](agent.md#standalone-loop).
 
 ## LLM layer

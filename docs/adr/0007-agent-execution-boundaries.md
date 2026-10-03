@@ -8,6 +8,10 @@ omh 提供进程内有状态的 Agent，作为后续编码助手应用层的执�
 
 Session／Memory、持久化 runtime、结构操作和现有 harness 工具随持久化路径归位；SQLite 保持独立后端边界。共享类型与机制仅在语义相容时复用。具体声明与迁移清单在规格中展开。
 
+2026-10-03 补充：进程内 read／write 工厂位于 `omh.agent.coding_tools`，返回普通 AgentTool，由宿主显式注入。文本预算、图片 MIME 检测、字符串参数和路径文本规范化提取到内部 `omh._tool_utils`；durable 原有导入路径保留并使用这些纯机制，两种工具的执行接口与结果类型保持独立，主工具导入不加载 durable 内核。
+
+进程内文件调用通过 worker thread 执行，避免阻塞整个 asyncio loop；取消执行 task 时保留该线程调用的所有权并等到结束，再传播取消。write 工厂在同一 event loop 共享按 canonical path 的协调，覆盖现存 symlink 和新文件的 symlink 父目录，不沿用依赖 ExecutionEnv／Context 的 durable 队列。路径解析和队列登记按提交顺序串行，登记后的不同文件操作可并行；macOS 根据目标 volume 的大小写敏感性归一化键，保证同文件大小写别名和文件创建前后的协调一致。直接取消线程 awaitable 会在实际写入仍进行时释放锁，因此不采用该方式。协调只保护本 SDK 同一 event loop 内的调用，不提供进程间锁或持久化恢复；durable 原有同步文件执行及协调边界保持不变。
+
 ## 正式与实验性能力
 
 进程内 Agent 及其后续编码助手应用层是正式建设主线；`omh.durable` 定位为实验性能力。实验性定位允许其接口继续演进，不放宽已有事务、恢复和副作用处理契约，也不免除迁移时的行为回归验证。这里的正式主线是产品方向，不表示尚未实现的能力已交付或已有稳定版本承诺。
