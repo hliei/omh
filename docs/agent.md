@@ -368,7 +368,7 @@ Configure it with `AgentOptions.retry=RetryPolicy(...)` or
 ```python
 from omh.agent import RetryPolicy
 
-# Disable automatic dialogue retry, including after an SDK upgrade.
+# Disable automatic dialogue and summary retry, including after an SDK upgrade.
 await agent.set_retry_policy(RetryPolicy(enabled=False))
 ```
 
@@ -396,8 +396,8 @@ Each scheduled attempt emits `RetryStartEvent` (`type="retry_start"`) with
 `error_message`. The error chain emits one `RetryEndEvent`
 (`type="retry_end"`) with those fields and `result="success"`, `"exhausted"`,
 or `"aborted"`; success has no error text, while other results carry the most
-recent failure. The `summary` scope is reserved for summary retries; this release
-only schedules dialogue retries. Retry events are ordinary awaited notifications,
+recent failure. Summary requests use `scope="summary"` as described below.
+Retry events are ordinary awaited notifications,
 so their callbacks still see busy and cannot start a prompt.
 
 Busy and streaming remain true throughout backoff. Queued input does not shorten
@@ -441,6 +441,32 @@ settings before `compaction_start`; a change made while it runs affects later
 compactions only. The summary request uses the captured stream
 function with its own serialization and does not run `prepare_request`,
 `transform_context`, or `convert_to_llm`.
+
+Summary requests use the same selected transient-response classification and
+default backoff as dialogue retries. Each request has its own local retry count,
+independent of dialogue and of the other request in a split-turn summary. The
+whole compaction captures `RetryPolicy` before `compaction_start`; changing its
+enabled flag, budget, or delays while summarizing affects only the next
+compaction. All attempts keep the captured model and request configuration.
+Credentials are resolved once for the compaction; credential and provider setup
+exceptions propagate without response retries.
+
+Each scheduled summary retry emits `retry_start` with `scope="summary"`, and
+each request's retry chain emits one `retry_end` on success, exhaustion, or
+cancellation. Permanent errors after a retry also end that chain as exhausted.
+Summary attempts emit no dialogue assistant lifecycle or omission records;
+failed attempts do not enter history or contribute usage to the compaction
+result. Only successful summary responses contribute usage, added across the
+split-turn requests. If either request fails, the whole compaction fails before
+committing a record.
+
+The Agent stays busy with `activity_kind="manual_compaction"` and
+`is_streaming=False` during summary backoff. Queues do not shorten the delay
+and remain unconsumed after manual compaction. Cancelling a compact or idle
+waiter stops only that wait. `abort()` and `close()` cancel backoff and prevent
+the next request, including abort from a `retry_start` listener. Retry callbacks
+are awaited ordinary notifications: listener and saving failures propagate and
+are never classified as model errors.
 
 On success the Agent appends the `compaction` record and its checkpoint, updates
 effective context, emits `history_commit`, and then `compaction_end`. A failure
@@ -861,7 +887,7 @@ turn scheduling. Provider transport and transcript primitives remain in
 
 The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
-events, bounded dialogue retries, manual compaction, and cooperative
+events, bounded dialogue and summary retries, manual compaction, and cooperative
 cancellation. Applications supply executable tools and retry configuration and
 own application-level session files, resource discovery, and UI/CLI behavior.
 Automatic threshold and overflow compaction are not yet delivered.
@@ -881,6 +907,13 @@ do not validate a live service or performance.
   Pass `AgentOptions.retry=RetryPolicy(enabled=False)` to retain one response
   attempt per chain. Observe `agent_settled` for final completion and `retry_start`/
   `retry_end` for progress. Exhaustion permits eligible queued input to continue.
+- Summary retry is also enabled by default and uses the same `RetryPolicy`.
+  A transient summary failure can add requests and backoff before `compact()`
+  returns. Disable retry before starting compaction to use one attempt per
+  summary request. Policy and model changes during compaction take effect on
+  the next compaction; observe retry events by their `scope` to distinguish
+  summary and dialogue progress. Failed summary attempts add no history or
+  usage to the result.
 - Pass initial messages through `AgentInitialState.messages`; use `prompt`,
   `steer`, or `follow_up` for later input, or `await submit_custom_message(...)`
   to record custom context without a model response. Assigning or appending to
