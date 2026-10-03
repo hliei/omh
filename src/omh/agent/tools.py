@@ -40,6 +40,14 @@ class AgentToolResult:
     terminate: bool | None = None
 
 
+class _AgentToolResultError(ValueError):
+    """Carry a built-in tool's bounded output and JSON details through failure."""
+
+    def __init__(self, message: str, result: AgentToolResult) -> None:
+        super().__init__(message)
+        self.result = result
+
+
 #: Progress callback for one ``execute`` invocation. Calls made after the tool
 #: settles are ignored. The loop settles accepted progress before finalizing.
 AgentToolUpdateCallback = Callable[[AgentToolResult], None]

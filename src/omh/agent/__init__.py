@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from omh.agent.agent import Agent
 from omh.agent.coding_tools import (
+    BashToolOptions,
     ReadImageProcessor,
     ReadImageProcessorFailure,
     ReadImageProcessorOptions,
     ReadImageProcessorResult,
     ReadImageProcessorSuccess,
     ReadToolOptions,
+    create_bash_tool,
     create_edit_tool,
     create_read_tool,
     create_write_tool,
@@ -124,6 +126,8 @@ from omh.llm.types import ModelThinkingLevel as ThinkingLevel
 from omh.llm.types import OnPayload, OnProviderStreamEvent, OnResponse
 
 __all__ = [
+    "BashToolOptions",
+    "create_bash_tool",
     "ReadImageProcessor",
     "ReadImageProcessorFailure",
     "ReadImageProcessorOptions",

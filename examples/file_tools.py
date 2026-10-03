@@ -1,4 +1,4 @@
-"""Write, edit, and read a temporary file through an offline Agent."""
+"""Write, edit, read, and run bash through an offline Agent."""
 
 import asyncio
 from tempfile import TemporaryDirectory
@@ -7,6 +7,8 @@ from omh.agent import (
     Agent,
     AgentInitialState,
     AgentOptions,
+    ToolExecutionUpdateEvent,
+    create_bash_tool,
     create_edit_tool,
     create_read_tool,
     create_write_tool,
@@ -55,28 +57,38 @@ async def main() -> None:
             })]
         elif turn == 3:
             content = [ToolCall(id="read-1", name="read", arguments={"path": "notes/hello.txt"})]
+        elif turn == 4:
+            content = [ToolCall(id="bash-1", name="bash", arguments={
+                "command": "cat notes/hello.txt; printf 'bash stderr\\n' >&2", "timeout": 5,
+            })]
         else:
-            content = [TextContent(text="The file was written, edited, and read.")]
+            content = [TextContent(text="The file was written, edited, read, and checked with bash.")]
         message = AssistantMessage(
             api=model.api, provider=model.provider, model=model.id,
             content=content, usage=empty_usage(), timestamp=turn,
-            stop_reason="toolUse" if turn <= 3 else "stop",
+            stop_reason="toolUse" if turn <= 4 else "stop",
         )
         stream = create_assistant_message_event_stream()
-        stream.push(DoneEvent(reason="toolUse" if turn <= 3 else "stop", message=message))
+        stream.push(DoneEvent(reason="toolUse" if turn <= 4 else "stop", message=message))
         return stream
 
     with TemporaryDirectory(prefix="omh-file-tools-") as cwd:
         agent = Agent(AgentOptions(
             initial_state=AgentInitialState(
-                model=model, tools=[create_write_tool(cwd), create_edit_tool(cwd), create_read_tool(cwd)],
+                model=model, tools=[create_write_tool(cwd), create_edit_tool(cwd), create_read_tool(cwd), create_bash_tool(cwd)],
             ),
             stream_fn=stream_fn,
         ))
-        await agent.prompt("Write a note, edit it, then read it.")
+        def on_event(event, signal):
+            if isinstance(event, ToolExecutionUpdateEvent) and event.tool_name == "bash":
+                print(f"bash progress: {content_text(event.partial_result.content).rstrip()}")
+
+        agent.subscribe(on_event)
+        await agent.prompt("Write a note, edit it, read it, then check it with bash.")
         results = [message for message in agent.state.messages if isinstance(message, ToolResultMessage)]
-        assert len(results) == 3 and not any(message.is_error for message in results)
+        assert len(results) == 4 and not any(message.is_error for message in results)
         assert content_text(results[2].content) == "Hi from the coding tools!\n"
+        assert content_text(results[3].content) == "Hi from the coding tools!\nbash stderr\n"
         assert results[1].details["firstChangedLine"] == 1
         for result in results:
             print(f"{result.tool_name}: {content_text(result.content).rstrip()}")
