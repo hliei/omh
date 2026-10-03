@@ -155,14 +155,13 @@ class _ActiveRun:
     compaction_result: CompactionResult | None = None
     compaction_error: BaseException | None = None
     idle_transferred: bool = False
+    inherited_runs: list[_ActiveRun] = field(default_factory=list)
+    chain_error: BaseException | None = None
     custom_messages: deque[CustomAgentMessage] = field(default_factory=deque)
     last_assistant: AssistantMessage | None = None
     last_assistant_id: str | None = None
     retry_attempt: int = 0
     retry: RetryStartEvent | None = None
-
-
-_current_run: ContextVar[_ActiveRun | None] = ContextVar("agent_current_run", default=None)
 
 
 class _PendingMessageQueue:
@@ -248,6 +247,7 @@ class Agent:
     def _configure(self, options: AgentOptions) -> None:
         self._listeners: list[AgentListener] = []
         self._active_run: _ActiveRun | None = None
+        self._current_run: ContextVar[_ActiveRun | None] = ContextVar("agent_current_run", default=None)
         self._close_task: asyncio.Task[None] | None = None
         self._steering_queue = _PendingMessageQueue(options.steering_mode)
         self._follow_up_queue = _PendingMessageQueue(options.follow_up_mode)
@@ -302,7 +302,7 @@ class Agent:
         if custom_instructions is not None and not isinstance(custom_instructions, str):
             raise ValueError("custom_instructions must be a string or None")
         if self._active_run is not None:
-            self._reject_self_wait(self._active_run)
+            self._reject_self_wait()
         _require_executable_model(self._state.model, "compact")
         previous = self._active_run
         run = self._begin_compaction_run(previous, custom_instructions)
@@ -429,7 +429,7 @@ class Agent:
         run = self._active_run
         if run is None:
             return
-        self._reject_self_wait(run)
+        self._reject_self_wait()
         await asyncio.shield(run.idle)
 
     async def close(self) -> None:
@@ -440,7 +440,7 @@ class Agent:
         by the host. History and unconsumed queues remain readable.
         """
         if self._active_run is not None:
-            self._reject_self_wait(self._active_run)
+            self._reject_self_wait()
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._close(self._active_run))
             self._close_task.add_done_callback(_retrieve_task_exception)
@@ -460,9 +460,28 @@ class Agent:
         if getattr(self, "_close_task", None) is not None:
             raise RuntimeError("Agent is closing or closed.")
 
-    def _reject_self_wait(self, run: _ActiveRun) -> None:
-        if _current_run.get() is run:
+    def _callback_run(self) -> _ActiveRun | None:
+        """Ignore context inherited by background work after its activity finished."""
+        run = self._current_run.get()
+        return run if run is not None and run.task is not None and not run.task.done() else None
+
+    def _reject_self_wait(self) -> None:
+        if self._callback_run() is not None:
             raise RuntimeError("Cannot wait for this Agent from its own activity callback.")
+
+    async def _wait_for_dialogue(self, run: _ActiveRun) -> None:
+        """Include callback prompts transferred to a superseding activity."""
+        assert run.task is not None
+        try:
+            await asyncio.shield(run.task)
+        except (Exception, asyncio.CancelledError):
+            waiter = asyncio.current_task()
+            if waiter is not None and not waiter.cancelling():
+                await asyncio.shield(run.idle)
+            raise
+        await asyncio.shield(run.idle)
+        if run.chain_error is not None:
+            raise run.chain_error
 
     @property
     def steering_mode(self) -> QueueMode:
@@ -535,13 +554,13 @@ class Agent:
         if run is None:
             run = self._begin_run(lambda signal: self._flush_custom_messages(), dialogue=False)
         run.custom_messages.append(accepted)
-        if not run.dialogue and _current_run.get() is not run:
+        if not run.dialogue and self._current_run.get() is not run:
             assert run.task is not None
             await asyncio.shield(run.task)
 
     async def _flush_custom_messages(self) -> None:
-        assert self._active_run is not None
-        run = self._active_run
+        run = self._callback_run() or self._active_run
+        assert run is not None
         first_error: BaseException | None = None
         while run.custom_messages:
             message = run.custom_messages.popleft()
@@ -565,14 +584,14 @@ class Agent:
     async def _custom_submission_runner(
         self, executor: Callable[[AbortSignal], Awaitable[None]], run: _ActiveRun,
     ) -> None:
-        token = _current_run.set(run)
+        token = self._current_run.set(run)
         try:
             await executor(run.abort_controller.signal)
         except (Exception, asyncio.CancelledError) as error:
             self._state._error_message = str(error)
             raise
         finally:
-            _current_run.reset(token)
+            self._current_run.reset(token)
             self._finish_run(run)
 
     def _begin_compaction_run(
@@ -597,7 +616,7 @@ class Agent:
     async def _compaction_runner(
         self, previous: _ActiveRun | None, custom_instructions: str | None, run: _ActiveRun,
     ) -> None:
-        token = _current_run.set(run)
+        token = self._current_run.set(run)
         first_error: BaseException | None = None
         error: BaseException | None = None
         try:
@@ -622,17 +641,18 @@ class Agent:
             try:
                 if run.pending_prompts:
                     if self._close_task is not None:
+                        run.chain_error = RuntimeError(
+                            "Agent closed before an accepted prompt could start."
+                        )
                         if first_error is None:
-                            first_error = RuntimeError(
-                                "Agent closed before an accepted prompt could start."
-                            )
+                            first_error = run.chain_error
                             run.compaction_error = first_error
                         run.pending_prompts.clear()
                     else:
                         self._start_accepted_prompts(run)
             finally:
-                _current_run.reset(token)
-                self._finish_run(run)
+                self._current_run.reset(token)
+                self._finish_run(run, run.chain_error)
         if first_error is not None:
             raise first_error
 
@@ -645,6 +665,7 @@ class Agent:
         settings = self._compaction_settings
         system_message = get_current_system_message(self._state.messages)
         snapshot = self._history.snapshot()
+        request = self._summary_request(model, signal)
         await self._notify_listeners(CompactionStartEvent(reason="manual", will_retry=False))
         signal.throw_if_aborted()
         path = history_path(snapshot)
@@ -653,7 +674,6 @@ class Agent:
         preparation = prepare_compaction(snapshot, settings)
         if preparation is None:
             raise CompactionFailure("nothing_to_compact", "Nothing to compact")
-        request = await self._summary_request(model, signal)
         result = await compact_with_request(
             preparation,
             model,
@@ -681,40 +701,49 @@ class Agent:
         ))
         return result
 
-    async def _summary_request(self, model: Model, signal: AbortSignal) -> SummaryRequest:
+    def _summary_request(self, model: Model, signal: AbortSignal) -> SummaryRequest:
         api_key = self.api_key
         get_api_key = self.get_api_key
-        if get_api_key is not None:
-            resolved = await call_with_signal(lambda: get_api_key(model.provider), signal)
-            if resolved:
-                api_key = resolved
+        stream_fn = self.stream_fn
+        captured = SimpleStreamOptions(
+            signal=signal,
+            on_payload=self.on_payload,
+            on_response=self.on_response,
+            on_provider_stream_event=self.on_provider_stream_event,
+            transport=self.transport,
+            session_id=self.session_id,
+            thinking_budgets=copy.deepcopy(self.thinking_budgets),
+            max_retry_delay_ms=self.max_retry_delay_ms,
+        )
+        credentials_resolved = False
 
         async def request(
             context: TranscriptContext, options: SimpleStreamOptions,
         ) -> AssistantMessage:
+            nonlocal api_key, credentials_resolved
+            if not credentials_resolved:
+                if get_api_key is not None:
+                    resolved = await call_with_signal(lambda: get_api_key(model.provider), signal)
+                    if resolved:
+                        api_key = resolved
+                credentials_resolved = True
             merged = replace(
-                options,
-                signal=signal,
+                captured,
+                max_tokens=options.max_tokens,
+                reasoning=options.reasoning,
                 api_key=api_key,
-                on_payload=self.on_payload,
-                on_response=self.on_response,
-                on_provider_stream_event=self.on_provider_stream_event,
-                transport=self.transport,
-                session_id=self.session_id,
-                thinking_budgets=self.thinking_budgets,
-                max_retry_delay_ms=self.max_retry_delay_ms,
             )
-
-            async def consume() -> AssistantMessage:
-                response = await call_with_signal(
-                    lambda: self.stream_fn(model, context, merged), signal,
-                )
+            response = await call_with_signal(
+                lambda: stream_fn(model, context, merged), signal,
+            )
+            try:
                 async for event in response:
                     if event.type in {"done", "error"}:
                         break
                 return await response.result()
-
-            return await call_with_signal(consume, signal)
+            finally:
+                if signal.aborted:
+                    await asyncio.shield(response.result())
 
         return request
 
@@ -747,6 +776,8 @@ class Agent:
             # accepted prompts in FIFO order under the live activity.
             active.pending_prompts.append((messages, sections))
             active.pending_prompts.extend(remaining)
+            active.inherited_runs.extend([run, *run.inherited_runs])
+            run.idle_transferred = True
             return
         new_run = self._begin_run(
             lambda signal: self._run_prompt_messages(
@@ -755,6 +786,7 @@ class Agent:
         )
         new_run.pending_prompts.extend(remaining)
         new_run.idle = run.idle
+        new_run.inherited_runs = run.inherited_runs
         run.idle_transferred = True
 
     async def prompt(
@@ -765,8 +797,8 @@ class Agent:
         """Start a new prompt from text, a single message, or a batch of messages."""
         self._ensure_open()
         if self._active_run is not None:
-            run = self._active_run
-            if run.settling and _current_run.get() is run:
+            run = self._callback_run()
+            if run is not None and run.settling:
                 run.pending_prompts.append((
                     self._normalize_prompt_input(message, images),
                     dict(self._state._system_sections),
@@ -781,9 +813,8 @@ class Agent:
         run = self._begin_run(
             lambda signal: self._run_prompt_messages(messages, signal, system_sections=sections)
         )
-        assert run.task is not None
         # Shield the run task so cancelling this waiter does not cancel the run.
-        await asyncio.shield(run.task)
+        await self._wait_for_dialogue(run)
 
     async def continue_(self) -> None:
         """Continue from the current transcript.
@@ -808,20 +839,17 @@ class Agent:
                         queued_steering, signal, skip_initial_steering_poll=True
                     )
                 )
-                assert run.task is not None
-                await asyncio.shield(run.task)
+                await self._wait_for_dialogue(run)
                 return
             queued_follow_ups = self._follow_up_queue.drain()
             if queued_follow_ups:
                 run = self._begin_run(lambda signal: self._run_prompt_messages(queued_follow_ups, signal))
-                assert run.task is not None
-                await asyncio.shield(run.task)
+                await self._wait_for_dialogue(run)
                 return
             raise ValueError("Cannot continue from message role: assistant")
 
         run = self._begin_run(lambda signal: self._run_continuation(signal))
-        assert run.task is not None
-        await asyncio.shield(run.task)
+        await self._wait_for_dialogue(run)
 
     def _normalize_prompt_input(
         self,
@@ -870,7 +898,7 @@ class Agent:
         try:
             while True:
                 signal = run.abort_controller.signal
-                token = _current_run.set(run)
+                token = self._current_run.set(run)
                 try:
                     try:
                         await self._run_dialogue(executor, run)
@@ -921,11 +949,14 @@ class Agent:
                         except (Exception, asyncio.CancelledError) as error:
                             if first_error is None:
                                 first_error = error
-                        _current_run.reset(token)
+                        self._current_run.reset(token)
                 if self._active_run is not None and self._active_run is not run:
                     # A superseding activity (for example a manual compaction)
                     # now owns the Agent; hand the accepted prompts to it in order.
                     self._active_run.pending_prompts.extend(run.pending_prompts)
+                    if run.pending_prompts:
+                        self._active_run.inherited_runs.extend([run, *run.inherited_runs])
+                        run.idle_transferred = True
                     run.pending_prompts.clear()
                     break
                 if self._close_task is not None or not run.pending_prompts:
@@ -937,6 +968,7 @@ class Agent:
                 run = _ActiveRun(
                     abort_controller=AbortController(), idle=run.idle,
                     task=run.task, pending_prompts=run.pending_prompts,
+                    inherited_runs=run.inherited_runs,
                 )
                 self._active_run = run
                 self._reset_run_state()
@@ -946,7 +978,7 @@ class Agent:
             if first_error is not None:
                 raise first_error
         finally:
-            self._finish_run(run)
+            self._finish_run(run, first_error)
 
     async def _run_dialogue(
         self, executor: Callable[[AbortSignal], Awaitable[None]], run: _ActiveRun,
@@ -1006,8 +1038,8 @@ class Agent:
     async def _finish_retry(
         self, result: Literal["success", "exhausted", "aborted"],
     ) -> None:
-        assert self._active_run is not None
-        run = self._active_run
+        run = self._callback_run() or self._active_run
+        assert run is not None
         retry = run.retry
         if retry is None:
             return
@@ -1018,9 +1050,14 @@ class Agent:
             error_message=None if result == "success" else self._state.error_message,
         ))
 
-    def _finish_run(self, run: _ActiveRun) -> None:
+    def _finish_run(self, run: _ActiveRun, chain_error: BaseException | None = None) -> None:
         if not run.idle.done() and not run.idle_transferred:
             run.idle.set_result(None)
+        if not run.idle_transferred:
+            for inherited in run.inherited_runs:
+                inherited.chain_error = chain_error
+                if not inherited.idle.done():
+                    inherited.idle.set_result(None)
         if self._active_run is run:
             self._active_run = None
             self._state._is_streaming = False
@@ -1079,8 +1116,9 @@ class Agent:
         can_end = getattr(context.message, "stop_reason", None) not in {"error", "aborted"}
         decision = await maybe_await(self.finish_turn(context, signal))
         if decision == "end" and can_end:
-            assert self._active_run is not None
-            self._active_run.stop = True
+            run = self._current_run.get()
+            assert run is not None
+            run.stop = True
         return decision
 
     async def _run_prompt_messages(
@@ -1221,19 +1259,19 @@ class Agent:
         await self._process_events(AgentEndEvent(messages=[failure_message]))
 
     async def _process_events(self, event: AgentEvent) -> None:
+        run = self._current_run.get()
+        assert run is not None
         if isinstance(event, AgentEndEvent):
-            assert self._active_run is not None
-            self._active_run.ending = True
+            run.ending = True
         if isinstance(event, MessageEndEvent):
             message = snapshot_messages([event.message])[0]
             entry = self._history.append_message(message)
             event = replace(event, message=message)
             self._reduce_state(event)
-            assert self._active_run is not None
-            self._active_run.messages.extend(snapshot_messages([message]))
+            run.messages.extend(snapshot_messages([message]))
             if isinstance(message, AssistantMessage):
-                self._active_run.last_assistant = message
-                self._active_run.last_assistant_id = entry.id
+                run.last_assistant = message
+                run.last_assistant_id = entry.id
             await self._notify_listeners(HistoryCommitEvent(
                 conversation_id=self._history.conversation_id, entries=(entry,), leaf_id=entry.id,
             ))
@@ -1242,8 +1280,7 @@ class Agent:
         await self._notify_listeners(event)
         if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage):
             if event.message.stop_reason != "error":
-                assert self._active_run is not None
-                self._active_run.retry_attempt = 0
+                run.retry_attempt = 0
                 await self._finish_retry(
                     "aborted" if event.message.stop_reason == "aborted" else "success",
                 )
@@ -1251,7 +1288,7 @@ class Agent:
             await self._flush_custom_messages()
 
     async def _notify_listeners(self, event: AgentEvent) -> None:
-        run = self._active_run
+        run = self._callback_run() or self._active_run
         signal = run.abort_controller.signal if run is not None else AbortController().signal
         for listener in list(self._listeners):
             try:
@@ -1286,8 +1323,9 @@ class Agent:
         elif isinstance(event, TurnEndEvent):
             message = event.message
             if getattr(message, "stop_reason", None) in {"aborted", "length"}:
-                assert self._active_run is not None
-                self._active_run.stop = True
+                run = self._current_run.get()
+                assert run is not None
+                run.stop = True
             error_message = getattr(message, "error_message", None)
             if getattr(message, "role", None) == "assistant" and error_message:
                 self._state._error_message = error_message

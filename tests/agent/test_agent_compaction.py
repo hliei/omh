@@ -21,6 +21,7 @@ from omh.agent import (
     CompactionStartEvent,
     CompactionSummaryMessage,
     CustomAgentMessage,
+    CustomMessageHistoryEntry,
     MessageHistoryEntry,
 )
 from omh.agent.tools import AgentTool, AgentToolResult
@@ -217,6 +218,98 @@ async def test_restored_agent_matches_compacted_projection() -> None:
     assert restored.history.entries == agent.history.entries
     assert isinstance(restored.state.messages[0], CompactionSummaryMessage)
     assert restored.state.messages[0].summary == result.summary
+
+
+async def test_compaction_result_does_not_expose_committed_history() -> None:
+    agent = seeded_agent(SummaryStreamFn(summary_usage=usage(10, 5)))
+    result = await agent.compact()
+    history = agent.history
+    assert isinstance(result.details, dict)
+    assert isinstance(result.details["readFiles"], list)
+    result.details["readFiles"].append("changed")
+    assert result.usage is not None
+    result.usage.input = 999
+    assert agent.history == history
+
+
+async def test_summary_abort_waits_for_provider_cleanup_before_close() -> None:
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    def stream_fn(model, context, options):  # type: ignore[no-untyped-def]
+        assert options is not None and options.signal is not None
+        signal = options.signal
+        stream = create_assistant_message_event_stream()
+
+        async def produce() -> None:
+            entered.set()
+            while not signal.aborted:
+                await asyncio.sleep(0)
+            cleaning.set()
+            await release.wait()
+            cleaned.set()
+            stream.push(ErrorEvent(reason="aborted", error=text_message("", "aborted")))
+
+        asyncio.create_task(produce())
+        return stream
+
+    agent = seeded_agent(stream_fn)
+    compact = asyncio.create_task(agent.compact())
+    await asyncio.wait_for(entered.wait(), 1)
+    agent.abort()
+    await asyncio.wait_for(cleaning.wait(), 1)
+    close = asyncio.create_task(agent.close())
+    await asyncio.sleep(0.01)
+    try:
+        assert agent.state.is_busy
+        assert not agent.state.is_closed
+        assert not compact.done() and not close.done()
+    finally:
+        release.set()
+        results = await asyncio.gather(compact, close, return_exceptions=True)
+    assert all(isinstance(result, Exception) for result in results)
+    assert cleaned.is_set() and agent.state.is_closed
+
+
+async def test_split_summary_captures_stream_and_options_before_callbacks() -> None:
+    original = SummaryStreamFn()
+    replacement = SummaryStreamFn(summary="replacement")
+    agent = seeded_agent(original, keep_recent_tokens=1, messages=[
+        UserMessage(content="older", timestamp=NOW),
+        text_message("assistant-0"),
+        UserMessage(content="x" * 4_000, timestamp=NOW + 10),
+        text_message("assistant-1"),
+    ])
+    agent.session_id = "original-session"
+
+    def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        if event.type == "compaction_start":
+            agent.stream_fn = replacement
+            agent.session_id = "replacement-session"
+
+    agent.subscribe(listener)
+    await agent.compact()
+    assert original.summary_calls == 2 and replacement.summary_calls == 0
+    assert all(option.session_id == "original-session" for option in original.options)
+
+
+async def test_next_compaction_ignores_usage_from_before_the_checkpoint() -> None:
+    from omh.agent.compaction import estimate_projection_tokens
+
+    heavy = replace(text_message("answer"), usage=usage(50_000, 1))
+    agent = seeded_agent(SummaryStreamFn(), messages=[
+        UserMessage(content="older", timestamp=NOW),
+        text_message("older answer"),
+        UserMessage(content="latest", timestamp=NOW),
+        heavy,
+    ])
+    await agent.compact()
+    await agent.submit_custom_message(CustomAgentMessage(custom_type="note", content="x"))
+    expected = estimate_projection_tokens(agent.state.messages)
+    result = await agent.compact()
+    assert result.tokens_before == expected
 
 
 async def test_second_compaction_uses_previous_summary() -> None:
@@ -450,6 +543,237 @@ async def test_compaction_during_a_dialogue_settles_it_first() -> None:
     assert agent.history.leaf_id == records[-1].id
     types = [event.type for event in events]
     assert types.index("agent_settled") < types.index("compaction_start")
+    settled = next(event for event in events if event.type == "agent_settled")
+    assert settled.messages[-1].stop_reason == "aborted"
+
+
+async def test_handoff_preserves_old_callback_signal_and_prompt_acceptance() -> None:
+    entered = asyncio.Event()
+    summary = SummaryStreamFn(replies=[text_message("callback answer")])
+    dialogue_signal: AbortSignal | None = None
+    settled = 0
+
+    def stream_fn(model, context, options):  # type: ignore[no-untyped-def]
+        nonlocal dialogue_signal
+        if _is_summary_request(context) or dialogue_signal is not None:
+            return summary(model, context, options)
+        assert options is not None and options.signal is not None
+        dialogue_signal = options.signal
+        stream = create_assistant_message_event_stream()
+        stream.push(StartEvent(partial=text_message("")))
+        entered.set()
+
+        async def produce() -> None:
+            assert dialogue_signal is not None
+            while not dialogue_signal.aborted:
+                await asyncio.sleep(0)
+            stream.push(ErrorEvent(reason="aborted", error=text_message("", "aborted")))
+
+        asyncio.create_task(produce())
+        return stream
+
+    agent = seeded_agent(stream_fn)
+
+    async def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        nonlocal settled
+        if event.type == "agent_settled":
+            settled += 1
+            if settled == 1:
+                assert signal is dialogue_signal and signal.aborted
+                for wait in (agent.wait_for_idle, agent.close, agent.compact):
+                    with pytest.raises(RuntimeError, match="own activity"):
+                        await wait()
+                assert await agent.prompt("accepted during handoff") is None
+
+    agent.subscribe(listener)
+    prompt = asyncio.create_task(agent.prompt("interrupted"))
+    await asyncio.wait_for(entered.wait(), 1)
+    await agent.submit_custom_message(CustomAgentMessage(custom_type="note", content="pending custom"))
+    await asyncio.wait_for(agent.compact(), 1)
+    await asyncio.wait_for(prompt, 1)
+    await asyncio.wait_for(agent.wait_for_idle(), 1)
+    assert settled == 2
+    assert summary.dialogue_calls == 1
+    entries = agent.history.entries
+    checkpoint = next(index for index, entry in enumerate(entries) if entry.type == "compaction")
+    assert any(
+        isinstance(entry, CustomMessageHistoryEntry) and entry.content == "pending custom"
+        for entry in entries[:checkpoint]
+    )
+
+
+async def test_old_terminal_notification_failure_does_not_fail_compaction() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    stream = SummaryStreamFn(replies=[text_message("old answer")])
+    agent = seeded_agent(stream)
+
+    async def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        if event.type == "agent_settled":
+            entered.set()
+            await release.wait()
+            raise RuntimeError("old terminal notification")
+
+    agent.subscribe(listener)
+    prompt = asyncio.create_task(agent.prompt("old prompt"))
+    await asyncio.wait_for(entered.wait(), 1)
+    compact = asyncio.create_task(agent.compact())
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(RuntimeError, match="old terminal notification"):
+        await asyncio.wait_for(prompt, 1)
+    result = await asyncio.wait_for(compact, 1)
+    assert result.summary and stream.summary_calls > 0
+
+
+@pytest.mark.parametrize("notification_failure", [False, True])
+@pytest.mark.parametrize("second_compact", [False, True])
+@pytest.mark.parametrize("callback_failure", [False, True])
+async def test_handoff_waiters_include_accepted_callback_prompts(
+    notification_failure: bool, second_compact: bool, callback_failure: bool,
+) -> None:
+    settled = asyncio.Event()
+    release_settled = asyncio.Event()
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+    replies = SummaryStreamFn(replies=[text_message("old answer")])
+    dialogue_calls = 0
+
+    def stream_fn(model, context, options):  # type: ignore[no-untyped-def]
+        nonlocal dialogue_calls
+        if _is_summary_request(context) or dialogue_calls == 0:
+            if not _is_summary_request(context):
+                dialogue_calls += 1
+            return replies(model, context, options)
+        callback_started.set()
+        stream = create_assistant_message_event_stream()
+
+        async def produce() -> None:
+            await release_callback.wait()
+            stream.push(DoneEvent(reason="stop", message=text_message("callback answer")))
+
+        asyncio.create_task(produce())
+        return stream
+
+    agent = seeded_agent(stream_fn)
+
+    async def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        if event.type == "agent_settled" and not settled.is_set():
+            await agent.prompt("callback prompt")
+            settled.set()
+            await release_settled.wait()
+            if notification_failure:
+                raise RuntimeError("old notification")
+        elif event.type == "agent_settled" and callback_failure:
+            raise RuntimeError("callback notification")
+
+    agent.subscribe(listener)
+    prompt = asyncio.create_task(agent.prompt("old prompt"))
+    await asyncio.wait_for(settled.wait(), 1)
+    idle = asyncio.create_task(agent.wait_for_idle())
+    await asyncio.sleep(0)
+    compacts = [asyncio.create_task(agent.compact())]
+    await asyncio.sleep(0)
+    if second_compact:
+        compacts.append(asyncio.create_task(agent.compact()))
+        await asyncio.sleep(0)
+    release_settled.set()
+    outcomes = await asyncio.wait_for(asyncio.gather(*compacts, return_exceptions=True), 1)
+    assert isinstance(outcomes[-1], CompactionResult)
+    await asyncio.wait_for(callback_started.wait(), 1)
+    try:
+        assert agent.state.is_busy
+        assert not prompt.done() and not idle.done()
+    finally:
+        release_callback.set()
+        completed = await asyncio.wait_for(asyncio.gather(prompt, idle, return_exceptions=True), 1)
+    if notification_failure:
+        assert isinstance(completed[0], RuntimeError) and str(completed[0]) == "old notification"
+    elif callback_failure:
+        assert isinstance(completed[0], RuntimeError) and str(completed[0]) == "callback notification"
+    else:
+        assert completed[0] is None
+    assert completed[1] is None
+
+
+async def test_completed_callback_background_task_can_wait_for_later_activity() -> None:
+    gate = asyncio.Event()
+    waiting = asyncio.Event()
+    dialogue_started = asyncio.Event()
+    release = asyncio.Event()
+    summary = SummaryStreamFn()
+    background: asyncio.Task[None] | None = None
+
+    def stream_fn(model, context, options):  # type: ignore[no-untyped-def]
+        if _is_summary_request(context):
+            return summary(model, context, options)
+        dialogue_started.set()
+        stream = create_assistant_message_event_stream()
+
+        async def produce() -> None:
+            await release.wait()
+            stream.push(DoneEvent(reason="stop", message=text_message("later answer")))
+
+        asyncio.create_task(produce())
+        return stream
+
+    agent = seeded_agent(stream_fn)
+
+    async def later() -> None:
+        await gate.wait()
+        waiting.set()
+        await agent.wait_for_idle()
+
+    def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        nonlocal background
+        if event.type == "compaction_end":
+            background = asyncio.create_task(later())
+
+    agent.subscribe(listener)
+    await agent.compact()
+    prompt = asyncio.create_task(agent.prompt("later activity"))
+    await asyncio.wait_for(dialogue_started.wait(), 1)
+    gate.set()
+    await asyncio.wait_for(waiting.wait(), 1)
+    assert background is not None
+    try:
+        assert not background.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(prompt, background), 1)
+
+
+async def test_close_reports_transferred_prompt_that_cannot_start() -> None:
+    settled = asyncio.Event()
+    release_settled = asyncio.Event()
+    compact_started = asyncio.Event()
+    release_compact = asyncio.Event()
+    stream = SummaryStreamFn(replies=[text_message("old answer")])
+    agent = seeded_agent(stream)
+
+    async def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        if event.type == "agent_settled":
+            await agent.prompt("accepted callback")
+            settled.set()
+            await release_settled.wait()
+        elif event.type == "compaction_start":
+            compact_started.set()
+            await release_compact.wait()
+
+    agent.subscribe(listener)
+    prompt = asyncio.create_task(agent.prompt("old prompt"))
+    await asyncio.wait_for(settled.wait(), 1)
+    compact = asyncio.create_task(agent.compact())
+    await asyncio.sleep(0)
+    release_settled.set()
+    await asyncio.wait_for(compact_started.wait(), 1)
+    close = asyncio.create_task(agent.close())
+    await asyncio.sleep(0)
+    release_compact.set()
+    results = await asyncio.wait_for(asyncio.gather(prompt, compact, close, return_exceptions=True), 1)
+    assert isinstance(results[0], RuntimeError)
+    assert "closed before an accepted prompt" in str(results[0])
+    assert agent.state.is_closed and stream.dialogue_calls == 1
 
 
 async def test_custom_submission_is_rejected_during_manual_compaction() -> None:

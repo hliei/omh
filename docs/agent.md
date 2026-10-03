@@ -417,23 +417,28 @@ context and retains a recent tail without editing the original records. It
 returns a `CompactionResult` with `summary`, `first_kept_entry_id`,
 `tokens_before`, `estimated_tokens_after`, optional `usage`, and JSON `details`
 (the standard `readFiles` and `modifiedFiles` lists). It requires an executable
-model with positive capacity.
+model with positive capacity. The returned usage and details are isolated from
+the committed history.
 
 Any accepted activity is cooperatively cancelled and fully settled first, so the
 interrupted assistant and its tool results are committed before the summary
 input is captured; the handoff never exposes an idle window that a third
-activity could enter. A `compact()` call supersedes and settles an earlier
-compaction instead of overwriting its controller. Compact does not resume the
-interrupted dialogue and does not consume steering or follow-up.
+activity could enter. Old callbacks retain their activity's signal and results;
+their failures are reported to that activity's caller. A `compact()` call
+supersedes and settles an earlier compaction instead of overwriting its
+controller. Compact does not resume the interrupted dialogue and does not
+consume steering or follow-up.
 
 The cut point comes from the canonical projection. It never begins the retained
 tail on a tool result, so an assistant tool call stays with its results; a cut
 inside a turn summarizes the older history and the turn prefix separately and
 combines them. When a previous compaction exists, its summary is supplied as the
 previous summary and its file details are merged. Usage from multiple summary
-requests is added. The compaction captures the model, thinking level, stream
-function, credentials, and settings when it starts; a change made while it runs
-affects later compactions only. The summary request uses the captured stream
+requests is added. Usage preceding the latest compaction or context edit is not
+reused to estimate the rebuilt context. The compaction captures the model,
+thinking level, stream function, credential source, request options, and
+settings before `compaction_start`; a change made while it runs affects later
+compactions only. The summary request uses the captured stream
 function with its own serialization and does not run `prepare_request`,
 `transform_context`, or `convert_to_llm`.
 
@@ -443,7 +448,8 @@ or cancellation before the commit appends no record; a model error, an empty
 compaction prefix (`Nothing to compact`), or a just-completed compaction
 (`Already compacted`) raises `CompactionFailure`. A successful compaction whose
 later notification fails keeps its record and projection and reports the
-notification error to the caller.
+notification error to the caller. Cancellation waits for an accepted summary
+stream to finish its cooperative cleanup before the Agent becomes idle or closed.
 
 `CompactionStartEvent` (`type="compaction_start"`) carries `reason` (`"manual"`
 here) and `will_retry`; `CompactionEndEvent` (`type="compaction_end"`) adds
@@ -453,7 +459,9 @@ activity after all listeners return; `compact()` waits for this compaction and
 its notifications, not for that new activity, while `wait_for_idle()` waits for
 both. `submit_custom_message` is rejected during manual compaction, ordinary
 `prompt` and `continue_` calls are rejected, and `compact()` cannot be awaited
-from its own callback.
+from its own callback. If compact supersedes a dialogue whose final callbacks
+accepted prompts, the original prompt and existing idle waiters still wait for those prompts to
+finish after compaction.
 
 `CompactionSettings(enabled=True, reserve_tokens=16384,
 keep_recent_tokens=20000)` configures retention and the automatic threshold.

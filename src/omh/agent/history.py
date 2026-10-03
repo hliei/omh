@@ -339,8 +339,8 @@ class ConversationHistory:
         return self._append(CompactionHistoryEntry(
             id=entry_id, parent_id=parent_id, timestamp=timestamp,
             summary=summary, first_kept_entry_id=first_kept_entry_id,
-            tokens_before=tokens_before, system_message=system_message,
-            usage=usage, details=details,
+            tokens_before=tokens_before, system_message=copy.deepcopy(system_message),
+            usage=copy.deepcopy(usage), details=copy.deepcopy(details),
         ))
 
     def append_thinking_level(self, level: ThinkingLevel) -> AgentHistoryEntry:

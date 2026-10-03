@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from omh.agent.history import (
     AgentHistory,
     CompactionHistoryEntry,
+    ContextEditHistoryEntry,
     history_path,
     project_history_records,
 )
@@ -184,11 +185,11 @@ def _valid_usage(message: AgentMessage) -> Usage | None:
     return None
 
 
-def estimate_context_tokens(messages: Sequence[AgentMessage]) -> int:
+def estimate_context_tokens(messages: Sequence[AgentMessage], *, usage_start: int = 0) -> int:
     """Use the latest valid assistant usage plus a trailing-message estimate."""
     usage_tokens = 0
     start = 0
-    for index in range(len(messages) - 1, -1, -1):
+    for index in range(len(messages) - 1, usage_start - 1, -1):
         usage = _valid_usage(messages[index])
         if usage is not None:
             usage_tokens = calculate_context_tokens(usage)
@@ -285,6 +286,14 @@ def prepare_compaction(
         None,
     )
     projected = project_history_records(history)
+    context_change = next((
+        index for index in range(len(path) - 1, -1, -1)
+        if isinstance(path[index], CompactionHistoryEntry | ContextEditHistoryEntry)
+    ), -1)
+    fresh_ids = {entry.id for entry in path[context_change + 1:]}
+    usage_start = next((
+        index for index, (entry_id, _) in enumerate(projected) if entry_id in fresh_ids
+    ), len(projected))
     records = [
         (entry_id, message)
         for entry_id, message in projected
@@ -312,7 +321,9 @@ def prepare_compaction(
         retained_tail=tuple(message for _, message in records[cut_index:]),
         first_kept_entry_id=first_kept_entry_id,
         is_split_turn=is_split_turn,
-        tokens_before=estimate_context_tokens([message for _, message in projected]),
+        tokens_before=estimate_context_tokens(
+            [message for _, message in projected], usage_start=usage_start,
+        ),
         previous_summary=previous.summary if previous is not None else None,
         read_files=read_files,
         modified_files=modified_files,
