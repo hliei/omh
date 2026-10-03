@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from omh.agent.compaction import CompactionResult
 from omh.agent.history import AgentHistoryEntry
 from omh.agent.messages import AgentMessage, LoopMessage
 from omh.agent.tools import AgentToolResult
@@ -52,6 +53,23 @@ class RetryEndEvent:
     error_message: str | None
     result: Literal["success", "exhausted", "aborted"]
     type: Literal["retry_end"] = "retry_end"
+
+
+@dataclass(slots=True)
+class CompactionStartEvent:
+    reason: Literal["manual", "threshold", "overflow"]
+    will_retry: bool = False
+    type: Literal["compaction_start"] = "compaction_start"
+
+
+@dataclass(slots=True)
+class CompactionEndEvent:
+    reason: Literal["manual", "threshold", "overflow"]
+    will_retry: bool
+    result: CompactionResult | None
+    aborted: bool
+    error_message: str | None
+    type: Literal["compaction_end"] = "compaction_end"
 
 
 @dataclass(slots=True)
@@ -142,6 +160,8 @@ AgentEvent = (
     | AgentSettledEvent
     | RetryStartEvent
     | RetryEndEvent
+    | CompactionStartEvent
+    | CompactionEndEvent
     | TurnStartEvent
     | TurnEndEvent
     | MessageStartEvent

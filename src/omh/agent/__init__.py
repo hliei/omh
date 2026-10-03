@@ -8,6 +8,11 @@ not imported from here.
 from __future__ import annotations
 
 from omh.agent.agent import Agent
+from omh.agent.compaction import (
+    CompactionFailure,
+    CompactionResult,
+    CompactionSettings,
+)
 from omh.agent.context import AgentContext
 from omh.agent.event_stream import AgentEventStream
 from omh.agent.events import (
@@ -16,6 +21,8 @@ from omh.agent.events import (
     AgentEventSink,
     AgentSettledEvent,
     AgentStartEvent,
+    CompactionEndEvent,
+    CompactionStartEvent,
     HistoryCommitEvent,
     MessageEndEvent,
     MessageStartEvent,
@@ -139,7 +146,12 @@ __all__ = [
     "BeforeToolCallContext",
     "BeforeToolCallResult",
     "ConvertToLlm",
+    "CompactionEndEvent",
+    "CompactionFailure",
     "CompactionHistoryEntry",
+    "CompactionResult",
+    "CompactionSettings",
+    "CompactionStartEvent",
     "CompactionSummaryMessage",
     "ContextEditHistoryEntry",
     "ContextEditReplacement",

@@ -16,13 +16,23 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Literal, cast
 
-from omh.agent._async import maybe_await
+from omh.agent._async import call_with_signal, maybe_await
+from omh.agent.compaction import (
+    CompactionFailure,
+    CompactionResult,
+    CompactionSettings,
+    SummaryRequest,
+    compact_with_request,
+    prepare_compaction,
+)
 from omh.agent.context import AgentContext
 from omh.agent.data import snapshot_messages
 from omh.agent.events import (
     AgentEndEvent,
     AgentEvent,
     AgentSettledEvent,
+    CompactionEndEvent,
+    CompactionStartEvent,
     HistoryCommitEvent,
     MessageEndEvent,
     MessageStartEvent,
@@ -38,7 +48,9 @@ from omh.agent.events import (
 from omh.agent.history import (
     AgentHistory,
     AgentHistoryEntry,
+    CompactionHistoryEntry,
     ConversationHistory,
+    history_path,
     project_history,
     validate_history,
 )
@@ -97,9 +109,11 @@ from omh.llm.types import (
     OnPayload,
     OnProviderStreamEvent,
     OnResponse,
+    SimpleStreamOptions,
     SystemMessage,
     TextContent,
     ThinkingBudgets,
+    TranscriptContext,
     Transport,
     UserMessage,
     empty_usage,
@@ -137,6 +151,10 @@ class _ActiveRun:
     notification_error: BaseException | None = None
     stop: bool = False
     dialogue: bool = True
+    manual_compaction: bool = False
+    compaction_result: CompactionResult | None = None
+    compaction_error: BaseException | None = None
+    idle_transferred: bool = False
     custom_messages: deque[CustomAgentMessage] = field(default_factory=deque)
     last_assistant: AssistantMessage | None = None
     last_assistant_id: str | None = None
@@ -255,11 +273,50 @@ class Agent:
         self.transport: Transport | None = options.transport
         self.max_retry_delay_ms: float | None = options.max_retry_delay_ms
         self._retry_policy = options.retry or RetryPolicy()
+        self._compaction_settings = options.compaction or CompactionSettings()
 
     async def set_retry_policy(self, policy: RetryPolicy) -> None:
         """Update the policy read at the next error; retain an already scheduled attempt."""
         self._ensure_open()
         self._retry_policy = policy
+
+    async def set_compaction_settings(self, settings: CompactionSettings) -> None:
+        """Update the settings used by later compactions; the current one keeps its capture."""
+        self._ensure_open()
+        if type(settings) is not CompactionSettings:
+            raise ValueError("set_compaction_settings requires CompactionSettings")
+        self._compaction_settings = settings
+
+    async def compact(self, custom_instructions: str | None = None) -> CompactionResult:
+        """Summarize the older effective context and retain a recent tail.
+
+        Any accepted activity is cooperatively cancelled and fully settled
+        before the summary input is captured, so its final records are part of
+        the compacted history. The call waits for this compaction and its
+        terminal notifications only: a prompt accepted from a
+        ``compaction_end`` callback starts a separate activity. Queues are
+        neither consumed nor resumed. A failure or cancellation before the
+        commit appends no compaction record.
+        """
+        self._ensure_open()
+        if custom_instructions is not None and not isinstance(custom_instructions, str):
+            raise ValueError("custom_instructions must be a string or None")
+        if self._active_run is not None:
+            self._reject_self_wait(self._active_run)
+        _require_executable_model(self._state.model, "compact")
+        previous = self._active_run
+        run = self._begin_compaction_run(previous, custom_instructions)
+        if previous is not None:
+            previous.abort_controller.abort()
+        assert run.task is not None
+        await asyncio.shield(run.task)
+        if run.notification_error is not None:
+            raise run.notification_error
+        if run.compaction_error is not None:
+            raise run.compaction_error
+        if run.compaction_result is not None:
+            return run.compaction_result
+        raise AbortError()
 
     @property
     def history(self) -> AgentHistory:
@@ -473,6 +530,8 @@ class Agent:
             raise ValueError("submit_custom_message requires a CustomAgentMessage")
         accepted = cast(CustomAgentMessage, snapshot_messages([message])[0])
         run = self._active_run
+        if run is not None and run.manual_compaction:
+            raise RuntimeError("Cannot submit a custom message during manual compaction.")
         if run is None:
             run = self._begin_run(lambda signal: self._flush_custom_messages(), dialogue=False)
         run.custom_messages.append(accepted)
@@ -515,6 +574,188 @@ class Agent:
         finally:
             _current_run.reset(token)
             self._finish_run(run)
+
+    def _begin_compaction_run(
+        self, previous: _ActiveRun | None, custom_instructions: str | None,
+    ) -> _ActiveRun:
+        self._reset_run_state()
+        run = _ActiveRun(
+            abort_controller=AbortController(),
+            idle=asyncio.get_running_loop().create_future(),
+            dialogue=False,
+            manual_compaction=True,
+        )
+        self._state._is_streaming = False
+        self._state._activity_kind = "manual_compaction"
+        self._active_run = run
+        run.task = asyncio.create_task(
+            self._compaction_runner(previous, custom_instructions, run)
+        )
+        run.task.add_done_callback(_retrieve_task_exception)
+        return run
+
+    async def _compaction_runner(
+        self, previous: _ActiveRun | None, custom_instructions: str | None, run: _ActiveRun,
+    ) -> None:
+        token = _current_run.set(run)
+        first_error: BaseException | None = None
+        error: BaseException | None = None
+        try:
+            if previous is not None and previous.task is not None:
+                try:
+                    await asyncio.shield(previous.task)
+                except (Exception, asyncio.CancelledError):
+                    # The interrupted activity reports its own failure to its waiters;
+                    # it never blocks the compaction that superseded it.
+                    pass
+            await self._execute_compaction(custom_instructions, run)
+        except (Exception, asyncio.CancelledError) as caught:
+            error = caught
+            first_error = caught
+            run.compaction_error = caught
+        finally:
+            try:
+                await self._notify_compaction_end(run, error)
+            except (Exception, asyncio.CancelledError) as caught:
+                if first_error is None:
+                    first_error = caught
+            try:
+                if run.pending_prompts:
+                    if self._close_task is not None:
+                        if first_error is None:
+                            first_error = RuntimeError(
+                                "Agent closed before an accepted prompt could start."
+                            )
+                            run.compaction_error = first_error
+                        run.pending_prompts.clear()
+                    else:
+                        self._start_accepted_prompts(run)
+            finally:
+                _current_run.reset(token)
+                self._finish_run(run)
+        if first_error is not None:
+            raise first_error
+
+    async def _execute_compaction(
+        self, custom_instructions: str | None, run: _ActiveRun,
+    ) -> CompactionResult:
+        signal = run.abort_controller.signal
+        model = self._state.model
+        thinking_level = self._state.thinking_level
+        settings = self._compaction_settings
+        system_message = get_current_system_message(self._state.messages)
+        snapshot = self._history.snapshot()
+        await self._notify_listeners(CompactionStartEvent(reason="manual", will_retry=False))
+        signal.throw_if_aborted()
+        path = history_path(snapshot)
+        if path and isinstance(path[-1], CompactionHistoryEntry):
+            raise CompactionFailure("already_compacted", "Already compacted")
+        preparation = prepare_compaction(snapshot, settings)
+        if preparation is None:
+            raise CompactionFailure("nothing_to_compact", "Nothing to compact")
+        request = await self._summary_request(model, signal)
+        result = await compact_with_request(
+            preparation,
+            model,
+            custom_instructions,
+            thinking_level,
+            system_message,
+            request,
+            settings.reserve_tokens,
+        )
+        signal.throw_if_aborted()
+        entry = self._history.append_compaction(
+            summary=result.summary,
+            first_kept_entry_id=result.first_kept_entry_id,
+            tokens_before=result.tokens_before,
+            system_message=system_message,
+            usage=result.usage,
+            details=result.details,
+        )
+        self._state._messages = project_history(self._history.snapshot())
+        run.compaction_result = result
+        await self._notify_listeners(HistoryCommitEvent(
+            conversation_id=self._history.conversation_id,
+            entries=(entry,),
+            leaf_id=entry.id,
+        ))
+        return result
+
+    async def _summary_request(self, model: Model, signal: AbortSignal) -> SummaryRequest:
+        api_key = self.api_key
+        get_api_key = self.get_api_key
+        if get_api_key is not None:
+            resolved = await call_with_signal(lambda: get_api_key(model.provider), signal)
+            if resolved:
+                api_key = resolved
+
+        async def request(
+            context: TranscriptContext, options: SimpleStreamOptions,
+        ) -> AssistantMessage:
+            merged = replace(
+                options,
+                signal=signal,
+                api_key=api_key,
+                on_payload=self.on_payload,
+                on_response=self.on_response,
+                on_provider_stream_event=self.on_provider_stream_event,
+                transport=self.transport,
+                session_id=self.session_id,
+                thinking_budgets=self.thinking_budgets,
+                max_retry_delay_ms=self.max_retry_delay_ms,
+            )
+
+            async def consume() -> AssistantMessage:
+                response = await call_with_signal(
+                    lambda: self.stream_fn(model, context, merged), signal,
+                )
+                async for event in response:
+                    if event.type in {"done", "error"}:
+                        break
+                return await response.result()
+
+            return await call_with_signal(consume, signal)
+
+        return request
+
+    async def _notify_compaction_end(
+        self, run: _ActiveRun, error: BaseException | None,
+    ) -> None:
+        aborted = (
+            isinstance(error, AbortError | asyncio.CancelledError)
+            or isinstance(error, CompactionFailure) and error.code == "aborted"
+        )
+        run.settling = True
+        try:
+            await self._notify_listeners(CompactionEndEvent(
+                reason="manual",
+                will_retry=False,
+                result=run.compaction_result,
+                aborted=aborted,
+                error_message=str(error) if error is not None else None,
+            ))
+        finally:
+            run.settling = False
+
+    def _start_accepted_prompts(self, run: _ActiveRun) -> None:
+        messages, sections = run.pending_prompts.popleft()
+        remaining = list(run.pending_prompts)
+        run.pending_prompts.clear()
+        active = self._active_run
+        if active is not None and active is not run:
+            # A newer accepted activity superseded this compaction; keep the
+            # accepted prompts in FIFO order under the live activity.
+            active.pending_prompts.append((messages, sections))
+            active.pending_prompts.extend(remaining)
+            return
+        new_run = self._begin_run(
+            lambda signal: self._run_prompt_messages(
+                messages, signal, system_sections=sections,
+            )
+        )
+        new_run.pending_prompts.extend(remaining)
+        new_run.idle = run.idle
+        run.idle_transferred = True
 
     async def prompt(
         self,
@@ -681,6 +922,12 @@ class Agent:
                             if first_error is None:
                                 first_error = error
                         _current_run.reset(token)
+                if self._active_run is not None and self._active_run is not run:
+                    # A superseding activity (for example a manual compaction)
+                    # now owns the Agent; hand the accepted prompts to it in order.
+                    self._active_run.pending_prompts.extend(run.pending_prompts)
+                    run.pending_prompts.clear()
+                    break
                 if self._close_task is not None or not run.pending_prompts:
                     if run.pending_prompts and first_error is None:
                         first_error = RuntimeError("Agent closed before an accepted prompt could start.")
@@ -772,15 +1019,15 @@ class Agent:
         ))
 
     def _finish_run(self, run: _ActiveRun) -> None:
-        self._state._is_streaming = False
-        self._state._is_busy = False
-        self._state._activity_kind = None
-        self._state._streaming_message = None
-        self._state._clear_pending_tool_calls()
-        if not run.idle.done():
+        if not run.idle.done() and not run.idle_transferred:
             run.idle.set_result(None)
         if self._active_run is run:
             self._active_run = None
+            self._state._is_streaming = False
+            self._state._is_busy = False
+            self._state._activity_kind = None
+            self._state._streaming_message = None
+            self._state._clear_pending_tool_calls()
 
     def _create_context_snapshot(self) -> AgentContext:
         return AgentContext(messages=list(self._state.messages), tools=isolate_tools(list(self._state.tools)))
