@@ -285,7 +285,7 @@ class Agent:
         self._compaction_settings = options.compaction or CompactionSettings()
 
     async def set_retry_policy(self, policy: RetryPolicy) -> None:
-        """Update the policy read at the next error; retain an already scheduled attempt."""
+        """Update later dialogue retries and compactions; retain a summary's policy capture."""
         self._ensure_open()
         self._retry_policy = policy
 
@@ -711,6 +711,7 @@ class Agent:
         return result
 
     def _summary_request(self, model: Model, signal: AbortSignal) -> SummaryRequest:
+        policy = self._retry_policy
         api_key = self.api_key
         get_api_key = self.get_api_key
         stream_fn = self.stream_fn
@@ -726,7 +727,7 @@ class Agent:
         )
         credentials_resolved = False
 
-        async def request(
+        async def produce(
             context: TranscriptContext, options: SimpleStreamOptions,
         ) -> AssistantMessage:
             nonlocal api_key, credentials_resolved
@@ -753,6 +754,53 @@ class Agent:
             finally:
                 if signal.aborted:
                     await asyncio.shield(response.result())
+
+        async def request(
+            context: TranscriptContext, options: SimpleStreamOptions,
+        ) -> AssistantMessage:
+            retry: RetryStartEvent | None = None
+            error_message: str | None = None
+            result: Literal["success", "exhausted", "aborted"] = "exhausted"
+            try:
+                while True:
+                    signal.throw_if_aborted()
+                    response = await produce(context, options)
+                    error_message = response.error_message
+                    if response.stop_reason == "aborted":
+                        result = "aborted"
+                        if error_message is None and retry is not None:
+                            error_message = retry.error_message
+                        break
+                    if response.stop_reason != "error":
+                        result = "success"
+                        error_message = None
+                        break
+                    attempt = retry.attempt if retry is not None else 0
+                    if (
+                        not policy.enabled or attempt >= policy.max_retries
+                        or not is_retryable_assistant_error(response)
+                    ):
+                        break
+                    retry = RetryStartEvent(
+                        scope="summary", attempt=attempt + 1, max_retries=policy.max_retries,
+                        delay_ms=retry_delay_ms(policy, attempt + 1),
+                        error_message=error_message or "Unknown error",
+                    )
+                    await self._notify_listeners(retry)
+                    await wait_for_retry(retry.delay_ms, signal)
+            except (AbortError, asyncio.CancelledError):
+                if retry is not None:
+                    await self._notify_listeners(RetryEndEvent(
+                        scope="summary", attempt=retry.attempt, max_retries=retry.max_retries,
+                        delay_ms=retry.delay_ms, error_message=error_message, result="aborted",
+                    ))
+                raise
+            if retry is not None:
+                await self._notify_listeners(RetryEndEvent(
+                    scope="summary", attempt=retry.attempt, max_retries=retry.max_retries,
+                    delay_ms=retry.delay_ms, error_message=error_message, result=result,
+                ))
+            return response
 
         return request
 

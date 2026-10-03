@@ -12,10 +12,14 @@ from omh.agent import (
     CompactionStartEvent,
     CompactionSummaryMessage,
     MessageHistoryEntry,
+    RetryEndEvent,
+    RetryPolicy,
+    RetryStartEvent,
 )
 from omh.llm.types import (
     AssistantMessage,
     DoneEvent,
+    ErrorEvent,
     Model,
     ModelCost,
     SystemMessage,
@@ -54,6 +58,11 @@ async def main() -> None:
             usage=empty_usage(), content=[TextContent(text=text)], stop_reason="stop",
         )
         stream = create_assistant_message_event_stream()
+        if is_summary and summary_calls == 1:
+            message.stop_reason = "error"
+            message.error_message = "503 overloaded"
+            stream.push(ErrorEvent(reason="error", error=message))
+            return stream
         stream.push(DoneEvent(reason="stop", message=message))
         return stream
 
@@ -80,11 +89,18 @@ async def main() -> None:
         ),
         # Keep only the most recent message as the retained tail.
         compaction=CompactionSettings(keep_recent_tokens=0),
+        # Keep the offline retry demonstration immediate; production defaults
+        # wait 2, 4, and 8 seconds for up to three retries per summary request.
+        retry=RetryPolicy(base_delay_ms=0),
     ))
 
     def listener(event, signal):
         if isinstance(event, CompactionStartEvent):
             print(f"compaction started: reason={event.reason}, will_retry={event.will_retry}")
+        elif isinstance(event, RetryStartEvent):
+            print(f"{event.scope} retry {event.attempt}: {event.error_message}")
+        elif isinstance(event, RetryEndEvent):
+            print(f"{event.scope} retry ended: {event.result}")
         elif isinstance(event, CompactionEndEvent):
             assert event.result is not None
             print(
@@ -101,7 +117,7 @@ async def main() -> None:
     compactions = [
         entry for entry in agent.history.entries if isinstance(entry, CompactionHistoryEntry)
     ]
-    assert summary_calls == 1
+    assert summary_calls == 2
     assert len(original_messages) == 6  # system + two exchanges + the trailing question
     assert len(compactions) == 1
     assert compactions[0].first_kept_entry_id == result.first_kept_entry_id
