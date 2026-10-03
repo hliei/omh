@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from omh.agent.context import AgentContext
 from omh.agent.hooks import (
     AfterToolCall,
     BeforeToolCall,
@@ -40,6 +41,10 @@ class AgentLoopConfig:
     transform_context: LoopTransformContext | None = None
     finish_turn: FinishTurn | None = None
     prepare_request: PrepareRequest | None = None
+    #: Rebuilds the request context (messages and executable tools) from
+    #: authoritative state before each request. The Agent uses this for live
+    #: configuration; the standalone loop leaves it unset.
+    refresh_request: Callable[[], AgentContext] | None = None
     prepare_next_turn: PrepareNextTurn | None = None
     get_steering_messages: GetSteeringMessages | None = None
     get_follow_up_messages: GetFollowUpMessages | None = None

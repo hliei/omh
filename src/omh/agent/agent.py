@@ -27,12 +27,15 @@ from omh.agent.events import (
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
+    ModelChangeEvent,
+    ThinkingLevelChangeEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     TurnEndEvent,
 )
 from omh.agent.history import (
     AgentHistory,
+    AgentHistoryEntry,
     ConversationHistory,
     project_history,
     validate_history,
@@ -40,6 +43,7 @@ from omh.agent.history import (
 from omh.agent.hooks import (
     AfterToolCall,
     AgentLoopTurnUpdate,
+    AgentRequestUpdate,
     AgentTurnContext,
     AgentTurnDecision,
     BeforeToolCall,
@@ -49,6 +53,7 @@ from omh.agent.hooks import (
     PrepareNextTurnWithContext,
     PrepareNextTurnWithSignal,
     PrepareRequest,
+    PrepareRequestContext,
 )
 from omh.agent.isolation import isolate_loop_config, isolate_tools
 from omh.agent.loop import (
@@ -58,18 +63,26 @@ from omh.agent.loop import (
 from omh.agent.loop_config import AgentLoopConfig
 from omh.agent.messages import AgentMessage, ConvertToLlm, LoopMessage, TransformContext
 from omh.agent.options import AgentOptions, QueueMode
-from omh.agent.state import AgentInitialState, AgentState, snapshot_tools
+from omh.agent.state import (
+    AgentInitialState,
+    AgentState,
+    derive_system_sections,
+    snapshot_tools,
+)
 from omh.agent.stream_fn import get_default_stream_fn
 from omh.agent.tools import AgentTool, ToolExecutionMode
-from omh.llm.models import clamp_thinking_level
+from omh.llm.models import clamp_thinking_level, models_are_equal
 from omh.llm.types import (
     AbortController,
     AbortSignal,
     AssistantMessage,
     ImageContent,
+    Model,
+    ModelThinkingLevel,
     OnPayload,
     OnProviderStreamEvent,
     OnResponse,
+    SystemMessage,
     TextContent,
     ThinkingBudgets,
     Transport,
@@ -79,12 +92,22 @@ from omh.llm.types import (
 from omh.llm.types import (
     ThinkingLevel as ReasoningLevel,
 )
+from omh.llm.utils.transcript import get_current_system_message
 
 AgentListener = Callable[[AgentEvent, AbortSignal], Awaitable[None] | None]
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _require_executable_model(model: Model, action: str) -> None:
+    """Reject a placeholder or capacity-less model before execution starts."""
+    if not model.id or model.context_window <= 0 or model.max_tokens <= 0:
+        raise ValueError(
+            f"{action} requires a model with an identifier, a positive context_window, "
+            "and a positive max_tokens."
+        )
 
 
 @dataclass(slots=True)
@@ -95,7 +118,7 @@ class _ActiveRun:
     ending: bool = False
     messages: list[AgentMessage] = field(default_factory=list)
     settling: bool = False
-    pending_prompts: deque[list[AgentMessage]] = field(default_factory=deque)
+    pending_prompts: deque[tuple[list[AgentMessage], dict[str, str]]] = field(default_factory=deque)
     notification_error: BaseException | None = None
     stop: bool = False
 
@@ -179,6 +202,7 @@ class Agent:
             instance._state.model, instance._state.thinking_level,
         )
         instance._state._messages = project_history(instance._history.snapshot())
+        instance._state._system_sections = derive_system_sections(instance._state._messages)
         instance._configure(options)
         return instance
 
@@ -238,11 +262,77 @@ class Agent:
         return unsubscribe
 
     async def set_tools(self, tools: list[AgentTool]) -> None:
-        """Replace idle execution tools; declarations commit before the next request."""
+        """Replace execution tools; affected later requests announce the declaration delta.
+
+        The Agent may be busy. The current request and any running tool batch keep
+        the tool set they captured; the next request reads the new set and emits
+        the declaration difference through the ordinary message lifecycle.
+        """
         self._ensure_open()
-        if self._active_run is not None:
-            raise RuntimeError("Agent is already processing. Wait for completion before setting tools.")
         self._state._tools = snapshot_tools(tools)
+
+    async def set_model(self, model: Model) -> None:
+        """Select the execution model for later requests, clamping the thinking level.
+
+        Appends a ``model_change`` record only when the provider/model identity
+        actually changes, and a ``thinking_level_change`` record when clamping
+        changes the effective level. A repeated identical selection is a no-op.
+        """
+        self._ensure_open()
+        current = self._state.model
+        model_changed = not models_are_equal(current, model)
+        self._state._model = copy.deepcopy(model)
+        clamped = clamp_thinking_level(model, self._state.thinking_level)
+        thinking_changed = clamped != self._state.thinking_level
+        if not model_changed and not thinking_changed:
+            return
+        self._state._thinking_level = clamped
+        entries: list[AgentHistoryEntry] = []
+        events: list[AgentEvent] = []
+        if model_changed:
+            entries.append(self._history.append_model(model))
+            events.append(ModelChangeEvent(provider=model.provider, model_id=model.id))
+        if thinking_changed:
+            entries.append(self._history.append_thinking_level(clamped))
+            events.append(ThinkingLevelChangeEvent(thinking_level=clamped))
+        await self._commit_config_change(entries, events)
+
+    async def set_thinking_level(self, level: ModelThinkingLevel) -> None:
+        """Select the thinking level for later requests, clamped to the active model."""
+        self._ensure_open()
+        clamped = clamp_thinking_level(self._state.model, level)
+        if clamped == self._state.thinking_level:
+            return
+        self._state._thinking_level = clamped
+        entry = self._history.append_thinking_level(clamped)
+        await self._commit_config_change([entry], [ThinkingLevelChangeEvent(thinking_level=clamped)])
+
+    async def set_system_sections(self, sections: dict[str, str]) -> None:
+        """Replace the expected named base sections for the next new prompt.
+
+        The running prompt keeps its section snapshot. The next new prompt
+        synchronizes the difference to the transcript by replacing, adding, or
+        deleting named sections; bare system content continues to append.
+        """
+        self._ensure_open()
+        expected: dict[str, str] = {}
+        for name, text in sections.items():
+            if not isinstance(name, str) or not name or not isinstance(text, str):
+                raise ValueError("system sections must map non-empty string names to string text")
+            expected[name] = text
+        self._state._system_sections = expected
+
+    async def _commit_config_change(
+        self, entries: list[AgentHistoryEntry], events: list[AgentEvent],
+    ) -> None:
+        if entries:
+            await self._notify_listeners(HistoryCommitEvent(
+                conversation_id=self._history.conversation_id,
+                entries=tuple(entries),
+                leaf_id=cast(str, self._history.leaf_id),
+            ))
+        for event in events:
+            await self._notify_listeners(event)
 
     def abort(self) -> None:
         """Cooperatively signal the current run to stop. Has no effect when idle."""
@@ -355,13 +445,20 @@ class Agent:
         if self._active_run is not None:
             run = self._active_run
             if run.settling and _current_run.get() is run:
-                run.pending_prompts.append(self._normalize_prompt_input(message, images))
+                run.pending_prompts.append((
+                    self._normalize_prompt_input(message, images),
+                    dict(self._state._system_sections),
+                ))
                 return
             raise RuntimeError(
                 "Agent is already processing a prompt. Wait for completion before prompting again."
             )
         messages = self._normalize_prompt_input(message, images)
-        run = self._begin_run(lambda signal: self._run_prompt_messages(messages, signal))
+        _require_executable_model(self._state.model, "prompt")
+        sections = dict(self._state._system_sections)
+        run = self._begin_run(
+            lambda signal: self._run_prompt_messages(messages, signal, system_sections=sections)
+        )
         assert run.task is not None
         # Shield the run task so cancelling this waiter does not cancel the run.
         await asyncio.shield(run.task)
@@ -380,6 +477,7 @@ class Agent:
         last_message = self._state.messages[-1] if self._state.messages else None
         if last_message is None or all(message.role == "system" for message in self._state.messages):
             raise ValueError("No messages to continue from")
+        _require_executable_model(self._state.model, "continue")
         if last_message.role == "assistant":
             queued_steering = self._steering_queue.drain()
             if queued_steering:
@@ -485,7 +583,7 @@ class Agent:
                         first_error = RuntimeError("Agent closed before an accepted prompt could start.")
                     run.pending_prompts.clear()
                     break
-                messages = run.pending_prompts.popleft()
+                messages, sections = run.pending_prompts.popleft()
                 run = _ActiveRun(
                     abort_controller=AbortController(), idle=run.idle,
                     task=run.task, pending_prompts=run.pending_prompts,
@@ -493,8 +591,8 @@ class Agent:
                 self._active_run = run
                 self._reset_run_state()
 
-                async def executor(signal: AbortSignal) -> None:
-                    await self._run_prompt_messages(messages, signal)
+                async def executor(signal: AbortSignal, sections: dict[str, str] = sections) -> None:
+                    await self._run_prompt_messages(messages, signal, system_sections=sections)
             if first_error is not None:
                 raise first_error
         finally:
@@ -556,7 +654,8 @@ class Agent:
             on_response=self.on_response,
             on_provider_stream_event=self.on_provider_stream_event,
             finish_turn=self._finish_turn,
-            prepare_request=self.prepare_request,
+            prepare_request=self._build_prepare_request(),
+            refresh_request=self._refresh_request_context,
             prepare_next_turn=self._build_prepare_next_turn(),
             get_steering_messages=get_steering_messages,
             get_follow_up_messages=get_follow_up_messages,
@@ -585,9 +684,15 @@ class Agent:
         signal: AbortSignal,
         *,
         skip_initial_steering_poll: bool = False,
+        system_sections: dict[str, str] | None = None,
     ) -> None:
+        prompt_messages: list[LoopMessage] = list(messages)
+        if system_sections is not None:
+            delta = self._section_delta(system_sections)
+            if delta:
+                prompt_messages = [SystemMessage(content="", timestamp=0, sections=delta), *prompt_messages]
         await run_agent_loop(
-            list(messages),
+            prompt_messages,
             self._create_context_snapshot(),
             self._create_loop_config(skip_initial_steering_poll=skip_initial_steering_poll),
             self._process_events,
@@ -595,11 +700,62 @@ class Agent:
             self.stream_fn,
         )
 
+    def _refresh_request_context(self) -> AgentContext:
+        """Rebuild the request context from authoritative history and live configuration."""
+        messages = cast(list[LoopMessage], list(project_history(self._history.snapshot())))
+        return AgentContext(messages=messages, tools=isolate_tools(list(self._state.tools)))
+
+    def _section_delta(self, expected: dict[str, str]) -> dict[str, str | None]:
+        """Difference between the prompt's expected sections and the replayed transcript."""
+        current = get_current_system_message(self._state.messages)
+        replayed: dict[str, str | None] = dict(current.sections or {}) if current is not None else {}
+        delta: dict[str, str | None] = {
+            name: text for name, text in expected.items() if replayed.get(name) != text
+        }
+        for name in replayed:
+            if name not in expected:
+                delta[name] = None
+        return delta
+
+    def _build_prepare_request(self) -> PrepareRequest:
+        """Refresh live selection and canonical context, then run the host hook.
+
+        Returned overrides apply to this request only: the next request rebuilds
+        the context from history and re-reads the live model and thinking level.
+        """
+        user = self.prepare_request
+
+        async def prepare(request: PrepareRequestContext, signal: AbortSignal | None) -> AgentRequestUpdate:
+            if user is None:
+                update = None
+            else:
+                update = await maybe_await(user(
+                    PrepareRequestContext(
+                        context=request.context,
+                        model=self._state.model,
+                        thinking_level=self._state.thinking_level,
+                    ),
+                    signal,
+                ))
+            model = update.model if update is not None and update.model is not None else self._state.model
+            thinking = (
+                update.thinking_level
+                if update is not None and update.thinking_level is not None
+                else self._state.thinking_level
+            )
+            context = update.context if update is not None else None
+            _require_executable_model(model, "prepare_request")
+            return AgentRequestUpdate(context=context, model=model, thinking_level=thinking)
+
+        return prepare
+
     def _build_prepare_next_turn(self) -> PrepareNextTurn | None:
         """Bridge the Agent-level turn preparations onto the loop-level hook.
 
         The context-taking version takes priority. The signal-only version keeps
-        receiving the active run signal rather than the loop context.
+        receiving the active run signal rather than the loop context. Only
+        appended messages are accepted: request context, model, and thinking
+        overrides belong to ``prepare_request`` and are rejected explicitly.
         """
         prepare_with_context = self.prepare_next_turn_with_context
         prepare_signal = self.prepare_next_turn
@@ -613,7 +769,23 @@ class Agent:
             else:
                 assert prepare_signal is not None
                 result = prepare_signal(signal)
-            return await maybe_await(result)
+            update = await maybe_await(result)
+            if update is not None:
+                unsupported = [
+                    name
+                    for name, value in (
+                        ("context", update.context),
+                        ("model", update.model),
+                        ("thinking_level", update.thinking_level),
+                    )
+                    if value is not None
+                ]
+                if unsupported:
+                    raise ValueError(
+                        "Agent prepare_next_turn may only append messages; move request "
+                        f"overrides ({', '.join(unsupported)}) to prepare_request."
+                    )
+            return update
 
         return prepare_next_turn
 
@@ -663,19 +835,18 @@ class Agent:
 
     async def _notify_listeners(self, event: AgentEvent) -> None:
         run = self._active_run
-        if run is None:
-            raise RuntimeError("Agent listener invoked outside active run")
-        signal = run.abort_controller.signal
+        signal = run.abort_controller.signal if run is not None else AbortController().signal
         for listener in list(self._listeners):
             try:
                 result = listener(copy.deepcopy(event), signal)
                 if inspect.isawaitable(result):
                     await result
             except BaseException as error:
-                if run.notification_error is None:
-                    run.notification_error = error
-                if not run.ending and not run.settling:
-                    run.abort_controller.abort()
+                if run is not None:
+                    if run.notification_error is None:
+                        run.notification_error = error
+                    if not run.ending and not run.settling:
+                        run.abort_controller.abort()
                 raise
 
     def _reduce_state(self, event: AgentEvent) -> None:

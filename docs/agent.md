@@ -66,10 +66,12 @@ When `Agent.state.tools` differs from the tools declared in the transcript, the
 loop announces the delta in a `SystemMessage` before the request, emitted
 through the normal message lifecycle. A pending system message passed with a
 prompt has its tool fields coordinated with that delta, so replaying the
-transcript always yields exactly the executable tool set. Use
-`await agent.set_tools(tools)` between runs to replace the complete tool set;
-this command rejects a busy Agent and isolates declaration data while retaining
-host-owned execution callbacks.
+transcript always yields exactly the executable tool set. `await
+agent.set_tools(tools)` replaces the complete executable set and may be called
+while the Agent is busy. The current request and any running tool batch keep the
+tool set they captured; the next request reads the new set, announces the
+declaration delta as an ordinary committed message, and isolates declaration
+data while retaining host-owned execution callbacks.
 
 ## Conversation history
 
@@ -241,7 +243,8 @@ custom `StreamFn` receives the full normalized `TranscriptContext` and the
 | `messages` | Effective context as a read-only tuple with isolated message elements. |
 | `tools` | Read-only tuple of tool snapshots; execution callbacks remain host-owned. |
 | `system_prompt` | Read-only prompt replayed from the transcript's system messages. |
-| `model`, `thinking_level` | Read-only observations of the initial execution configuration. |
+| `model`, `thinking_level` | Read-only observations of the current execution configuration. |
+| `system_sections` | Read-only copy of the expected named base sections applied at the next new prompt. |
 | `is_busy` | True from activity acceptance through preparation, execution, terminal listeners, and their accepted prompt chain. |
 | `activity_kind` | `"dialogue"` while a prompt or continuation is unsettled; otherwise `None`. |
 | `is_streaming` | True throughout the dialogue activity, including request preparation and terminal listeners. |
@@ -256,6 +259,38 @@ data are isolated. Mutating nested content, arguments, or details in a snapshot
 does not write back to the Agent or affect another listener. Request hooks can
 return explicit projections; mutating their input alone does not change the
 conversation. Long-lived provider and tool resources retain host ownership.
+
+## Live configuration
+
+`set_model`, `set_thinking_level`, and `set_system_sections` update the Agent's
+authoritative configuration and may be called while the Agent is busy; they
+never create a second dialogue activity.
+
+`await agent.set_model(model)` reads the host-supplied executable `Model`,
+clamps the current thinking level to the new model's capabilities, and updates
+the live selection. `await agent.set_thinking_level(level)` clamps the requested
+level to the current model. When a selection actually changes, the Agent first
+appends the corresponding `model_change` or `thinking_level_change` record, then
+emits `history_commit`, and finally awaits the `ModelChangeEvent` or
+`ThinkingLevelChangeEvent`. Repeating an identical effective selection appends
+no duplicate record and emits no configuration event. Later requests read the
+live selection; an earlier request override does not change it.
+
+`await agent.set_system_sections({"name": "text"})` replaces the expected base
+section set. The running prompt keeps its section snapshot: the next new prompt
+synchronizes the difference to the transcript by adding or replacing named
+sections and deleting names no longer present (`sections[name] = None`). A
+`continue_` or a later request in the same prompt does not pick up the new set.
+Bare system content still appends and never becomes an entire replacement.
+`set_system_sections` only updates the expectation; it does not append history
+immediately. `Agent.state.system_sections` reads the expected set.
+
+Starting a prompt or continuation requires an executable model with an
+identifier, a positive `context_window`, and a positive `max_tokens`. An
+unconfigured Agent can still be constructed and inspected, and a host-defined
+model or `StreamFn` is used without any built-in model catalog. A
+`prepare_request` override is held to the same capacity requirement, and a
+request without it ends through the ordinary Agent error lifecycle.
 
 ## Running and continuing
 
@@ -374,21 +409,29 @@ continues.
 ## Request and turn hooks
 
 `AgentOptions.prepare_request` runs immediately before every model request,
-including the first. Pending messages are already appended to the request
-context and emitted as lifecycle events when it runs. It receives a
-`PrepareRequestContext` with the current `context`, `model`, and
-`thinking_level`, plus the run signal. Returning an `AgentRequestUpdate`
-replaces the context, model, and/or thinking level for this request and every
-later request in the run.
+including the first. Each request first rebuilds the effective context from the
+authoritative history and reads the live model, thinking level, and tools, then
+passes a `PrepareRequestContext` with that `context`, `model`, and
+`thinking_level`, plus the run signal. Pending messages are already appended to
+the request context and emitted as lifecycle events when it runs. Returning an
+`AgentRequestUpdate` replaces the context, model, and/or thinking level for that
+request only; the next request re-projects the history and re-reads the live
+selection before calling the hook again. Overrides never rewrite the complete
+history or the public selection. If the hook is asynchronous, live selection
+changes that happen while it awaits are what the final request preparation
+reads, unless the hook explicitly returned a model or thinking level.
 
 `AgentOptions.prepare_next_turn_with_context` runs only when the loop will
 definitely start another request, after a completed turn and before its
 `turn_start`. It receives the completed `AgentTurnContext` and the signal and
-returns an `AgentLoopTurnUpdate`: a replacement context, model, or thinking
-level, and messages appended before the next request with the normal message
-lifecycle and tool-declaration coordination. `AgentOptions.prepare_next_turn`
-is the signal-only variant that keeps receiving the active run signal; when
-both are set, the context-taking version takes priority.
+returns an `AgentLoopTurnUpdate` whose `messages` are appended before the next
+request with the normal message lifecycle and tool-declaration coordination.
+Agent next-turn preparation may only append messages; returning `context`,
+`model`, or `thinking_level` raises a migration error directing the caller to
+`prepare_request`. `AgentOptions.prepare_next_turn` is the signal-only variant
+that keeps receiving the active run signal; when both are set, the
+context-taking version takes priority. The standalone loop keeps the full
+`AgentLoopTurnUpdate` contract, including persistent local replacements.
 
 `AgentOptions.finish_turn` runs after the assistant message and all of its tool
 results are appended, but before `turn_end`. Its `AgentTurnContext` exposes the
@@ -451,8 +494,11 @@ enter history or emit execution events.
 
 The conversation lifecycle emits `agent_start`, `turn_start`, `message_start`,
 `message_update`, `history_commit`, `message_end`, `turn_end`, `agent_end`, and
-finally `agent_settled`. Assistant stream deltas arrive as `message_update` with
-the provider event attached. Tool execution emits `tool_execution_start`,
+finally `agent_settled`. An explicit configuration change additionally emits
+`history_commit` for its record, then `ModelChangeEvent`
+(`type="model_change"`) or `ThinkingLevelChangeEvent`
+(`type="thinking_level_change"`). Assistant stream deltas arrive as
+`message_update` with the provider event attached. Tool execution emits `tool_execution_start`,
 `tool_execution_update` for live progress, and `tool_execution_end`; the
 resulting tool-result message uses the ordinary message lifecycle. Try the
 offline [settled listener example](../examples/settled.py).
@@ -639,9 +685,17 @@ do not validate a live service or performance.
   The old instance retains its history and queues. Before switching a running
   instance, use `await old.close()` to retire it permanently. Use `abort()` and
   `wait_for_idle()` when the same instance should remain usable.
-- Replace tool-list assignment with `await agent.set_tools(tools)` while idle.
-  Select model and thinking level through initial options; their state fields
-  are observations.
+- Replace tool-list assignment with `await agent.set_tools(tools)`. Select
+  model, thinking level, and base sections with `await agent.set_model(model)`,
+  `await agent.set_thinking_level(level)`, and
+  `await agent.set_system_sections(sections)`; their state fields are
+  read-only observations. Configuration commands may run while the Agent is busy
+  and affect later requests or the next new prompt.
+- Agent `prepare_next_turn` returns may only append messages. Return `context`,
+  `model`, or `thinking_level` from `prepare_request` instead; a next-turn
+  request override now raises a migration error. Request overrides apply to one
+  request only, so return the override again for each request that needs it.
+  Standalone-loop callers keep the persistent local replacement contract.
 - Convert business message objects to `CustomAgentMessage`, and convert all
   history extension values to JSON pure data. Use `LoopMessage` for open
   application objects passed to standalone loops.

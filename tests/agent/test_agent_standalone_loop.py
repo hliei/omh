@@ -18,6 +18,7 @@ from omh.agent import (
     AgentEndEvent,
     AgentEvent,
     AgentLoopConfig,
+    AgentRequestUpdate,
     AgentTool,
     AgentToolResult,
     agent_loop,
@@ -53,9 +54,9 @@ from omh.llm.utils.event_stream import (
 NOW = 1_700_000_000_000
 
 
-def make_model() -> Model:
+def make_model(model_id: str = "test-model") -> Model:
     return Model(
-        id="test-model",
+        id=model_id,
         name="Test Model",
         api="openai-completions",
         provider="test",
@@ -353,6 +354,36 @@ def test_stream_continue_rejects_before_starting_a_producer() -> None:
 
     with pytest.raises(ValueError, match="Cannot continue from message role: assistant"):
         agent_loop_continue(AgentContext(messages=[text_message("done")], tools=[]), config)
+
+
+async def test_direct_entry_keeps_local_request_overrides_for_later_requests() -> None:
+    """The standalone loop keeps its local replacement value across a run."""
+    stream = ScriptedStreamFn([lambda: text_message("first"), lambda: text_message("second")])
+    turns = 0
+
+    def finish_turn(turn: object, signal: AbortSignal | None) -> str | None:
+        del turn, signal
+        nonlocal turns
+        turns += 1
+        return "continue" if turns == 1 else None
+
+    def prepare_request(request: object, signal: AbortSignal | None) -> AgentRequestUpdate | None:
+        del request, signal
+        if stream.calls == 0:
+            return AgentRequestUpdate(model=make_model("override-model"))
+        return None
+
+    result = await run_agent_loop(
+        [user_message("hello")],
+        AgentContext(messages=[], tools=[]),
+        AgentLoopConfig(model=make_model(), prepare_request=prepare_request, finish_turn=finish_turn),
+        lambda event: None,
+        None,
+        stream,
+    )
+
+    assert [message.role for message in result] == ["user", "assistant", "assistant"]
+    assert [request.model.id for request in stream.requests] == ["override-model", "override-model"]
 
 
 async def test_stream_producer_failure_reaches_reader_and_result_waiter() -> None:
