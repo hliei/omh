@@ -21,6 +21,8 @@ from omh.agent.events import (
     MessageStartEvent,
     MessageUpdateEvent,
     ModelChangeEvent,
+    RetryEndEvent,
+    RetryStartEvent,
     ThinkingLevelChangeEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
@@ -79,6 +81,7 @@ from omh.agent.messages import (
     TransformContext,
 )
 from omh.agent.options import AgentOptions, QueueMode
+from omh.agent.retry import RetryPolicy
 from omh.agent.state import (
     AgentInitialState,
     AgentState,
@@ -164,6 +167,9 @@ __all__ = [
     "PrepareRequest",
     "PrepareRequestContext",
     "QueueMode",
+    "RetryPolicy",
+    "RetryStartEvent",
+    "RetryEndEvent",
     "StreamFn",
     "ThinkingLevel",
     "ThinkingLevelChangeEvent",

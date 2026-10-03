@@ -34,6 +34,27 @@ class AgentSettledEvent:
 
 
 @dataclass(slots=True)
+class RetryStartEvent:
+    scope: Literal["dialogue", "summary"]
+    attempt: int
+    max_retries: int
+    delay_ms: float
+    error_message: str
+    type: Literal["retry_start"] = "retry_start"
+
+
+@dataclass(slots=True)
+class RetryEndEvent:
+    scope: Literal["dialogue", "summary"]
+    attempt: int
+    max_retries: int
+    delay_ms: float
+    error_message: str | None
+    result: Literal["success", "exhausted", "aborted"]
+    type: Literal["retry_end"] = "retry_end"
+
+
+@dataclass(slots=True)
 class TurnStartEvent:
     type: Literal["turn_start"] = "turn_start"
 
@@ -119,6 +140,8 @@ AgentEvent = (
     AgentStartEvent
     | AgentEndEvent
     | AgentSettledEvent
+    | RetryStartEvent
+    | RetryEndEvent
     | TurnStartEvent
     | TurnEndEvent
     | MessageStartEvent

@@ -710,7 +710,7 @@ async def test_continue_assistant_tail_rejects_when_no_queued_input() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_error_run_retains_unconsumed_queues() -> None:
+async def test_error_run_advances_queued_input_at_the_outer_boundary() -> None:
     holder: dict[str, Agent] = {}
     steer = user_message("steer", 1)
     follow_up = user_message("later", 2)
@@ -718,9 +718,12 @@ async def test_error_run_retains_unconsumed_queues() -> None:
     def stream_fn(
         model: Model, context: TranscriptContext, options: SimpleStreamOptions | None
     ) -> AssistantMessageEventStream:
-        del model, context, options
-        holder["agent"].steer(steer)
-        holder["agent"].follow_up(follow_up)
+        del model, options
+        if not holder["agent"].has_queued_messages() and not any(
+            message.role == "assistant" for message in context.messages
+        ):
+            holder["agent"].steer(steer)
+            holder["agent"].follow_up(follow_up)
         stream = create_assistant_message_event_stream()
         stream.push(StartEvent(partial=text_message("")))
         stream.push(
@@ -734,8 +737,9 @@ async def test_error_run_retains_unconsumed_queues() -> None:
     await agent.prompt("hello")
 
     assert agent.state.error_message == "provider failed"
-    assert agent.has_queued_messages() is True
-    assert agent.peek_queued_messages() == [steer]
+    assert agent.has_queued_messages() is False
+    users = [message for message in agent.state.messages if isinstance(message, UserMessage)]
+    assert users[-2:] == [steer, follow_up]
 
 
 async def test_abort_run_retains_unconsumed_queues() -> None:

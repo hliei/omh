@@ -14,7 +14,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from typing import cast
+from typing import Literal, cast
 
 from omh.agent._async import maybe_await
 from omh.agent.context import AgentContext
@@ -28,6 +28,8 @@ from omh.agent.events import (
     MessageStartEvent,
     MessageUpdateEvent,
     ModelChangeEvent,
+    RetryEndEvent,
+    RetryStartEvent,
     ThinkingLevelChangeEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
@@ -69,6 +71,12 @@ from omh.agent.messages import (
     TransformContext,
 )
 from omh.agent.options import AgentOptions, QueueMode
+from omh.agent.retry import (
+    RetryPolicy,
+    is_retryable_assistant_error,
+    retry_delay_ms,
+    wait_for_retry,
+)
 from omh.agent.state import (
     AgentInitialState,
     AgentState,
@@ -80,6 +88,7 @@ from omh.agent.tools import AgentTool, ToolExecutionMode
 from omh.llm.models import clamp_thinking_level, models_are_equal
 from omh.llm.types import (
     AbortController,
+    AbortError,
     AbortSignal,
     AssistantMessage,
     ImageContent,
@@ -129,6 +138,10 @@ class _ActiveRun:
     stop: bool = False
     dialogue: bool = True
     custom_messages: deque[CustomAgentMessage] = field(default_factory=deque)
+    last_assistant: AssistantMessage | None = None
+    last_assistant_id: str | None = None
+    retry_attempt: int = 0
+    retry: RetryStartEvent | None = None
 
 
 _current_run: ContextVar[_ActiveRun | None] = ContextVar("agent_current_run", default=None)
@@ -241,6 +254,12 @@ class Agent:
         self.thinking_budgets: ThinkingBudgets | None = options.thinking_budgets
         self.transport: Transport | None = options.transport
         self.max_retry_delay_ms: float | None = options.max_retry_delay_ms
+        self._retry_policy = options.retry or RetryPolicy()
+
+    async def set_retry_policy(self, policy: RetryPolicy) -> None:
+        """Update the policy read at the next error; retain an already scheduled attempt."""
+        self._ensure_open()
+        self._retry_policy = policy
 
     @property
     def history(self) -> AgentHistory:
@@ -629,6 +648,11 @@ class Agent:
                         first_error = reported_error
                 finally:
                     try:
+                        await self._finish_retry("aborted" if signal.aborted else "exhausted")
+                    except (Exception, asyncio.CancelledError) as error:
+                        if first_error is None:
+                            first_error = error
+                    try:
                         await self._flush_custom_messages()
                     except (Exception, asyncio.CancelledError) as error:
                         if first_error is None:
@@ -683,6 +707,46 @@ class Agent:
         signal = run.abort_controller.signal
         await executor(signal)
         while not signal.aborted and not run.stop:
+            message = run.last_assistant
+            policy = self._retry_policy
+            attempt = run.retry_attempt
+            if (
+                message is not None and is_retryable_assistant_error(message)
+                and policy.enabled and attempt < policy.max_retries
+            ):
+                run.retry_attempt = attempt + 1
+                run.retry = RetryStartEvent(
+                    scope="dialogue", attempt=attempt + 1, max_retries=policy.max_retries,
+                    delay_ms=retry_delay_ms(policy, attempt + 1),
+                    error_message=message.error_message or "Unknown error",
+                )
+                await self._notify_listeners(run.retry)
+                assert run.last_assistant_id is not None
+                entry = self._history.append_omission(run.last_assistant_id)
+                self._state._messages = project_history(self._history.snapshot())
+                await self._notify_listeners(HistoryCommitEvent(
+                    conversation_id=self._history.conversation_id,
+                    entries=(entry,), leaf_id=entry.id,
+                ))
+                try:
+                    await wait_for_retry(run.retry.delay_ms, signal)
+                except (AbortError, asyncio.CancelledError):
+                    if not signal.aborted:
+                        raise
+                if signal.aborted:
+                    break
+                await self._flush_custom_messages()
+                if signal.aborted:
+                    break
+                run.ending = False
+                # Omission may expose a successful assistant tail after an
+                # explicit continue. Resume the request without new input;
+                # public continue_ retains its assistant-tail validation.
+                await self._run_prompt_messages([], signal)
+                continue
+            await self._finish_retry("exhausted")
+            if signal.aborted:
+                break
             messages = self._steering_queue.drain()
             steering = bool(messages)
             if not messages:
@@ -691,6 +755,21 @@ class Agent:
                 break
             run.ending = False
             await self._run_prompt_messages(messages, signal, skip_initial_steering_poll=steering)
+
+    async def _finish_retry(
+        self, result: Literal["success", "exhausted", "aborted"],
+    ) -> None:
+        assert self._active_run is not None
+        run = self._active_run
+        retry = run.retry
+        if retry is None:
+            return
+        run.retry = None
+        await self._notify_listeners(RetryEndEvent(
+            scope=retry.scope, attempt=retry.attempt, max_retries=retry.max_retries,
+            delay_ms=retry.delay_ms, result=result,
+            error_message=None if result == "success" else self._state.error_message,
+        ))
 
     def _finish_run(self, run: _ActiveRun) -> None:
         self._state._is_streaming = False
@@ -905,12 +984,22 @@ class Agent:
             self._reduce_state(event)
             assert self._active_run is not None
             self._active_run.messages.extend(snapshot_messages([message]))
+            if isinstance(message, AssistantMessage):
+                self._active_run.last_assistant = message
+                self._active_run.last_assistant_id = entry.id
             await self._notify_listeners(HistoryCommitEvent(
                 conversation_id=self._history.conversation_id, entries=(entry,), leaf_id=entry.id,
             ))
         else:
             self._reduce_state(event)
         await self._notify_listeners(event)
+        if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage):
+            if event.message.stop_reason != "error":
+                assert self._active_run is not None
+                self._active_run.retry_attempt = 0
+                await self._finish_retry(
+                    "aborted" if event.message.stop_reason == "aborted" else "success",
+                )
         if isinstance(event, (TurnEndEvent, AgentEndEvent)):
             await self._flush_custom_messages()
 
@@ -926,7 +1015,12 @@ class Agent:
                 if run is not None:
                     if run.notification_error is None:
                         run.notification_error = error
-                    if not run.ending and not run.settling:
+                    if isinstance(event, RetryStartEvent | RetryEndEvent) or (
+                        run.retry is not None and not isinstance(event, AgentEndEvent | AgentSettledEvent)
+                    ):
+                        self._state._error_message = str(error)
+                        run.abort_controller.abort()
+                    elif not run.ending and not run.settling:
                         run.abort_controller.abort()
                 raise
 
@@ -936,13 +1030,15 @@ class Agent:
         elif isinstance(event, MessageEndEvent):
             self._state._streaming_message = None
             self._state._messages.extend(snapshot_messages([event.message]))
+            if isinstance(event.message, AssistantMessage) and event.message.stop_reason != "error":
+                self._state._error_message = event.message.error_message
         elif isinstance(event, ToolExecutionStartEvent):
             self._state._add_pending_tool_call(event.tool_call_id)
         elif isinstance(event, ToolExecutionEndEvent):
             self._state._remove_pending_tool_call(event.tool_call_id)
         elif isinstance(event, TurnEndEvent):
             message = event.message
-            if getattr(message, "stop_reason", None) in {"error", "aborted", "length"}:
+            if getattr(message, "stop_reason", None) in {"aborted", "length"}:
                 assert self._active_run is not None
                 self._active_run.stop = True
             error_message = getattr(message, "error_message", None)

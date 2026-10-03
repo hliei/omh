@@ -15,6 +15,7 @@ from omh.agent.hooks import (
     PrepareRequest,
 )
 from omh.agent.messages import ConvertToLlm, TransformContext
+from omh.agent.retry import RetryPolicy
 from omh.agent.state import AgentInitialState
 from omh.agent.stream_fn import StreamFn
 from omh.agent.tools import ToolExecutionMode
@@ -64,3 +65,4 @@ class AgentOptions:
     transport: Transport | None = None
     max_retry_delay_ms: float | None = None
     conversation_id: str | None = None
+    retry: RetryPolicy | None = None

@@ -247,11 +247,11 @@ custom `StreamFn` receives the full normalized `TranscriptContext` and the
 | `system_sections` | Read-only copy of the expected named base sections applied at the next new prompt. |
 | `is_busy` | True from activity acceptance through preparation, execution, terminal listeners, and their accepted prompt chain; also true while an idle custom submission and its notifications settle. |
 | `activity_kind` | `"dialogue"` while a prompt or continuation is unsettled; `None` during an idle custom submission or when idle. |
-| `is_streaming` | True throughout the dialogue activity, including request preparation and terminal listeners. |
+| `is_streaming` | True throughout the dialogue activity, including request preparation, retry backoff, and terminal listeners. |
 | `is_closed` | True after permanent closure finishes; closure rejects new work from its start. |
 | `streaming_message` | Current partial assistant message, if any. |
 | `pending_tool_calls` | Tool call ids currently executing, tracked from tool execution events. |
-| `error_message` | Error text from the most recent failed/aborted turn or ordinary notification failure. Final notification failure preserves the completed outcome. |
+| `error_message` | Error text from the most recent failed/aborted turn or ordinary notification failure; a later non-error response clears the previous failure. Final notification failure preserves the completed outcome. |
 
 All state fields above are read-only. History and state reads, accepted inputs,
 queue previews, hook message views, provider requests, and each listener's event
@@ -348,6 +348,67 @@ failed notifications can prevent subsequent notices for that message.
 The runnable offline [history example](../examples/history.py) demonstrates
 both idle submission and submission from a tool.
 
+## Dialogue retries
+
+The Agent automatically retries completed assistant responses with
+`stop_reason="error"` whose `error_message` matches selected transient provider
+failures: overload, temporary rate limits or 429, 500/502/503/504/520/524,
+network/connection/timeouts, premature stream endings, and explicit retry
+guidance. Account balance, billing, subscription limits, exhausted quota, and
+context overflow are excluded first. Throttling messages that mention a request
+limit remain transient; the word "limit" alone does not indicate context overflow.
+Aborted and length responses do not enter this retry path. Tools, host hooks,
+credentials, thrown exceptions, and saving/listener failures retain their own
+failure handling and do not enter response classification.
+
+Configure it with `AgentOptions.retry=RetryPolicy(...)` or
+`await agent.set_retry_policy(policy)`, including while busy:
+
+```python
+from omh.agent import RetryPolicy
+
+# Disable automatic dialogue retry, including after an SDK upgrade.
+await agent.set_retry_policy(RetryPolicy(enabled=False))
+```
+
+`RetryPolicy` is immutable and defaults to `enabled=True`, `max_retries=3`,
+`base_delay_ms=2000`, and `max_agent_delay_ms=60000`. The initial request does
+not count. Each consecutive error chain gets its own budget; every non-error
+assistant response, including a tool-call response, resets it immediately.
+Default waits are 2, 4, and 8 seconds; longer budgets double the delay up to
+60 seconds per attempt, with no jitter. Budgets must be non-negative integers;
+delays must be finite and non-negative. Zero retries, delay, or cap are valid.
+`max_retry_delay_ms` remains the separate provider request option.
+
+Before a retry, the Agent appends a `ContextEditHistoryEntry` with
+`replacement=None` targeting only the failed assistant. It emits
+`history_commit` after the omission is committed and refreshes effective context.
+Raw failures and any completed tool side effects remain in history; decoded
+history restores the same omissions. Each retry prepares a new request from
+canonical history and live model/thinking/tools, then calls `prepare_request`.
+Request overrides are single-use; base sections keep the current prompt's
+snapshot. Custom messages accepted during backoff are committed at the safe
+boundary before the next request.
+
+Each scheduled attempt emits `RetryStartEvent` (`type="retry_start"`) with
+`scope="dialogue"`, `attempt` (starting at 1), `max_retries`, `delay_ms`, and
+`error_message`. The error chain emits one `RetryEndEvent`
+(`type="retry_end"`) with those fields and `result="success"`, `"exhausted"`,
+or `"aborted"`; success has no error text, while other results carry the most
+recent failure. The `summary` scope is reserved for summary retries; this release
+only schedules dialogue retries. Retry events are ordinary awaited notifications,
+so their callbacks still see busy and cannot start a prompt.
+
+Busy and streaming remain true throughout backoff. Queued input does not shorten
+the wait; cancelling a prompt/idle waiter leaves Agent-owned work running.
+Explicit `abort()` or `close()` cancels the wait and prevents the next request,
+including when called inside `retry_start`. Policy changes apply at the next
+error: disabling retry or lowering its budget does not revoke an already
+scheduled attempt or change its delay. Exhaustion alone does not cancel the
+activity; eligible queued input may continue at the outer loop boundary.
+The whole activity emits one final `agent_settled` after all loops and retry
+notifications finish. See the offline [retry example](../examples/retry.py).
+
 ## Input queues
 
 Applications can queue messages while the Agent is idle or running:
@@ -357,11 +418,11 @@ Applications can queue messages while the Agent is idle or running:
 
 Both queues are FIFO. `agent.steering_mode` and `agent.follow_up_mode` select how many messages a drain takes and default to `"one-at-a-time"`; `"all"` takes every message currently queued. `agent.has_queued_messages()` reports whether either queue is non-empty, and `agent.peek_queued_messages()` previews the messages selected for the next turn without consuming them, preferring steering over follow-up. `clear_steering_queue()`, `clear_follow_up_queue()`, and `clear_all_queues()` remove queued messages explicitly.
 
-Queue consumption follows the loop's scheduling boundaries. The initial poll injects steering queued before the run starts. After each completed turn, the loop polls steering; a natural tool continuation or a pending steering message keeps the turn going without an extra request. Steering that arrives while `prepare_next_turn` runs is picked up only when the earlier poll returned nothing, so `one-at-a-time` never consumes two messages in the same turn. A truncated or error turn leaves unconsumed queues in place, and an aborted run does not drain them; only consumption or explicit clearing removes them.
+Queue consumption follows the loop's scheduling boundaries. The initial poll injects steering queued before the run starts. After each completed turn, the loop polls steering; a natural tool continuation or a pending steering message keeps the turn going without an extra request. Steering that arrives while `prepare_next_turn` runs is picked up only when the earlier poll returned nothing, so `one-at-a-time` never consumes two messages in the same turn. An error response exits the inner loop; the Agent selects retry first, then may consume eligible queued input at the outer boundary even when retries are exhausted or disabled. A truncated turn leaves unconsumed queues in place, and an aborted run does not drain them; only consumption or explicit clearing removes them. Standalone loops exit on errors without this outer coordination.
 
 `finish_turn`'s `"end"` decision still stops without polling either queue. Its `"continue"` decision guarantees at least one next request, which a natural tool continuation, a steering message, or a follow-up can satisfy without an additional request.
 
-Input queued during a successful `agent_end` notification is consumed before
+Input queued during an `agent_end` notification after success or error is consumed before
 the dialogue settles, starting another loop with the same activity signal.
 Steering still takes priority and respects its mode. This produces multiple
 `agent_start`/`agent_end` cycles and one final `agent_settled`. Abort and a valid
@@ -490,8 +551,9 @@ completed `message`, its `tool_results`, the loop `context`, and the
 `"end"` stops the run immediately without polling queues or making another
 request; `"continue"` guarantees at least one next request, which a natural
 tool continuation already satisfies without an extra request. Error and
-aborted responses still call the hook, but remain hard exits and ignore its
-decision.
+aborted responses still call the hook, but exit the inner loop and ignore its
+decision. The Agent coordinates response retries and eligible queued input after
+an error; an effective `"end"` on a non-error response stops the whole activity.
 
 The hooks are also public, assignable attributes on the Agent
 (`agent.prepare_request`, `agent.prepare_next_turn`,
@@ -691,6 +753,7 @@ Applications import the public Agent, loop entries, and contracts from
 | [`events.py`](../src/omh/agent/events.py) | Event contracts and awaited delivery to an event sink |
 | [`state.py`](../src/omh/agent/state.py) | Initial values and read-only Agent observations |
 | [`history.py`](../src/omh/agent/history.py) | Conversation identity, append-only records, and history snapshots |
+| [`retry.py`](../src/omh/agent/retry.py) | Selected provider-response classification, retry policy, and cancellable backoff |
 | [`data.py`](../src/omh/agent/data.py), [`isolation.py`](../src/omh/agent/isolation.py) | Agent history validation and isolated views around the open loop contracts |
 | [`options.py`](../src/omh/agent/options.py), [`loop_config.py`](../src/omh/agent/loop_config.py) | Agent construction options and standalone loop configuration |
 | [`messages.py`](../src/omh/agent/messages.py) | Application messages and model-input conversion contracts |
@@ -714,9 +777,9 @@ turn scheduling. Provider transport and transcript primitives remain in
 
 The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
-events, and cooperative cancellation. Applications supply
-executable tools and own application-level session files, compaction and retry
-policies, resource discovery, and UI/CLI behavior.
+events, bounded dialogue retries, and cooperative cancellation. Applications supply
+executable tools and retry configuration and own application-level session files,
+compaction, resource discovery, and UI/CLI behavior.
 
 The experimental Durable Agent SDK owns persistent Sessions, recovery,
 compaction, tree navigation, resource loading, and built-in filesystem/process
@@ -728,6 +791,11 @@ do not validate a live service or performance.
 
 ## Migration from mutable Agent state
 
+- Dialogue retry is enabled by default. A transient error can now add model
+  requests, raw failure records, and omission records before the activity settles.
+  Pass `AgentOptions.retry=RetryPolicy(enabled=False)` to retain one response
+  attempt per chain. Observe `agent_settled` for final completion and `retry_start`/
+  `retry_end` for progress. Exhaustion permits eligible queued input to continue.
 - Pass initial messages through `AgentInitialState.messages`; use `prompt`,
   `steer`, or `follow_up` for later input, or `await submit_custom_message(...)`
   to record custom context without a model response. Assigning or appending to
