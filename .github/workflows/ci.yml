@@ -92,7 +92,7 @@ jobs:
           unexpected = sorted(
               name
               for name in wheel_names
-              if name.startswith(("tests/", "docs/", "examples/", "omh/agent/durable/"))
+              if name.startswith(("tests/", "docs/", "examples/", "omh/agent/durable/", "coding_agent/"))
           )
           if unexpected:
               sys.exit(f"{wheel} contains unexpected entries: {unexpected}")
