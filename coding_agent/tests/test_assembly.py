@@ -53,8 +53,10 @@ async def test_no_model_and_failed_destination_leave_current_session_usable(tmp_
         await CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, stream_fn=OfflineStream())).new_session()
     runtime = CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=()))
     current = await runtime.new_session()
-    with pytest.raises(RuntimeError, match="Close"):
+    with pytest.raises(FileNotFoundError):
         await runtime.open_session(tmp_path / "missing")
+    assert runtime.current_session is current
+    assert not current.agent.state.is_closed
     await current.prompt("still usable")
     await current.agent.close()
     replacement = await runtime.new_session()

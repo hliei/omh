@@ -98,6 +98,7 @@ from omh.agent.retry import (
 )
 from omh.agent.state import (
     AgentInitialState,
+    AgentQueueSnapshot,
     AgentState,
     derive_system_sections,
     snapshot_tools,
@@ -205,6 +206,9 @@ class _PendingMessageQueue:
         if self.mode == "all":
             return copy.deepcopy(self._messages)
         return copy.deepcopy(self._messages[:1])
+
+    def snapshot(self) -> tuple[AgentMessage, ...]:
+        return tuple(copy.deepcopy(self._messages))
 
     def drain(self) -> list[AgentMessage]:
         drained = self.peek()
@@ -560,6 +564,13 @@ class Agent:
         """
         steering = self._steering_queue.peek()
         return steering if steering else self._follow_up_queue.peek()
+
+    def get_queued_messages(self) -> AgentQueueSnapshot:
+        """Read both complete queues without consuming, including after close."""
+        return AgentQueueSnapshot(
+            steering=self._steering_queue.snapshot(),
+            follow_up=self._follow_up_queue.snapshot(),
+        )
 
     async def submit_custom_message(self, message: CustomAgentMessage) -> None:
         """Commit custom context without requesting a model response.

@@ -1036,6 +1036,18 @@ closed. History, effective context, queue previews, modes, and queue presence
 remain readable; explicit queue clearing and existing unsubscribe functions
 remain usable. `abort()` and `wait_for_idle()` remain safe after close.
 
+`agent.get_queued_messages()` returns an `AgentQueueSnapshot` with complete
+`steering` and `follow_up` tuples, regardless of the configured drain modes.
+The snapshot's message data is isolated from the queues. Reading it does not
+consume inputs and remains available after close. `peek_queued_messages()`
+continues to preview only the next drain, with steering priority.
+
+The independent [coding-agent application](../coding_agent/README.md#prepare-close-and-switch)
+coordinates new/open/switch by preparing a candidate, closing the old Agent,
+then publishing it and rebinding application subscriptions. It retains retired
+sessions and complete queue snapshots so unsaved history can still be saved or
+exported. SDK closure itself does not provide this application handoff.
+
 Close owns internal execution and bindings. The host still owns shared provider
 clients, connection pools, and long-lived tool resources. Each tool invocation
 must release its own handles or processes before returning. Uncooperative work

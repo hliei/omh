@@ -44,6 +44,14 @@ class AgentInitialState:
     messages: list[AgentMessage] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AgentQueueSnapshot:
+    """All pending inputs, separated by queue and isolated from the Agent."""
+
+    steering: tuple[AgentMessage, ...] = ()
+    follow_up: tuple[AgentMessage, ...] = ()
+
+
 class AgentState:
     """Read-only observations. Mutable message elements are isolated copies."""
 

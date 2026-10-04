@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import copy
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import time
@@ -12,9 +13,11 @@ from typing import Literal
 from omh.agent import (
     Agent,
     AgentEvent,
+    AgentHistory,
     AgentInitialState,
     AgentMessage,
     AgentOptions,
+    AgentQueueSnapshot,
     AgentTool,
     CompactionResult,
     HistoryCommitEvent,
@@ -50,6 +53,13 @@ from coding_agent.resources import ApplicationResources, load_resources
 
 ToolName = Literal["read", "bash", "edit", "write"]
 SaveState = Literal["pending", "saved", "unsaved"]
+RuntimeListener = Callable[[AgentEvent, AbortSignal], Awaitable[None] | None]
+
+
+@dataclass(eq=False, slots=True)
+class _Subscription:
+    listener: RuntimeListener
+    unsubscribe: Callable[[], None] = lambda: None
 
 
 @dataclass(slots=True)
@@ -108,7 +118,15 @@ class ApplicationSession:
         self._save_error: Exception | None = None
         self._saved_ids = {entry.id for entry in agent.history.entries} if saved else set()
         self._file_lock = asyncio.Lock()
+        self._retained_queues: AgentQueueSnapshot | None = None
         agent.subscribe(self._on_history_commit)
+
+    @property
+    def queued_messages(self) -> AgentQueueSnapshot:
+        """Complete isolated queues, frozen at retirement for retained sessions."""
+        if self._retained_queues is not None:
+            return copy.deepcopy(self._retained_queues)
+        return self.agent.get_queued_messages()
 
     @property
     def save_state(self) -> SaveState:
@@ -242,10 +260,90 @@ class CodingAgentRuntime:
     def __init__(self, options: CodingAgentOptions) -> None:
         self.options = options
         self.current_session: ApplicationSession | None = None
+        self._preparing = False
+        self._switch_task: asyncio.Task[ApplicationSession] | None = None
+        self._subscriptions: list[_Subscription] = []
+        self._retained_sessions: list[ApplicationSession] = []
 
-    def _ensure_available(self) -> None:
-        if self.current_session is not None and not self.current_session.agent.state.is_closed:
-            raise RuntimeError("Close the current session before creating or opening another")
+    @property
+    def retained_sessions(self) -> tuple[ApplicationSession, ...]:
+        """Retired sessions in switch order; history remains saveable/exportable."""
+        return tuple(self._retained_sessions)
+
+    def subscribe(self, listener: RuntimeListener) -> Callable[[], None]:
+        """Follow Agent events across session replacements, in registration order."""
+        subscription = _Subscription(listener)
+        if (self.current_session is not None and not self.current_session.agent.state.is_closed
+                and not self._switching()):
+            subscription.unsubscribe = self.current_session.agent.subscribe(listener)
+        self._subscriptions.append(subscription)
+
+        def unsubscribe() -> None:
+            subscription.unsubscribe()
+            if subscription in self._subscriptions:
+                self._subscriptions.remove(subscription)
+
+        return unsubscribe
+
+    def _switching(self) -> bool:
+        return self._switch_task is not None and not self._switch_task.done()
+
+    async def wait_for_switch(self) -> ApplicationSession:
+        """Observe the latest handoff; cancellation ends only this wait."""
+        task = self._switch_task
+        if task is None:
+            return self._current()
+        if not task.done() and self.current_session is not None:
+            # Use the SDK wait boundary to reject an activity awaiting itself.
+            idle = asyncio.create_task(self.current_session.agent.wait_for_idle())
+            try:
+                await asyncio.gather(idle, asyncio.shield(task))
+            finally:
+                idle.cancel()
+            return task.result()
+        return await asyncio.shield(task)
+
+    async def _publish(
+        self, session: ApplicationSession, *, previous_history: AgentHistory | None,
+    ) -> ApplicationSession:
+        old = self.current_session
+        if (previous_history is not None and old is not None and session.path == old.path
+                and (old.agent.state.is_busy or old.agent.history != previous_history)):
+            raise RuntimeError("Wait for stable idle history before reopening the current session file")
+        try:
+            if old is not None:
+                await old.agent.close()
+        finally:
+            # A failed terminal notification still retires the old instance.
+            if old is None or old.agent.state.is_closed:
+                if old is not None:
+                    old._retained_queues = old.agent.get_queued_messages()
+                    self._retained_sessions.append(old)
+                self.current_session = session
+                for subscription in self._subscriptions:
+                    subscription.unsubscribe()
+                    subscription.unsubscribe = session.agent.subscribe(subscription.listener)
+        return session
+
+    async def _replace_session(
+        self, path: str | Path | None = None, *, display_name: str | None = None,
+    ) -> ApplicationSession:
+        if self._preparing or self._switching():
+            raise RuntimeError("A session switch is already in progress")
+        self._preparing = True
+        try:
+            previous_history = (self.current_session.agent.history
+                                if path is not None and self.current_session is not None else None)
+            # Keep cancellation in preparation separate from the owned handoff.
+            await asyncio.sleep(0)
+            session = await (self._prepare_new_session(display_name=display_name)
+                             if path is None else self._prepare_open_session(path))
+            await asyncio.sleep(0)
+            self._switch_task = asyncio.create_task(self._publish(session, previous_history=previous_history))
+            self._switch_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+        finally:
+            self._preparing = False
+        return await asyncio.shield(self._switch_task)
 
     def _assemble(self, decoded: DecodedHistory | None = None) -> tuple[
         AgentOptions, Path, str | None, ApplicationResources, dict[str, str],
@@ -281,7 +379,10 @@ class CodingAgentRuntime:
         return assembled, cwd, fallback_message, resources, sections
 
     async def new_session(self, *, display_name: str | None = None) -> ApplicationSession:
-        self._ensure_available()
+        """Prepare a fresh identity, close the old Agent, then publish it."""
+        return await self._replace_session(display_name=display_name)
+
+    async def _prepare_new_session(self, *, display_name: str | None = None) -> ApplicationSession:
         options, cwd, _, resources, sections = self._assemble()
         agent = Agent(options)
         await agent.set_system_sections(sections)
@@ -293,11 +394,13 @@ class CodingAgentRuntime:
             agent, cwd=cwd, path=path, display_name=display_name,
             resources=resources, resource_options=self.options,
         )
-        self.current_session = session
         return session
 
     async def open_session(self, path: str | Path) -> ApplicationSession:
-        self._ensure_available()
+        """Prepare a saved identity before closing and replacing the old Agent."""
+        return await self._replace_session(path)
+
+    async def _prepare_open_session(self, path: str | Path) -> ApplicationSession:
         destination = _path(path, Path(self.options.cwd or Path.cwd()).expanduser().resolve())
         raw = destination.read_bytes()
         decoded = decode_history(raw)
@@ -315,8 +418,11 @@ class CodingAgentRuntime:
             saved=True, model_fallback_message=fallback_message, resources=resources,
             resource_options=self.options,
         )
-        self.current_session = session
         return session
+
+    async def switch_session(self, path: str | Path) -> ApplicationSession:
+        """Prepare a saved conversation before retiring the current Agent."""
+        return await self.open_session(path)
 
     def _current(self) -> ApplicationSession:
         if self.current_session is None:
