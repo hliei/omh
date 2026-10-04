@@ -2,7 +2,7 @@
 
 `omh.durable` is the experimental Durable Agent SDK within omh. The main SDK entry is the [in-process Agent](../agent.md). An application supplies a Session, model registry, tools, and explicit invocation Context. The harness accepts work, records its restart state, and drives model and tool calls through durable intent and settlement boundaries.
 
-This document and its chapters are implementation contracts for maintainers and coding agents. Public declarations and tests remain the place to verify exact signatures and executable behavior. See the [domain glossary](../../CONTEXT.md) for canonical terms.
+This document and its chapters are implementation contracts for maintainers and development agents. Public declarations and tests remain the place to verify exact signatures and executable behavior. See the [domain glossary](../../CONTEXT.md) for canonical terms.
 
 For a runnable introduction, see [Durable getting started](getting-started.md). These contracts apply to `AgentHarness`; the in-process Agent has its own execution and cancellation rules.
 

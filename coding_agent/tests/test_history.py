@@ -99,7 +99,7 @@ def complete_history():
 async def test_all_records_roundtrip_and_continue_from_latest_projection(tmp_path):
     from support import OfflineStream, model
 
-    from coding_agent import CodingAgentOptions, CodingAgentRuntime
+    from coding_agent import AgentSessionRuntime, CodingAgentOptions
 
     history = complete_history()
     text = encode_history(history, cwd=str(tmp_path), display_name="all records")
@@ -110,7 +110,7 @@ async def test_all_records_roundtrip_and_continue_from_latest_projection(tmp_pat
     path = tmp_path / "all.jsonl"
     path.write_text(text)
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, available_models=(model("physical"),), stream_fn=stream, tools=()))
+    runtime = AgentSessionRuntime(CodingAgentOptions(cwd=tmp_path, available_models=(model("physical"),), stream_fn=stream, tools=()))
     session = await runtime.open_session(path)
     assert session.agent.history == history
     assert session.agent.state.thinking_level == "high"
@@ -127,7 +127,7 @@ async def test_all_records_roundtrip_and_continue_from_latest_projection(tmp_pat
     assert "summarized original" not in projection
     assert "inactive branch" not in projection
     assert "hidden_key" not in projection
-    reopened = await CodingAgentRuntime(runtime.options).open_session(path)
+    reopened = await AgentSessionRuntime(runtime.options).open_session(path)
     assert reopened.agent.history == session.agent.history
     assert history.entries[-1] in reopened.agent.history.entries
 

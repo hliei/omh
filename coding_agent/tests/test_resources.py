@@ -4,7 +4,7 @@ from omh.agent import AgentInitialState, AgentOptions, PromptTemplateSource, Ski
 from omh.llm.utils.transcript import get_current_system_prompt, get_current_tools
 from support import OfflineStream, model
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime
+from coding_agent import AgentSessionRuntime, CodingAgentOptions
 
 
 def user_texts(context):
@@ -41,11 +41,11 @@ async def test_new_and_reopened_sessions_assemble_ordered_resources_and_actual_t
             (explicit, "explicit"), (project, "project"), (global_dir, "global"))),
         agent_options=AgentOptions(initial_state=AgentInitialState(system_prompt="raw host instructions")),
     )
-    session = await CodingAgentRuntime(options).new_session()
+    session = await AgentSessionRuntime(options).new_session()
     if reopen:
         path = await session.save(project / "history.jsonl")
         await session.agent.close()
-        session = await CodingAgentRuntime(options).open_session(path)
+        session = await AgentSessionRuntime(options).open_session(path)
     assert not stream.requests
     assert session.resources.skills[0].source == "global"
     assert [template.source for template in session.resources.templates] == ["global", "project", "explicit"]
@@ -68,7 +68,7 @@ async def test_custom_base_retains_context_and_catalog_requires_actual_reader(tm
     visible = skill(tmp_path / "visible" / "SKILL.md", name="visible", description="Visible guidance")
     hidden = skill(tmp_path / "hidden" / "SKILL.md", name="hidden", description="Hidden guidance", hidden=True)
     stream = OfflineStream()
-    session = await CodingAgentRuntime(CodingAgentOptions(
+    session = await AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=tools, custom_prompt="Custom base",
         skill_sources=(SkillSource(visible), SkillSource(hidden)),
     )).new_session()
@@ -88,7 +88,7 @@ async def test_string_input_expands_skill_before_template_at_acceptance(tmp_path
     template = tmp_path / "skill:review.md"
     template.write_text("template must not override skill")
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(),
         skill_sources=(SkillSource(path),), template_sources=(PromptTemplateSource(template),),
     ))
@@ -113,7 +113,7 @@ async def test_templates_cache_until_reload_and_explicit_skills_reread_body(tmp_
     template = tmp_path / "greet.md"
     template.write_text('Hello $1 / $2 / ${3:-default}')
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(),
         skill_sources=(SkillSource(path),), template_sources=(PromptTemplateSource(template),),
     ))
@@ -135,7 +135,7 @@ async def test_templates_cache_until_reload_and_explicit_skills_reread_body(tmp_
 async def test_unknown_and_unreadable_skill_keeps_helper_passthrough_and_diagnostics(tmp_path, entry):
     path = skill(tmp_path / "review" / "SKILL.md")
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(),
         skill_sources=(SkillSource(path), SkillSource("missing-skills")),
     ))
@@ -176,7 +176,7 @@ async def test_busy_reload_preserves_sections_and_tool_batch_then_syncs_next_pro
         agent_options=AgentOptions(initial_state=AgentInitialState(system_prompt="raw original"),
                                    before_tool_call=before_tool),
     )
-    runtime = CodingAgentRuntime(options)
+    runtime = AgentSessionRuntime(options)
     session = await runtime.new_session()
     waiter = asyncio.create_task(session.prompt([
         SystemMessage(content="raw appended", timestamp=1), UserMessage(content="read file", timestamp=1),
@@ -241,7 +241,7 @@ async def test_retry_uses_expanded_input_and_original_sections_after_reload(tmp_
             return result
         return captured(selected, context, options)
 
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(),
         skill_sources=(SkillSource(path),), template_sources=(PromptTemplateSource(template),),
         agent_options=AgentOptions(retry=RetryPolicy(base_delay_ms=0)),
@@ -276,7 +276,7 @@ async def test_retry_uses_expanded_input_and_original_sections_after_reload(tmp_
 async def test_failed_resource_preparation_leaves_session_and_destination_untouched(tmp_path):
     stream = OfflineStream()
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=("read",))
-    runtime = CodingAgentRuntime(options)
+    runtime = AgentSessionRuntime(options)
     session = await runtime.new_session()
     destination = await session.save("backup.jsonl")
     raw = destination.read_bytes().rstrip(b"\n")
@@ -292,7 +292,7 @@ async def test_failed_resource_preparation_leaves_session_and_destination_untouc
     assert session.resources == resources
     assert session.agent.state.system_sections == sections
     assert [tool.name for tool in session.agent.state.tools] == ["read"]
-    prepared = CodingAgentRuntime(options)
+    prepared = AgentSessionRuntime(options)
     with pytest.raises(ValueError):
         await prepared.open_session(destination)
     assert prepared.current_session is None
@@ -309,7 +309,7 @@ async def test_queued_template_is_expanded_before_reload_and_keeps_images(tmp_pa
     template = tmp_path / "greet.md"
     template.write_text('old $1')
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(),
         template_sources=(PromptTemplateSource("greet.md"),),
     ))
@@ -333,7 +333,7 @@ async def test_typed_messages_and_direct_sdk_input_keep_literal_slash_syntax(tmp
 
     (tmp_path / "greet.md").write_text("expanded $1")
     stream = OfflineStream()
-    session = await CodingAgentRuntime(CodingAgentOptions(
+    session = await AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(),
         template_sources=(PromptTemplateSource("greet.md"),),
     )).new_session()
@@ -350,7 +350,7 @@ async def test_typed_messages_and_direct_sdk_input_keep_literal_slash_syntax(tmp
 async def test_reopen_syncs_current_resources_without_rewriting_history_or_raw_content(tmp_path):
     (tmp_path / "AGENTS.md").write_text("old context")
     path = skill(tmp_path / "review" / "SKILL.md", description="old skill catalog")
-    original = await CodingAgentRuntime(CodingAgentOptions(
+    original = await AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=("read",),
         skill_sources=(SkillSource(path),), session_file="reopen.jsonl",
         agent_options=AgentOptions(initial_state=AgentInitialState(system_prompt="raw preserved")),
@@ -360,7 +360,7 @@ async def test_reopen_syncs_current_resources_without_rewriting_history_or_raw_c
     await original.agent.close()
     (tmp_path / "AGENTS.md").write_text("new context")
     stream = OfflineStream()
-    reopened = await CodingAgentRuntime(CodingAgentOptions(
+    reopened = await AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=("write",), custom_prompt="new custom base",
     )).open_session(tmp_path / "reopen.jsonl")
     assert reopened.agent.history == history and not stream.requests
@@ -380,7 +380,7 @@ async def test_failed_skill_expansion_still_runs_template_helper_and_parse_diagn
     broken = tmp_path / "broken.md"
     broken.write_text("---\ninvalid frontmatter line\n---\nbroken body")
     stream = OfflineStream()
-    session = await CodingAgentRuntime(CodingAgentOptions(
+    session = await AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(),
         skill_sources=(SkillSource(path),),
         template_sources=(PromptTemplateSource(template), PromptTemplateSource(broken)),

@@ -74,7 +74,12 @@ jobs:
           assert "omh/py.typed" in sdk_names
           assert "omh/session_backends/sqlite/migrations/001_initial.sql" in sdk_names
           assert "coding_agent/py.typed" in app_names
-          assert "coding_agent/runtime.py" in app_names
+          assert {
+              "coding_agent/agent_session.py",
+              "coding_agent/agent_session_runtime.py",
+              "coding_agent/session_manager.py",
+          } <= set(app_names)
+          assert "coding_agent/runtime.py" not in app_names
           assert not any(name.startswith(("omh/", "tests/", ".scratch/", "examples/")) for name in app_names)
           metadata_name = next(name for name in app_names if name.endswith(".dist-info/METADATA"))
           metadata = Parser().parsestr(zipfile.ZipFile(app).read(metadata_name).decode())
@@ -95,6 +100,10 @@ jobs:
           from pathlib import Path
           import omh
           import coding_agent
+          from coding_agent import AgentSession, AgentSessionRuntime, SessionManager
+          assert AgentSession.__module__ == "coding_agent.agent_session"
+          assert AgentSessionRuntime.__module__ == "coding_agent.agent_session_runtime"
+          assert SessionManager.__module__ == "coding_agent.session_manager"
           assert "site-packages" in str(Path(omh.__file__))
           assert "site-packages" in str(Path(coding_agent.__file__))
           PY

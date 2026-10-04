@@ -20,7 +20,7 @@ from omh.agent import (
 )
 
 if TYPE_CHECKING:
-    from coding_agent.runtime import CodingAgentOptions
+    from coding_agent.agent_session import CodingAgentOptions
 
 ApplicationDiagnostic = ResourceDiagnostic | SkillDiagnostic | PromptTemplateDiagnostic
 

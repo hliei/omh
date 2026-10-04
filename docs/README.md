@@ -14,15 +14,6 @@ The [Agent contract](agent.md) describes the stateful Agent and its standalone l
 - [Prompt templates](agent.md#prompt-templates), with an offline [template example](../examples/prompt_templates.py).
 - [Events](agent.md#events-and-subscribers), [cancellation](agent.md#cancellation), [standalone loop](agent.md#standalone-loop).
 
-## Coding application
-
-The independently installable [coding_agent application](../coding_agent/README.md)
-assembles host models and coding tools, saves complete JSONL history, and reopens
-conversations through the SDK. It assembles project instructions and skills,
-expands application input, and supports explicit resource reload; see the
-[resource flow example](../coding_agent/examples/resource_flow.py). Its [offline example](../coding_agent/examples/history_roundtrip.py)
-uses real temporary files without provider credentials.
-
 ## LLM layer
 
 [LLM layer](llm.md) covers model/provider configuration, transcript inputs, request options, credentials, and streaming. `omh.llm` is shared by both Agent SDKs and can be used independently.

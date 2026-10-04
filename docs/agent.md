@@ -1042,12 +1042,6 @@ The snapshot's message data is isolated from the queues. Reading it does not
 consume inputs and remains available after close. `peek_queued_messages()`
 continues to preview only the next drain, with steering priority.
 
-The independent [coding-agent application](../coding_agent/README.md#prepare-close-and-switch)
-coordinates new/open/switch by preparing a candidate, closing the old Agent,
-then publishing it and rebinding application subscriptions. It retains retired
-sessions and complete queue snapshots so unsaved history can still be saved or
-exported. SDK closure itself does not provide this application handoff.
-
 Close owns internal execution and bindings. The host still owns shared provider
 clients, connection pools, and long-lived tool resources. Each tool invocation
 must release its own handles or processes before returning. Uncooperative work
@@ -1479,15 +1473,3 @@ do not validate a live service or performance.
 
 Run the offline [history example](../examples/history.py) with
 `python examples/history.py` after installing the SDK.
-
-
-## Installed application verification
-
-The separate [coding-agent application](../coding_agent/README.md) composes the
-public Agent and coding tools with application-owned JSONL saving, resources
-and session switching. Its [offline long conversation example](../coding_agent/examples/long_conversation.py)
-exercises threshold compaction after a large tool result, independent dialogue
-and summary retries, bounded overflow recovery, and identity/context preservation
-through save/reopen. The SDK distribution contains no application code; the
-application declares its SDK dependency and has separate checks. Both projects
-verify sdist→wheel builds and installed-package behavior outside the repository.

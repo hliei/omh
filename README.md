@@ -8,13 +8,6 @@ omh (oh-my-harness) provides the building blocks for Python agent applications:
 - [`omh.llm`](docs/llm.md): A standalone model API for streaming text, thinking, and tool calls, with built-in DeepSeek support.
 - [`omh.durable`](docs/durable/README.md): An experimental Durable Agent SDK with persistent sessions and interruption recovery.
 
-The separate [coding_agent application](coding_agent/README.md) provides an embeddable
-coding conversation with default tools, complete JSONL save/reopen, project
-resources, input expansion, explicit reload and prepared session switching.
-Its [offline long conversation example](coding_agent/examples/long_conversation.py)
-combines coding tools, compaction, retry, bounded recovery and save/reopen. Its
-`omh-coding-agent` distribution depends on the SDK.
-
 To get started with omh:
 
 - Follow the [getting-started guide](docs/getting-started.md) to run an Agent and give it tools.

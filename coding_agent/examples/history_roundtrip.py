@@ -15,7 +15,7 @@ from omh.llm.types import (
 )
 from omh.llm.utils.event_stream import create_assistant_message_event_stream
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime
+from coding_agent import AgentSessionRuntime, CodingAgentOptions
 
 
 async def main() -> None:
@@ -46,7 +46,7 @@ async def main() -> None:
 
     with TemporaryDirectory() as temporary:
         cwd = Path(temporary)
-        runtime = CodingAgentRuntime(CodingAgentOptions(
+        runtime = AgentSessionRuntime(CodingAgentOptions(
             cwd=cwd, model=model, stream_fn=stream_fn, session_file="conversation.jsonl",
         ))
         session = await runtime.new_session(display_name="Offline coding")

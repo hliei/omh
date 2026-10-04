@@ -15,7 +15,7 @@ from omh.agent import (
 from omh.llm.types import AssistantMessage, TextContent, UserMessage, empty_usage
 from support import OfflineStream, model
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime, decode_history
+from coding_agent import AgentSessionRuntime, CodingAgentOptions, decode_history
 
 
 @pytest.mark.parametrize("automatic", [False, True])
@@ -39,7 +39,7 @@ async def test_committed_summary_save_failure_preserves_result_and_retired_histo
             retry=RetryPolicy(base_delay_ms=0),
         ),
     )
-    runtime = CodingAgentRuntime(options)
+    runtime = AgentSessionRuntime(options)
     old = await runtime.new_session()
     await old.save()
     old.follow_up("keep unconsumed input")
@@ -101,7 +101,7 @@ async def test_committed_summary_save_failure_preserves_result_and_retired_histo
     await old.export("unsaved-copy.jsonl")
     assert old.save_state == "unsaved"
     await old.save("repaired.jsonl")
-    restored = await CodingAgentRuntime(replace(options, agent_options=AgentOptions())).open_session("repaired.jsonl")
+    restored = await AgentSessionRuntime(replace(options, agent_options=AgentOptions())).open_session("repaired.jsonl")
     assert restored.agent.history == history
     assert restored.agent.state.messages == messages
     assert old.save_state == "saved" and old.save_error is None
@@ -113,7 +113,7 @@ async def test_committed_summary_save_failure_preserves_result_and_retired_histo
 @pytest.mark.parametrize("terminal", ["agent_settled", "compaction_end"])
 async def test_terminal_application_prompt_has_fresh_signal_and_is_saved(tmp_path, terminal):
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(), session_file="history.jsonl",
         agent_options=AgentOptions(
             initial_state=AgentInitialState(messages=[
@@ -177,7 +177,7 @@ async def test_custom_tool_boundary_and_explicit_end_survive_application_roundtr
         ToolCall(id="write", name="write", arguments={"path": "effect.txt", "content": "completed"}),
         ToolCall(id="read", name="read", arguments={"path": "large.txt"}),
     ]])
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=replace(model(), context_window=4096), stream_fn=stream,
         session_file="history.jsonl", tools=("write", "read"),
         agent_options=AgentOptions(
