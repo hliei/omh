@@ -108,6 +108,17 @@ from omh.agent.messages import (
 )
 from omh.agent.options import AgentOptions, QueueMode
 from omh.agent.retry import RetryPolicy
+from omh.agent.skills import (
+    Skill,
+    SkillDiagnostic,
+    SkillExpansionResult,
+    SkillLoadResult,
+    SkillSource,
+    expand_skill_command,
+    format_skills_for_prompt,
+    load_skills,
+    load_skills_from_dir,
+)
 from omh.agent.state import (
     AgentInitialState,
     AgentState,
@@ -133,6 +144,15 @@ from omh.llm.types import ModelThinkingLevel as ThinkingLevel
 from omh.llm.types import OnPayload, OnProviderStreamEvent, OnResponse
 
 __all__ = [
+    "Skill",
+    "SkillDiagnostic",
+    "SkillExpansionResult",
+    "SkillLoadResult",
+    "SkillSource",
+    "expand_skill_command",
+    "format_skills_for_prompt",
+    "load_skills",
+    "load_skills_from_dir",
     "build_system_sections",
     "ProjectContextFile",
     "ProjectContextResult",
