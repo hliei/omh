@@ -6,7 +6,7 @@ Read [the Agent contract](docs/agent.md) before changing the in-process Agent or
 
 `CONTEXT.md` defines the project's domain vocabulary; [architecture decisions](docs/adr/README.md) record important trade-offs. Read [domain documentation](docs/agents/domain.md) when exploring domain concepts or changing a design.
 
-Keep this guide focused on the project's module responsibilities, stable boundaries, and development commands as implementation takes shape. General-purpose skills belong in the developer's personal environment.
+Keep this guide focused on the project's module responsibilities, stable boundaries, and development commands as implementation takes shape. General-purpose skills belong in the developer's personal environment. For work in an independently packaged project, follow its local `AGENTS.md` and documentation.
 
 ## SDK layout
 

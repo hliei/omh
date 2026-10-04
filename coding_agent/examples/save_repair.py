@@ -14,7 +14,7 @@ from omh.llm.types import (
 )
 from omh.llm.utils.event_stream import create_assistant_message_event_stream
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime, decode_history
+from coding_agent import AgentSessionRuntime, CodingAgentOptions, decode_history
 
 
 async def main() -> None:
@@ -44,7 +44,7 @@ async def main() -> None:
         options = CodingAgentOptions(
             cwd=cwd, model=model, stream_fn=stream_fn, tools=(), session_file=path,
         )
-        runtime = CodingAgentRuntime(options)
+        runtime = AgentSessionRuntime(options)
         session = await runtime.new_session()
         try:
             await runtime.prompt("Keep this input even if saving fails.")
@@ -64,7 +64,7 @@ async def main() -> None:
         # Explicit save authorizes overwriting this chosen destination in full.
         await runtime.save_session()
         assert session.save_state == "saved"
-        reopened = await CodingAgentRuntime(options).open_session(path)
+        reopened = await AgentSessionRuntime(options).open_session(path)
         assert reopened.agent.history == retained
         await runtime.continue_()
         assert requests == 1

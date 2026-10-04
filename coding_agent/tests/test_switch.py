@@ -13,12 +13,12 @@ from omh.agent import (
 from omh.llm.types import TextContent, ToolCall
 from support import OfflineStream, model
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime, decode_history
+from coding_agent import AgentSessionRuntime, CodingAgentOptions, decode_history
 
 
 async def test_new_and_open_retire_old_instances_and_preserve_identity(tmp_path):
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
+    runtime = AgentSessionRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
     first = await runtime.new_session()
     await first.prompt("first conversation")
     await first.save("first.jsonl")
@@ -42,7 +42,7 @@ async def test_new_and_open_retire_old_instances_and_preserve_identity(tmp_path)
 @pytest.mark.parametrize("entry", ["new_session", "open_session", "switch_session"])
 async def test_cancelled_switch_waiter_still_publishes_after_tool_finishes(tmp_path, entry):
     stream = OfflineStream([[ToolCall(id="hold", name="hold", arguments={})]])
-    runtime = CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
+    runtime = AgentSessionRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
     old = await runtime.new_session()
     started, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
@@ -105,7 +105,7 @@ async def test_cancelled_switch_waiter_still_publishes_after_tool_finishes(tmp_p
 @pytest.mark.parametrize("cancel_waiter", [False, True])
 async def test_close_notification_error_is_reported_after_publication(tmp_path, cancel_waiter):
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
+    runtime = AgentSessionRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
     old = await runtime.new_session()
     settled, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     error = LookupError("old terminal notification failed")
@@ -147,7 +147,7 @@ async def test_switch_retains_unsaved_history_and_complete_separate_queues(tmp_p
     occupied = tmp_path / "occupied.jsonl"
     occupied.write_text("existing file")
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(), session_file=occupied,
     ))
     old = await runtime.new_session()
@@ -176,7 +176,7 @@ async def test_switch_retains_unsaved_history_and_complete_separate_queues(tmp_p
     assert old.save_state == "unsaved"
     await old.save("repaired.jsonl")
     assert old.save_state == "saved"
-    restored = await CodingAgentRuntime(runtime.options).open_session("repaired.jsonl")
+    restored = await AgentSessionRuntime(runtime.options).open_session("repaired.jsonl")
     assert restored.agent.history == history
     assert not restored.agent.has_queued_messages()
     await runtime.prompt("new input")
@@ -191,7 +191,7 @@ async def test_switch_retains_unsaved_history_and_complete_separate_queues(tmp_p
 async def test_target_preparation_failure_keeps_current_usable(tmp_path, failure):
     stream = OfflineStream()
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=())
-    runtime = CodingAgentRuntime(options)
+    runtime = AgentSessionRuntime(options)
     old = await runtime.new_session()
     await old.prompt("saved source")
     target = tmp_path / "target.jsonl"
@@ -236,7 +236,7 @@ async def test_target_preparation_failure_keeps_current_usable(tmp_path, failure
 @pytest.mark.parametrize("entry", ["new_session", "open_session", "switch_session"])
 async def test_cancelled_preparation_keeps_old_current_and_no_standby_work(tmp_path, monkeypatch, entry):
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
+    runtime = AgentSessionRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
     old = await runtime.new_session()
     target = tmp_path / "target.jsonl"
     target.write_text(await old.export())
@@ -267,7 +267,7 @@ async def test_cancelled_preparation_keeps_old_current_and_no_standby_work(tmp_p
 
 async def test_runtime_subscriptions_rebind_and_callback_switch_rejects_self_wait(tmp_path):
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
+    runtime = AgentSessionRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=()))
     starts = []
     unsubscribe = runtime.subscribe(lambda event, signal: starts.append(event) if isinstance(event, AgentStartEvent) else None)
     old = await runtime.new_session()
@@ -292,7 +292,7 @@ async def test_runtime_subscriptions_rebind_and_callback_switch_rejects_self_wai
 
 async def test_reopening_busy_current_file_rejects_a_stale_prepared_history(tmp_path):
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(), session_file="current.jsonl",
     ))
     old = await runtime.new_session()
@@ -320,7 +320,7 @@ async def test_reopening_busy_current_file_rejects_a_stale_prepared_history(tmp_
 
 
 async def test_terminal_listener_cannot_await_its_own_pending_handoff(tmp_path):
-    runtime = CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=()))
+    runtime = AgentSessionRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=()))
     old = await runtime.new_session()
     settled, closing = asyncio.Event(), asyncio.Event()
 
@@ -343,7 +343,7 @@ async def test_terminal_listener_cannot_await_its_own_pending_handoff(tmp_path):
 
 
 async def test_same_file_handoff_rejects_history_changed_during_preparation(tmp_path, monkeypatch):
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=(), session_file="current.jsonl",
     ))
     old = await runtime.new_session()

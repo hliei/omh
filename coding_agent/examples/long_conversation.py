@@ -36,7 +36,7 @@ from omh.llm.utils.event_stream import (
     create_assistant_message_event_stream,
 )
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime, decode_history
+from coding_agent import AgentSessionRuntime, CodingAgentOptions, decode_history
 
 
 class OfflineCodingStream:
@@ -113,7 +113,7 @@ async def main() -> None:
                 retry=RetryPolicy(max_retries=1, base_delay_ms=0),
             ),
         )
-        runtime = CodingAgentRuntime(options)
+        runtime = AgentSessionRuntime(options)
         session = await runtime.new_session(display_name="Long coding conversation")
         events: list[AgentEvent] = []
 

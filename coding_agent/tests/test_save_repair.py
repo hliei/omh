@@ -8,7 +8,7 @@ from omh.agent import Agent, AgentInitialState, AgentOptions, RetryPolicy
 from omh.llm.types import ToolCall
 from support import OfflineStream, model
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime, decode_history
+from coding_agent import AgentSessionRuntime, CodingAgentOptions, decode_history
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ async def test_unsaved_rejects_application_work_without_changing_history(tmp_pat
     path = tmp_path / "occupied.jsonl"
     path.write_text("existing file")
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(), session_file=path,
     ))
     session = await runtime.new_session()
@@ -95,7 +95,7 @@ async def test_partial_write_requires_full_save_before_resuming(tmp_path, fail_w
     path = tmp_path / "history.jsonl"
     stream = OfflineStream()
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=(), session_file=path)
-    runtime = CodingAgentRuntime(options)
+    runtime = AgentSessionRuntime(options)
     session = await runtime.new_session()
     if phase != "initial":
         await session.prompt("first")
@@ -110,7 +110,7 @@ async def test_partial_write_requires_full_save_before_resuming(tmp_path, fail_w
     assert session.save_state == "unsaved"
     damaged = path.read_bytes()
     exported = await runtime.export_session("copy.jsonl")
-    copy = await CodingAgentRuntime(options).open_session(tmp_path / "copy.jsonl")
+    copy = await AgentSessionRuntime(options).open_session(tmp_path / "copy.jsonl")
     assert copy.agent.history == history
     assert copy.agent.state.messages == messages
     assert decode_history(exported).history == history
@@ -126,11 +126,11 @@ async def test_partial_write_requires_full_save_before_resuming(tmp_path, fail_w
         assert decode_history(await runtime.export_session(path)).history == history
     assert session.save_state == "saved"
     assert session.save_error is None
-    reopened = await CodingAgentRuntime(options).open_session(path)
+    reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == history
     assert reopened.agent.state.messages == messages
     await session.prompt("after repair")
-    reopened = await CodingAgentRuntime(options).open_session(path)
+    reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == session.agent.history
     assert len({entry.id for entry in reopened.agent.history.entries}) == len(reopened.agent.history.entries)
 
@@ -139,7 +139,7 @@ async def test_persistent_failure_can_export_and_rebind_complete_history(tmp_pat
     path = tmp_path / "history.jsonl"
     stream = OfflineStream()
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=(), session_file=path)
-    session = await CodingAgentRuntime(options).new_session()
+    session = await AgentSessionRuntime(options).new_session()
     await session.prompt("first")
     error = fail_writes(path, "w")
     history = session.agent.history
@@ -158,7 +158,7 @@ async def test_persistent_failure_can_export_and_rebind_complete_history(tmp_pat
     assert session.save_error is None
     assert path.read_bytes() == damaged
     await session.prompt("continue on replacement")
-    reopened = await CodingAgentRuntime(options).open_session(session.path)
+    reopened = await AgentSessionRuntime(options).open_session(session.path)
     assert reopened.agent.history == session.agent.history
 
 
@@ -176,7 +176,7 @@ async def test_serialization_failure_preserves_committed_assistant_without_retry
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(), session_file="history.jsonl",
         agent_options=AgentOptions(retry=RetryPolicy(base_delay_ms=0)),
     )
-    session = await CodingAgentRuntime(options).new_session()
+    session = await AgentSessionRuntime(options).new_session()
     events = []
     session.agent.subscribe(lambda event, signal: events.append(event.type))
     with monkeypatch.context() as patch:
@@ -201,7 +201,7 @@ async def test_serialization_failure_preserves_committed_assistant_without_retry
     await independent.prompt("SDK remains usable")
     assert len(stream.requests) == 2
     await session.save()
-    reopened = await CodingAgentRuntime(options).open_session(session.path)
+    reopened = await AgentSessionRuntime(options).open_session(session.path)
     assert reopened.agent.history == history
 
 
@@ -212,7 +212,7 @@ async def test_save_and_terminal_failures_release_prompt_idle_and_close_waiters(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=("write",), session_file=path,
         agent_options=AgentOptions(retry=RetryPolicy(base_delay_ms=0)),
     )
-    session = await CodingAgentRuntime(options).new_session()
+    session = await AgentSessionRuntime(options).new_session()
     error = fail_writes(path, "a", contains='"role": "toolResult"')
     settling, release = asyncio.Event(), asyncio.Event()
     events = []
@@ -253,6 +253,6 @@ async def test_save_and_terminal_failures_release_prompt_idle_and_close_waiters(
     history = session.agent.history
     assert decode_history(await session.export()).history == history
     await session.save()
-    reopened = await CodingAgentRuntime(options).open_session(path)
+    reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == history
     assert reopened.agent.state.messages == messages

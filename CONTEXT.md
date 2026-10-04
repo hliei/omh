@@ -8,14 +8,6 @@
 绑定一份对话的进程内 SDK 运行时入口，拥有该对话的完整历史、有效上下文、运行策略、配置、输入队列与运行状态。宿主提供模型、工具与策略配置，并负责会话保存、读取与选择；Agent 本身不提供跨进程中断恢复保证。
 _Avoid_: AgentHarness、AgentLane
 
-**coding-agent（编码助手应用）**:
-构建于 Agent 之上的编码助手应用，负责工作目录与配置组装、会话选择与切换、历史保存与读取，以及用户交互。
-_Avoid_: Agent（指 SDK 运行时）
-
-**应用会话**:
-coding-agent 保存、读取和选择的一份对话，在当前进程中由独立的 Agent 实例承载。
-_Avoid_: Session（指 Durable Agent SDK 的持久化会话）
-
 **Agent conversation identity（Agent 对话身份）**:
 SDK 随完整对话历史持有的稳定会话身份，保存和恢复时保持，新建对话时重新建立。
 _Avoid_: 文件路径、模型请求的 session_id、Durable Session

@@ -4,8 +4,8 @@ import pytest
 from support import OfflineStream, model
 
 from coding_agent import (
+    AgentSessionRuntime,
     CodingAgentOptions,
-    CodingAgentRuntime,
     decode_history,
     encode_history,
 )
@@ -16,29 +16,29 @@ async def test_unterminated_tail_survives_open_append_reopen(tmp_path, tail):
     path = tmp_path / "history.jsonl"
     stream = OfflineStream()
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, tools=(), session_file=path)
-    original = await CodingAgentRuntime(options).new_session()
+    original = await AgentSessionRuntime(options).new_session()
     await original.prompt("first")
     raw = path.read_bytes().rstrip(b"\n") + tail
     path.write_bytes(raw)
-    opened = await CodingAgentRuntime(options).open_session(path)
+    opened = await AgentSessionRuntime(options).open_session(path)
     assert path.read_bytes() == raw + b"\n"
     assert opened.agent.history == original.agent.history
     await opened.prompt("second")
     assert path.read_bytes().startswith(raw + b"\n")
-    reopened = await CodingAgentRuntime(options).open_session(path)
+    reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == opened.agent.history
     assert len(stream.requests) == 2
 
 
 async def test_bad_json_lines_are_skipped_but_missing_relations_fail(tmp_path):
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=())
-    runtime = CodingAgentRuntime(options)
+    runtime = AgentSessionRuntime(options)
     original = await runtime.new_session()
     await original.prompt("first")
     text = await original.export()
     path = tmp_path / "bad.jsonl"
     path.write_text('{bad\n\n' + text.replace('\n', '\nnot json\n'))
-    reopened = await CodingAgentRuntime(options).open_session(path)
+    reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == original.agent.history
     lines = text.splitlines()
     # Replace an actual parent record with broken JSON; do not hide the missing relationship.
@@ -46,14 +46,14 @@ async def test_bad_json_lines_are_skipped_but_missing_relations_fail(tmp_path):
     path.write_text("\n".join(lines))
     before = path.read_bytes()
     with pytest.raises(ValueError):
-        await CodingAgentRuntime(options).open_session(path)
+        await AgentSessionRuntime(options).open_session(path)
     assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("change", ["version", "format", "payload", "record", "parent", "nonfinite", "header"])
 async def test_valid_json_semantic_errors_fail_without_repairing_file(tmp_path, change):
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=())
-    session = await CodingAgentRuntime(options).new_session()
+    session = await AgentSessionRuntime(options).new_session()
     await session.prompt("first")
     lines = [json.loads(line) for line in (await session.export()).splitlines()]
     if change == "version":
@@ -74,7 +74,7 @@ async def test_valid_json_semantic_errors_fail_without_repairing_file(tmp_path, 
     path.write_text("\n".join(json.dumps(line) for line in lines))
     before = path.read_bytes()
     with pytest.raises(ValueError):
-        await CodingAgentRuntime(options).open_session(path)
+        await AgentSessionRuntime(options).open_session(path)
     assert path.read_bytes() == before
 
 
@@ -82,7 +82,7 @@ async def test_explicit_save_and_export_before_first_prompt(tmp_path):
     from omh.agent import CustomAgentMessage
 
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=(), session_file="new.jsonl")
-    runtime = CodingAgentRuntime(options)
+    runtime = AgentSessionRuntime(options)
     session = await runtime.new_session(display_name="before prompt")
     await session.agent.submit_custom_message(CustomAgentMessage(custom_type="note", content="context"))
     assert session.save_state == "pending"
@@ -103,7 +103,7 @@ async def test_first_save_includes_seed_history_and_custom_records(tmp_path):
 
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=(), session_file="new.jsonl",
         agent_options=AgentOptions(initial_state=AgentInitialState(messages=[UserMessage(content="seed", timestamp=1)])))
-    session = await CodingAgentRuntime(options).new_session()
+    session = await AgentSessionRuntime(options).new_session()
     initial = session.agent.history
     assert not session.path.exists()
     await session.agent.submit_custom_message(CustomAgentMessage(custom_type="note", content="new"))
@@ -119,7 +119,7 @@ async def test_missing_sdk_discriminator_is_not_inferred(tmp_path, field):
     from omh.llm.types import TextContent, UserMessage
 
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=())
-    session = await CodingAgentRuntime(options).new_session()
+    session = await AgentSessionRuntime(options).new_session()
     await session.prompt(UserMessage(content=[TextContent(text="input")], timestamp=1))
     records = [json.loads(line) for line in (await session.export()).splitlines()]
     user = next(entry["message"] for entry in records[1:] if entry.get("message", {}).get("role") == "user")

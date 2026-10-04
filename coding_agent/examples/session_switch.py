@@ -4,10 +4,18 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime, decode_history
 from omh.agent import AgentSettledEvent, AgentStartEvent
-from omh.llm.types import AssistantMessage, DoneEvent, Model, ModelCost, TextContent, empty_usage
+from omh.llm.types import (
+    AssistantMessage,
+    DoneEvent,
+    Model,
+    ModelCost,
+    TextContent,
+    empty_usage,
+)
 from omh.llm.utils.event_stream import create_assistant_message_event_stream
+
+from coding_agent import AgentSessionRuntime, CodingAgentOptions, decode_history
 
 
 def offline_stream(model, context, options):
@@ -28,7 +36,7 @@ async def main():
     )
     with TemporaryDirectory() as directory:
         cwd = Path(directory)
-        runtime = CodingAgentRuntime(CodingAgentOptions(
+        runtime = AgentSessionRuntime(CodingAgentOptions(
             cwd=cwd, model=model, stream_fn=offline_stream, tools=(),
         ))
         starts = []

@@ -1,12 +1,10 @@
 # Agent 统一拥有进程内运行策略
 
-状态：已接受并实施。Agent 的手动／自动压缩、对话与摘要重试、有界容量恢复、编码工具及资源 helpers 已交付；coding-agent 已交付独立应用会话、保存／重开与切换基础。print／interactive 仍属后续范围。历史及生命周期见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)，当前行为见 [Agent 契约](../agent.md)和[应用契约](../../coding_agent/README.md)。
+状态：已接受并实施。Agent 的手动／自动压缩、对话与摘要重试、有界容量恢复、编码工具及资源 helpers 已交付。历史及生命周期见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)，当前行为见 [Agent 契约](../agent.md)。
 
 扩展现有 `Agent`，使其成为完整的进程内运行时公开入口，统一拥有 `compact()`、自动压缩、选定的重试策略、有效上下文管理，以及取消、输入队列和运行事件的协调。宿主提供模型、工具与策略配置，SDK 负责执行策略，并定义压缩记录的含义、有效上下文的构建与恢复规则。内部可按职责拆分模块，调用者通过 Agent 使用这些能力。
 
-相比由应用会话层拥有这些策略、SDK 仅提供循环和辅助函数，这一选择增加 SDK 的状态与生命周期协调责任，使嵌入式调用者和编码助手应用共享长对话运行规则，避免各自重建策略执行与上下文恢复逻辑。coding-agent 负责工作目录与配置组装、会话选择与切换、JSONL 保存与读取，以及后续的 print / interactive 交互；应用项目与 SDK 的构建和依赖边界沿用 [ADR-0003](0003-single-sdk-distribution.md)。
-
-交付先提供 Python 可嵌入能力及应用会话基础，再接 print，最后考虑 interactive。首版设计范围不因后续产品入口而提前包含其交互实现。
+相比由宿主拥有这些策略、SDK 仅提供循环和辅助函数，这一选择增加 SDK 的状态与生命周期协调责任，使嵌入式调用者共享长对话运行规则，避免各自重建策略执行与上下文恢复逻辑。宿主负责工作目录与配置组装、对话选择与切换、历史保存与读取及用户交互；SDK 的构建和依赖边界沿用 [ADR-0003](0003-single-sdk-distribution.md)。
 
 能力迁入 Agent 后，尽量保持所选功能的既定可观察行为，包括调用前置条件、忙碌时处理、取消、结果和上下文更新时点。职责迁移本身不构成简化或重新定义这些行为的理由；确因兼容性或迁移冲突需要调整时，应说明具体冲突、提出最小差异并单独确认。内部组织和 Python 接口可以适配，首版功能范围以已确认的选择为准。
 
@@ -20,8 +18,8 @@
 
 允许宿主先构造并检查未配置模型的 Agent；开始 prompt、continue 或 compact 前必须提供模型及必要的上下文窗口、最大输出等容量信息。模型可由宿主自定义，不要求使用内置模型目录或特定 provider。相比允许未知模型占位继续执行并停用容量策略，这给默认长对话策略提供明确前置条件，代价是原先依赖占位配置运行的调用者需补齐模型信息。独立 loop 的开放模型行为保留。
 
-SDK 提供 read、bash、edit、write 的工具工厂，供 Python 嵌入者直接使用；coding-agent 按工作目录与配置创建所选工具，再显式注入 Agent。相比只在应用包中提供工具，这让嵌入者使用基础 coding 能力时只需依赖 SDK，代价是 SDK 同时承担这些工具的行为与平台适配维护。工具工厂的可用性与 Agent 的默认工具集合分开；Agent 不自行装载四工具。
+SDK 提供 read、bash、edit、write 的工具工厂，供 Python 嵌入者直接使用；宿主按工作目录与配置创建所选工具，再显式注入 Agent。相比只在应用包中提供工具，这让嵌入者使用基础 coding 能力时只需依赖 SDK，代价是 SDK 同时承担这些工具的行为与平台适配维护。工具工厂的可用性与 Agent 的默认工具集合分开；Agent 不自行装载四工具。
 
-首版资源范围包含 AGENTS/context 文件、skills 的目录与显式调用，以及 prompt templates 的名称调用与参数展开。SDK 提供可复用的资源加载、系统指令装配和输入展开辅助能力；coding-agent 按工作目录与配置调用并组装，Agent 接收组装后的配置与已展开的消息。相比让 Agent 解释产品调用语法，这保留宿主的产品输入与配置组装职责，同时供 Python 嵌入者复用资源行为。动态扩展、包管理和 themes 留待后续；命名基础指令的更新与生效边界见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)。
+首版资源范围包含 AGENTS/context 文件、skills 的目录与显式调用，以及 prompt templates 的名称调用与参数展开。SDK 提供可复用的资源加载、系统指令装配和输入展开辅助能力；宿主按工作目录与配置调用并组装，Agent 接收组装后的配置与已展开的消息。相比让 Agent 解释产品调用语法，这保留宿主的产品输入与配置组装职责，同时供 Python 嵌入者复用资源行为。动态扩展、包管理和 themes 留待后续；命名基础指令的更新与生效边界见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)。
 
 本决定演进 [ADR-0007](0007-agent-execution-boundaries.md) 中将压缩与自动重试留待后续阶段的职责安排，这些能力现已交付。传统 Agent 与 durable 仍是两条执行路径；借鉴能力归属不增加事务、跨进程中断恢复或副作用重放保证。完整历史的进程内所有权、Agent 的对话绑定与首版历史操作范围见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)；公共通知与 hooks 的迁移见 [ADR-0011](0011-agent-awaited-event-listeners.md)、[ADR-0012](0012-agent-request-projection-and-overrides.md) 及 [ADR-0013](0013-agent-explicit-activity-end.md)，具体签名与实施规则见 Agent 契约。

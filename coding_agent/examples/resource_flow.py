@@ -16,7 +16,7 @@ from omh.llm.types import (
 from omh.llm.utils.event_stream import create_assistant_message_event_stream
 from omh.llm.utils.transcript import get_current_system_prompt
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime
+from coding_agent import AgentSessionRuntime, CodingAgentOptions
 
 
 async def main() -> None:
@@ -49,7 +49,7 @@ async def main() -> None:
         prompts.mkdir()
         template = prompts / "review.md"
         template.write_text("Review $1 and explain the result.")
-        runtime = CodingAgentRuntime(CodingAgentOptions(
+        runtime = AgentSessionRuntime(CodingAgentOptions(
             cwd=cwd, model=model, stream_fn=stream_fn, tools=("read",),
             session_file="conversation.jsonl", custom_prompt="You review code.",
             skill_sources=(SkillSource("skills", "project"),),

@@ -1,7 +1,7 @@
 from omh.llm.types import ToolCall, UserMessage
 from support import OfflineStream, model
 
-from coding_agent import CodingAgentOptions, CodingAgentRuntime
+from coding_agent import AgentSessionRuntime, CodingAgentOptions
 
 
 async def test_default_tools_prompt_save_reopen_and_continue(tmp_path):
@@ -13,7 +13,7 @@ async def test_default_tools_prompt_save_reopen_and_continue(tmp_path):
     ])
     path = tmp_path / "history.jsonl"
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, session_file=path)
-    runtime = CodingAgentRuntime(options)
+    runtime = AgentSessionRuntime(options)
     session = await runtime.new_session(display_name="Demo")
     assert [tool.name for tool in session.agent.state.tools] == ["read", "bash", "edit", "write"]
     assert session.save_state == "pending"
@@ -24,7 +24,7 @@ async def test_default_tools_prompt_save_reopen_and_continue(tmp_path):
     assert session.save_state == "saved"
     assert len(stream.requests) == 4
     saved = session.agent.history
-    reopened = await CodingAgentRuntime(options).open_session(path)
+    reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == saved
     assert reopened.agent.state.messages == session.agent.state.messages
     assert reopened.display_name == "Demo"
@@ -32,7 +32,7 @@ async def test_default_tools_prompt_save_reopen_and_continue(tmp_path):
     assert len(stream.requests) == 4
     reopened.agent.steer(UserMessage(content="continue", timestamp=2000))
     await reopened.continue_()
-    again = await CodingAgentRuntime(options).open_session(path)
+    again = await AgentSessionRuntime(options).open_session(path)
     assert again.agent.history == reopened.agent.history
     assert len(stream.requests) == 5
     assert stream.requests[-1][2].session_id == saved.conversation_id
@@ -44,7 +44,7 @@ async def test_history_commit_observers_see_saved_records_in_order(tmp_path):
     from coding_agent import decode_history
 
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, session_file="ordered.jsonl", tools=()))
+    runtime = AgentSessionRuntime(CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, session_file="ordered.jsonl", tools=()))
     session = await runtime.new_session()
     observed = []
 
@@ -74,7 +74,7 @@ async def test_tools_subset_and_current_host_credentials_are_used(tmp_path):
     from omh.agent import AgentOptions
 
     stream = OfflineStream()
-    runtime = CodingAgentRuntime(CodingAgentOptions(
+    runtime = AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=("read", "write"),
         agent_options=AgentOptions(api_key="host-secret", session_id="host-request-id"),
     ))
@@ -94,7 +94,7 @@ async def test_save_failure_retains_observable_state_and_memory(tmp_path):
     stream = OfflineStream()
     path = tmp_path / "occupied.jsonl"
     path.write_text("original file")
-    session = await CodingAgentRuntime(CodingAgentOptions(
+    session = await AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=stream, tools=(), session_file=path,
     )).new_session()
     with pytest.raises(FileExistsError):
@@ -112,7 +112,7 @@ async def test_failed_save_is_not_reported_saved_by_a_later_append(tmp_path):
 
     path = tmp_path / "occupied.jsonl"
     path.write_text("original file")
-    session = await CodingAgentRuntime(CodingAgentOptions(
+    session = await AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=(), session_file=path,
     )).new_session()
     with pytest.raises(FileExistsError):
@@ -133,7 +133,7 @@ async def test_cancelled_waiter_does_not_drop_tool_settlement_or_saved_history(t
 
     stream = OfflineStream([[ToolCall(id="bash", name="bash", arguments={"command": "printf ready; exec sleep 30"})]])
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=stream, session_file="cancelled.jsonl", tools=("bash",))
-    session = await CodingAgentRuntime(options).new_session()
+    session = await AgentSessionRuntime(options).new_session()
     ready = asyncio.Event()
 
     def observe(event, signal):
@@ -151,7 +151,7 @@ async def test_cancelled_waiter_does_not_drop_tool_settlement_or_saved_history(t
     finally:
         session.agent.abort()
         await session.agent.wait_for_idle()
-    saved = await CodingAgentRuntime(options).open_session(session.path)
+    saved = await AgentSessionRuntime(options).open_session(session.path)
     assert saved.agent.history == session.agent.history
     assert saved.save_state == "saved"
     assert not saved.agent.state.is_busy
