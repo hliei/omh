@@ -1260,6 +1260,70 @@ does not interpret slash commands, discover skills, watch files or load
 executable extensions. Run the offline [skills example](../examples/skills_resources.py)
 with `python examples/skills_resources.py` after installing the SDK.
 
+## Prompt templates
+
+`load_prompt_templates(sources, cwd=...)` loads an ordered sequence of
+`PromptTemplateSource(path, source="explicit")`. Hosts select directories or
+explicit `.md` files and assemble their precedence; relative paths resolve
+against `cwd` (the process working directory by default), and `~` expands.
+Directories load only direct, regular `.md` children, including valid file
+symlinks, in sorted name order. Subdirectories are not traversed. No default
+global or project resource directory is selected.
+
+`PromptTemplateLoadResult.templates` preserves source and discovery order,
+including duplicate names. A template stores `name` (the filename without
+`.md`), `description`, `content`, absolute `file_path`, `base_dir` and the
+host-defined `source`. UTF-8 BOM is stripped; frontmatter uses the same YAML
+subset as skills and is removed from the body. A string frontmatter description
+is used when nonempty; otherwise the first nonempty body line is used, truncated
+to 60 characters with `...` appended when longer. An empty body remains valid.
+Missing/unreadable paths, directory listing failures, invalid UTF-8 and malformed
+frontmatter return `.diagnostics` with `path`, `source`, `reason` and `message`;
+other resources still load. Non-Markdown and non-regular files are skipped.
+Duplicate names produce `collision` diagnostics with the first `winner` and
+each `loser`, while both templates remain in the ordered list. Callers own
+diagnostic presentation.
+
+`expand_prompt_template(text, templates)` expands a leading `/name` using the
+first template with that exact, case-sensitive name. Unknown names and unmatched
+input pass through verbatim, including whitespace. `parse_command_args(text)`
+groups single or double quotes and splits on whitespace outside quotes; adjacent
+quoted/unquoted text forms one token, empty tokens are omitted and an unclosed
+quote consumes the remainder. Backslashes, environment variables, command
+substitution and backticks are literal text; no shell is executed.
+
+`substitute_args(content, args)` scans only the supplied template body once:
+
+| Placeholder | Result |
+| --- | --- |
+| `$1`, `$2`, ... | One-based positional argument; missing positions and `$0` become empty |
+| `$@`, `$ARGUMENTS` | All parsed arguments joined with one space |
+| `${1:-default}` | Argument 1, or literal default if missing/empty |
+| `${@:-default}`, `${ARGUMENTS:-default}` | All arguments, or literal default if the joined text is empty |
+| `${@:N}`, `${@:N:L}` | Arguments from one-based position N, optionally limited to L; N=0 means 1 and L=0 means none |
+
+Defaults run up to the next `}`; nested default expressions are not a supported
+syntax. Placeholders inside inserted arguments or defaults are never expanded
+again. Unrecognized placeholder forms remain literal.
+
+```python
+from omh.agent import PromptTemplateSource, expand_prompt_template, load_prompt_templates
+
+loaded = load_prompt_templates([PromptTemplateSource("prompts", "project")], cwd=project_dir)
+# Display loaded.diagnostics as appropriate for the host.
+text = expand_prompt_template('/review "two words"', loaded.templates)
+await agent.prompt(text)
+```
+
+The result is ordinary input for `prompt`, `steer` or `follow_up`; an empty
+template produces an empty string and leaves normal input validation to the
+Agent. Templates hold the loaded body until the host explicitly reloads them.
+Expand before submission so retries reuse the accepted text. The helper adds
+no Agent slash-command dispatch, extension-command priority or automatic reload.
+Application skill/template sequencing remains host-owned. Run the offline
+[prompt template example](../examples/prompt_templates.py) with
+`python examples/prompt_templates.py` after installing the SDK.
+
 ## Module organization
 
 Applications import the public Agent, loop entries, and contracts from
@@ -1286,6 +1350,7 @@ Applications import the public Agent, loop entries, and contracts from
 | [`context.py`](../src/omh/agent/context.py) | Conversation messages and executable tools passed to the loop |
 | [`context_files.py`](../src/omh/agent/context_files.py), [`system_prompt.py`](../src/omh/agent/system_prompt.py) | Explicit context-file loading with diagnostics and data-only system section assembly |
 | [`skills.py`](../src/omh/agent/skills.py) | Host-selected skill discovery, source precedence and diagnostics, capability-gated catalogs, and explicit input expansion |
+| [`prompt_templates.py`](../src/omh/agent/prompt_templates.py) | Ordered explicit template loading, diagnostics, quoted arguments and single-pass input expansion |
 | [`hooks.py`](../src/omh/agent/hooks.py) | Request, turn, tool, credential, and queue hooks with their inputs and results |
 | [`stream_fn.py`](../src/omh/agent/stream_fn.py) | Model stream function contract and host-installed default |
 
@@ -1321,6 +1386,12 @@ do not validate a live service or performance.
 
 ## Migration from mutable Agent state
 
+- Hosts can replace template loading and slash-input substitution with
+  `load_prompt_templates([PromptTemplateSource(...)], cwd=...)` and
+  `expand_prompt_template(text, loaded.templates)`. Inspect load diagnostics,
+  then submit the returned string through the existing input APIs. These
+  in-process helpers use host-selected paths and ordinary strings; the durable
+  template types and resource APIs retain their separate contracts.
 - Hosts can use `SkillSource` and `load_skills` to replace their skill discovery,
   add `format_skills_for_prompt(..., tools=actual_tools)` to a system section,
   and pass `expand_skill_command(...).text` to the existing input APIs. Display
