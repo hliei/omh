@@ -9,7 +9,8 @@ omh (oh-my-harness) provides the building blocks for Python agent applications:
 - [`omh.durable`](docs/durable/README.md): An experimental Durable Agent SDK with persistent sessions and interruption recovery.
 
 The separate [coding_agent application](coding_agent/README.md) provides an embeddable
-coding conversation with default tools and complete JSONL save/reopen. Its
+coding conversation with default tools, complete JSONL save/reopen, project
+resources, input expansion and explicit reload. Its
 `omh-coding-agent` distribution depends on the SDK.
 
 To get started with omh:

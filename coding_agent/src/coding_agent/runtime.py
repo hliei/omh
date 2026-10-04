@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from time import time
 from typing import Literal
 
 from omh.agent import (
@@ -18,14 +19,26 @@ from omh.agent import (
     CompactionResult,
     HistoryCommitEvent,
     MessageHistoryEntry,
+    PromptTemplateSource,
+    SkillDiagnostic,
+    SkillSource,
     StreamFn,
     create_bash_tool,
     create_edit_tool,
     create_read_tool,
     create_write_tool,
+    expand_prompt_template,
+    expand_skill_command,
     validate_history,
 )
-from omh.llm.types import AbortSignal, ImageContent, Model, ModelThinkingLevel
+from omh.llm.types import (
+    AbortSignal,
+    ImageContent,
+    Model,
+    ModelThinkingLevel,
+    TextContent,
+    UserMessage,
+)
 
 from coding_agent.history import (
     DecodedHistory,
@@ -33,6 +46,7 @@ from coding_agent.history import (
     encode_entries,
     encode_history,
 )
+from coding_agent.resources import ApplicationResources, load_resources
 
 ToolName = Literal["read", "bash", "edit", "write"]
 SaveState = Literal["pending", "saved", "unsaved"]
@@ -50,11 +64,26 @@ class CodingAgentOptions:
     session_file: str | Path | None = None
     # Credentials, hooks, policies and provider options remain current host code.
     agent_options: AgentOptions = field(default_factory=AgentOptions)
+    agent_dir: str | Path | None = None
+    context_dirs: tuple[str | Path, ...] = ()
+    skill_sources: tuple[SkillSource, ...] = ()
+    template_sources: tuple[PromptTemplateSource, ...] = ()
+    custom_prompt: str | None = None
 
 
 def _path(path: str | Path, cwd: Path) -> Path:
     result = Path(path).expanduser()
     return (result if result.is_absolute() else cwd / result).resolve()
+
+
+def _create_tools(names: tuple[ToolName, ...], cwd: Path) -> list[AgentTool]:
+    factories: dict[str, Callable[[str | Path], AgentTool]] = {
+        "read": create_read_tool, "bash": create_bash_tool,
+        "edit": create_edit_tool, "write": create_write_tool,
+    }
+    if len(set(names)) != len(names) or any(name not in factories for name in names):
+        raise ValueError("tools must be a distinct subset of read/bash/edit/write")
+    return [factories[name](cwd) for name in names]
 
 
 class ApplicationSession:
@@ -64,12 +93,17 @@ class ApplicationSession:
         self, agent: Agent, *, cwd: Path, path: Path | None,
         display_name: str | None, saved: bool = False,
         model_fallback_message: str | None = None,
+        resources: ApplicationResources = ApplicationResources(),
+        resource_options: CodingAgentOptions | None = None,
     ) -> None:
         self.agent = agent
         self.cwd = cwd
         self.path = path
         self.display_name = display_name
         self.model_fallback_message = model_fallback_message
+        self.resources = resources
+        self._resource_options = resource_options
+        self._input_diagnostics: list[SkillDiagnostic] = []
         self._save_state: SaveState = "saved" if saved else "pending"
         self._save_error: Exception | None = None
         self._saved_ids = {entry.id for entry in agent.history.entries} if saved else set()
@@ -88,7 +122,45 @@ class ApplicationSession:
         self, message: str | AgentMessage | list[AgentMessage],
         images: list[ImageContent] | None = None,
     ) -> None:
+        if isinstance(message, str):
+            message = self._expand_input(message)
         await self.agent.prompt(message, images)
+
+    @property
+    def input_diagnostics(self) -> tuple[SkillDiagnostic, ...]:
+        return tuple(self._input_diagnostics)
+
+    def _expand_input(self, text: str) -> str:
+        expanded = expand_skill_command(text, self.resources.skills)
+        self._input_diagnostics.extend(expanded.diagnostics)
+        return expand_prompt_template(expanded.text, self.resources.templates)
+
+    def _queued_input(self, message: str | AgentMessage, images: list[ImageContent] | None) -> AgentMessage:
+        if not isinstance(message, str):
+            if images is not None:
+                raise ValueError("images require string input")
+            return message
+        return UserMessage(
+            content=[TextContent(text=self._expand_input(message)), *(images or [])],
+            timestamp=int(time() * 1000),
+        )
+
+    def steer(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
+        self.agent.steer(self._queued_input(message, images))
+
+    def follow_up(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
+        self.agent.follow_up(self._queued_input(message, images))
+
+    async def reload_resources(self) -> ApplicationResources:
+        """Load current options before publishing next-prompt sections and live tools."""
+        if self._resource_options is None:
+            raise ValueError("Resource reload requires application options")
+        tools = _create_tools(self._resource_options.tools, self.cwd)
+        resources, sections = load_resources(self._resource_options, self.cwd, tools)
+        await self.agent.set_system_sections(sections)
+        await self.agent.set_tools(tools)
+        self.resources = resources
+        return resources
 
     async def continue_(self) -> None:
         await self.agent.continue_()
@@ -166,7 +238,9 @@ class CodingAgentRuntime:
         if self.current_session is not None and not self.current_session.agent.state.is_closed:
             raise RuntimeError("Close the current session before creating or opening another")
 
-    def _assemble(self, decoded: DecodedHistory | None = None) -> tuple[AgentOptions, Path, str | None]:
+    def _assemble(self, decoded: DecodedHistory | None = None) -> tuple[
+        AgentOptions, Path, str | None, ApplicationResources, dict[str, str],
+    ]:
         options = self.options
         cwd = Path(options.cwd or (decoded.cwd if decoded else Path.cwd())).expanduser().resolve()
         initial = options.agent_options.initial_state or AgentInitialState()
@@ -184,30 +258,32 @@ class CodingAgentRuntime:
             raise ValueError("No executable model configured; provide model or fallback_model")
         if fallback_message is not None:
             fallback_message += f"; using {selected.provider}/{selected.id}"
-        factories: dict[str, Callable[[str | Path], AgentTool]] = {"read": create_read_tool, "bash": create_bash_tool,
-                     "edit": create_edit_tool, "write": create_write_tool}
-        if len(set(options.tools)) != len(options.tools) or any(name not in factories for name in options.tools):
-            raise ValueError("tools must be a distinct subset of read/bash/edit/write")
+        tools = _create_tools(options.tools, cwd)
         assembled = replace(
             options.agent_options,
             stream_fn=options.stream_fn or options.agent_options.stream_fn,
             initial_state=replace(
                 initial, model=selected,
                 thinking_level=options.thinking_level if options.thinking_level is not None else initial.thinking_level,
-                tools=[factories[name](cwd) for name in options.tools],
+                tools=tools,
             ),
         )
-        return assembled, cwd, fallback_message
+        resources, sections = load_resources(options, cwd, tools)
+        return assembled, cwd, fallback_message, resources, sections
 
     async def new_session(self, *, display_name: str | None = None) -> ApplicationSession:
         self._ensure_available()
-        options, cwd, _ = self._assemble()
+        options, cwd, _, resources, sections = self._assemble()
         agent = Agent(options)
+        await agent.set_system_sections(sections)
         # The model request identity is independently overridable by the host.
         if options.session_id is None:
             agent.session_id = agent.history.conversation_id
         path = _path(self.options.session_file, cwd) if self.options.session_file is not None else None
-        session = ApplicationSession(agent, cwd=cwd, path=path, display_name=display_name)
+        session = ApplicationSession(
+            agent, cwd=cwd, path=path, display_name=display_name,
+            resources=resources, resource_options=self.options,
+        )
         self.current_session = session
         return session
 
@@ -216,8 +292,9 @@ class CodingAgentRuntime:
         destination = _path(path, Path(self.options.cwd or Path.cwd()).expanduser().resolve())
         raw = destination.read_bytes()
         decoded = decode_history(raw)
-        options, cwd, fallback_message = self._assemble(decoded)
+        options, cwd, fallback_message, resources, sections = self._assemble(decoded)
         agent = Agent.from_history(decoded.history, options)
+        await agent.set_system_sections(sections)
         if options.session_id is None:
             agent.session_id = agent.history.conversation_id
         # Repair only after semantic validation and assembly have succeeded.
@@ -226,7 +303,8 @@ class CodingAgentRuntime:
                 file.write(b"\n")
         session = ApplicationSession(
             agent, cwd=cwd, path=destination, display_name=decoded.display_name,
-            saved=True, model_fallback_message=fallback_message,
+            saved=True, model_fallback_message=fallback_message, resources=resources,
+            resource_options=self.options,
         )
         self.current_session = session
         return session
@@ -241,6 +319,15 @@ class CodingAgentRuntime:
         images: list[ImageContent] | None = None,
     ) -> None:
         await self._current().prompt(message, images)
+
+    def steer(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
+        self._current().steer(message, images)
+
+    def follow_up(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
+        self._current().follow_up(message, images)
+
+    async def reload_resources(self) -> ApplicationResources:
+        return await self._current().reload_resources()
 
     async def continue_(self) -> None:
         await self._current().continue_()

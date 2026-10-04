@@ -50,9 +50,16 @@ async def test_history_commit_observers_see_saved_records_in_order(tmp_path):
 
     async def observe(event, signal):
         if isinstance(event, HistoryCommitEvent):
-            on_disk = decode_history(session.path.read_bytes()).history
-            assert on_disk == session.agent.history
-            assert on_disk.leaf_id == event.leaf_id
+            if session.save_state == "pending":
+                # Resource section synchronization precedes the first user;
+                # automatic saving still waits for a user/assistant commit.
+                assert not session.path.exists()
+                assert all(entry.type != "message" or entry.message.role not in ("user", "assistant")
+                           for entry in session.agent.history.entries)
+            else:
+                on_disk = decode_history(session.path.read_bytes()).history
+                assert on_disk == session.agent.history
+                assert on_disk.leaf_id == event.leaf_id
             observed.extend(entry.id for entry in event.entries)
 
     session.agent.subscribe(observe)
