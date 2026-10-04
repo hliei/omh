@@ -1117,6 +1117,88 @@ The Agent, direct execution, and the stream producer own their work differently:
 The producer task is exposed as `stream.task` for callers that want to await
 or cancel it.
 
+## Project context and system sections
+
+`load_project_context_files` and `build_system_sections`, exported from
+`omh.agent`, let hosts assemble project instructions explicitly. Loading returns
+data without changing an Agent's history or starting a model request. The host
+chooses resource directories and when to apply the resulting sections.
+
+```python
+from omh.agent import build_system_sections, load_project_context_files
+from omh.llm.types import SystemMessage
+
+resources = load_project_context_files(
+    cwd="/path/to/project",
+    agent_dir="/path/to/global-agent-resources",  # optional; no implicit default
+    context_dirs=["/path/to/selected-context"],
+)
+sections = build_system_sections(
+    cwd="/path/to/project",
+    context_files=resources.files,
+    selected_tools=["read", "bash"],
+    tool_snippets={"read": "Read project files", "bash": "Run local commands"},
+    tool_guidelines={"read": ["Use offsets for large files."]},
+)
+message = SystemMessage(content="", sections=dict(sections), timestamp=0)
+```
+
+Pass `message` through `AgentInitialState.messages` to seed a new conversation,
+with executable tools supplied separately through `AgentInitialState.tools`.
+For an existing Agent, `await agent.set_system_sections(sections)` updates its
+expected base sections; the next new prompt commits their differences using the
+existing [configuration contract](#state-and-ownership).
+
+The loader takes keyword-only `cwd`, optional `agent_dir`, and ordered
+`context_dirs`. It expands `~` and resolves relative inputs against the process
+working directory. The cwd is canonicalized before walking its physical
+ancestors. It checks the global directory first, then ancestors from filesystem
+root through cwd, then the explicitly selected directories in supplied order.
+It never scans child directories. Each directory contributes its first readable
+regular file in this priority order:
+
+1. `AGENTS.override.md`
+2. `AGENTS.md`
+3. `AGENTS.MD`
+4. `CLAUDE.md`
+5. `CLAUDE.MD`
+
+UTF-8 input loses its leading BOM and otherwise retains file text, including
+original line endings. Symlinks to regular files are supported. Repeated
+file identities, including hard links and symlink aliases, contribute once; the
+first source wins. On case-insensitive filesystems, candidate names referring to
+the same file are attempted once. A nested linked worktree with readable root
+instructions suppresses the main worktree's repository-root instructions even
+when their candidate names differ. Other ancestor directories still contribute.
+Ordinary repositories, sibling worktrees, bare layouts, and linked worktrees
+without readable root instructions retain normal ancestor inheritance. Git
+metadata is inspected as files; the loader starts no subprocess.
+
+`ProjectContextResult.files` contains ordered `ProjectContextFile` values with
+`path`, `content`, `base_dir`, and `source` (`global`, `project`, or `explicit`).
+`diagnostics` contains `ResourceDiagnostic` values with `path`, `source`, `reason`,
+and a human-readable `message`. Reasons are `read_error`, `not_file`, `duplicate`,
+and `shadowed`. Missing candidates are normal and produce no diagnostic; invalid
+UTF-8, inaccessible candidates, and broken symlinks report a read error and allow
+the next candidate. Hosts display diagnostics themselves; helpers do not print.
+
+`build_system_sections` reads no files and returns an ordered `dict[str, str]`.
+The default sections are `preamble`, `tools`, and `rules`, followed by an optional
+`addendum`, optional `project_context`, and `cwd`. All but `preamble` have matching
+XML-style tags; context paths are attribute-escaped and file content stays as
+instructions. Tool prompt snippets and guidelines contribute only for names in
+the explicit `selected_tools`; the default selection is empty. Rule text is
+trimmed and deduplicated in order. `prompt_guidelines` adds host rules, and
+`append_system_prompt` adds the optional addendum. These inputs describe prompt
+text and do not install tools.
+
+`custom_prompt` replaces the default preamble, tools and rules, including when
+it is an empty string. The addendum, project context and cwd still follow.
+Resource loading and section assembly require no dynamic extension system.
+Applications own reload, watches, directory trust and resource selection.
+Run the offline [context resource example](../examples/context_resources.py)
+with `python examples/context_resources.py` after installing the SDK.
+
 ## Module organization
 
 Applications import the public Agent, loop entries, and contracts from
@@ -1141,6 +1223,7 @@ Applications import the public Agent, loop entries, and contracts from
 | [`tools.py`](../src/omh/agent/tools.py) | Executable tools, result and callback contracts, and model-facing declarations |
 | [`coding_tools/`](../src/omh/agent/coding_tools/) | Host-selected read/bash/edit/write factories, local process and file I/O ownership, and canonical-path mutation coordination |
 | [`context.py`](../src/omh/agent/context.py) | Conversation messages and executable tools passed to the loop |
+| [`context_files.py`](../src/omh/agent/context_files.py), [`system_prompt.py`](../src/omh/agent/system_prompt.py) | Explicit context-file loading with diagnostics and data-only system section assembly |
 | [`hooks.py`](../src/omh/agent/hooks.py) | Request, turn, tool, credential, and queue hooks with their inputs and results |
 | [`stream_fn.py`](../src/omh/agent/stream_fn.py) | Model stream function contract and host-installed default |
 
@@ -1161,9 +1244,9 @@ The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
 events, bounded dialogue and summary retries, manual and automatic compaction,
 one-attempt overflow and truncated-response recovery, host-selected read/bash/edit/write
-tools, and cooperative cancellation.
+tools, explicit context-file loading and system section assembly, and cooperative cancellation.
 Applications supply executable tools and retry configuration and own
-application-level session files, resource discovery, and UI/CLI behavior.
+application-level session files, resource selection and reload, and UI/CLI behavior.
 
 The experimental Durable Agent SDK owns persistent Sessions, recovery,
 compaction, tree navigation, resource loading, and built-in filesystem/process
@@ -1175,6 +1258,12 @@ do not validate a live service or performance.
 
 ## Migration from mutable Agent state
 
+- Hosts can replace hand-written AGENTS discovery with
+  `load_project_context_files(cwd=..., agent_dir=..., context_dirs=...)` and
+  inspect its diagnostics. Use `build_system_sections` for prompt text and pass
+  its output through `SystemMessage.sections` or `set_system_sections`.
+  Existing durable resource APIs keep their own contracts; these helpers
+  introduce no automatic loading on Agent construction or default global path.
 - Dialogue retry is enabled by default. A transient error can now add model
   requests, raw failure records, and omission records before the activity settles.
   Pass `AgentOptions.retry=RetryPolicy(enabled=False)` to retain one response

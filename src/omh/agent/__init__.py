@@ -27,6 +27,12 @@ from omh.agent.compaction import (
     CompactionSettings,
 )
 from omh.agent.context import AgentContext
+from omh.agent.context_files import (
+    ProjectContextFile,
+    ProjectContextResult,
+    ResourceDiagnostic,
+    load_project_context_files,
+)
 from omh.agent.event_stream import AgentEventStream
 from omh.agent.events import (
     AgentEndEvent,
@@ -112,6 +118,7 @@ from omh.agent.stream_fn import (
     get_default_stream_fn,
     set_default_stream_fn,
 )
+from omh.agent.system_prompt import build_system_sections
 from omh.agent.tools import (
     AgentTool,
     AgentToolCall,
@@ -126,6 +133,11 @@ from omh.llm.types import ModelThinkingLevel as ThinkingLevel
 from omh.llm.types import OnPayload, OnProviderStreamEvent, OnResponse
 
 __all__ = [
+    "build_system_sections",
+    "ProjectContextFile",
+    "ProjectContextResult",
+    "ResourceDiagnostic",
+    "load_project_context_files",
     "BashToolOptions",
     "create_bash_tool",
     "ReadImageProcessor",
