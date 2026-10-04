@@ -16,20 +16,41 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Literal, cast
 
-from omh.agent._async import call_with_signal, maybe_await
-from omh.agent.compaction import (
+from omh.agent.compaction.preparation import (
+    estimate_history_tokens,
+    prepare_compaction,
+)
+from omh.agent.compaction.summarization import compact_with_request
+from omh.agent.compaction.types import (
     CompactionFailure,
     CompactionPreparation,
     CompactionResult,
     CompactionSettings,
     SummaryRequest,
-    compact_with_request,
-    estimate_history_tokens,
-    prepare_compaction,
 )
-from omh.agent.context import AgentContext
-from omh.agent.data import snapshot_messages
-from omh.agent.events import (
+from omh.agent.conversation.data import snapshot_messages
+from omh.agent.conversation.history import (
+    AgentHistory,
+    AgentHistoryEntry,
+    CompactionHistoryEntry,
+    ContextEditHistoryEntry,
+    ConversationHistory,
+    MessageHistoryEntry,
+    history_path,
+    project_history,
+    project_history_records,
+    validate_history,
+)
+from omh.agent.conversation.messages import (
+    AgentMessage,
+    ConvertToLlm,
+    CustomAgentMessage,
+    LoopMessage,
+    TransformContext,
+)
+from omh.agent.execution._async import call_with_signal, maybe_await
+from omh.agent.execution.context import AgentContext
+from omh.agent.execution.events import (
     AgentEndEvent,
     AgentEvent,
     AgentSettledEvent,
@@ -47,19 +68,7 @@ from omh.agent.events import (
     ToolExecutionStartEvent,
     TurnEndEvent,
 )
-from omh.agent.history import (
-    AgentHistory,
-    AgentHistoryEntry,
-    CompactionHistoryEntry,
-    ContextEditHistoryEntry,
-    ConversationHistory,
-    MessageHistoryEntry,
-    history_path,
-    project_history,
-    project_history_records,
-    validate_history,
-)
-from omh.agent.hooks import (
+from omh.agent.execution.hooks import (
     AfterToolCall,
     AgentLoopTurnUpdate,
     AgentRequestUpdate,
@@ -74,21 +83,9 @@ from omh.agent.hooks import (
     PrepareRequest,
     PrepareRequestContext,
 )
-from omh.agent.isolation import isolate_loop_config, isolate_tools
-from omh.agent.loop import (
-    run_agent_loop,
-    run_agent_loop_continue,
-)
-from omh.agent.loop_config import AgentLoopConfig
-from omh.agent.messages import (
-    AgentMessage,
-    ConvertToLlm,
-    CustomAgentMessage,
-    LoopMessage,
-    TransformContext,
-)
-from omh.agent.options import AgentOptions, QueueMode
-from omh.agent.retry import (
+from omh.agent.execution.isolation import isolate_loop_config, isolate_tools
+from omh.agent.execution.loop_config import AgentLoopConfig
+from omh.agent.execution.retry import (
     RetryPolicy,
     is_context_overflow,
     is_recoverable_length,
@@ -96,15 +93,20 @@ from omh.agent.retry import (
     retry_delay_ms,
     wait_for_retry,
 )
-from omh.agent.state import (
+from omh.agent.execution.state import (
     AgentInitialState,
     AgentQueueSnapshot,
     AgentState,
     derive_system_sections,
     snapshot_tools,
 )
-from omh.agent.stream_fn import get_default_stream_fn
-from omh.agent.tools import AgentTool, ToolExecutionMode
+from omh.agent.execution.stream_fn import get_default_stream_fn
+from omh.agent.execution.tools import AgentTool, ToolExecutionMode
+from omh.agent.loop import (
+    run_agent_loop,
+    run_agent_loop_continue,
+)
+from omh.agent.options import AgentOptions, QueueMode
 from omh.llm.models import clamp_thinking_level, models_are_equal
 from omh.llm.types import (
     AbortController,

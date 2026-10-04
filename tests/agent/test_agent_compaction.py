@@ -24,7 +24,7 @@ from omh.agent import (
     CustomMessageHistoryEntry,
     MessageHistoryEntry,
 )
-from omh.agent.tools import AgentTool, AgentToolResult
+from omh.agent.execution.tools import AgentTool, AgentToolResult
 from omh.llm.types import (
     AbortSignal,
     AssistantMessage,
@@ -296,7 +296,7 @@ async def test_split_summary_captures_stream_and_options_before_callbacks() -> N
 
 
 async def test_next_compaction_ignores_usage_from_before_the_checkpoint() -> None:
-    from omh.agent.compaction import estimate_projection_tokens
+    from omh.agent.compaction.preparation import estimate_projection_tokens
 
     heavy = replace(text_message("answer"), usage=usage(50_000, 1))
     agent = seeded_agent(SummaryStreamFn(), messages=[

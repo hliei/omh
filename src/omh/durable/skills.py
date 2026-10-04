@@ -5,8 +5,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from omh._resource_utils.ignore import IgnoreMatcher as _IgnoreMatcher
-from omh._resource_utils.ignore import prefix_ignore_pattern as _prefix_ignore_pattern
+from omh.durable._ignore import IgnoreMatcher as _IgnoreMatcher
+from omh.durable._ignore import prefix_ignore_pattern as _prefix_ignore_pattern
 from omh.durable.agent_harness import Skill
 from omh.durable.context import Context
 from omh.durable.execution_env import ExecutionEnv, FileInfo

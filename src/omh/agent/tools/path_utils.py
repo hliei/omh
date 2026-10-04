@@ -1,10 +1,8 @@
-from __future__ import annotations
+"""Paths relative to the cwd captured by a coding-tool factory."""
 
 import re
 import unicodedata
-
-from omh.durable.context import Context
-from omh.durable.execution_env import ExecutionEnv, get_or_throw
+from pathlib import Path
 
 _UNICODE_SPACES = re.compile("[\u00a0\u2000-\u200a\u202f\u205f\u3000]")
 _NARROW_NO_BREAK_SPACE = "\u202f"
@@ -28,22 +26,15 @@ def read_path_variants(resolved: str) -> list[str]:
     ]))
 
 
-async def resolve_tool_path(
-    env: ExecutionEnv, path: str, context: Context
-) -> str:
-    """Resolve one tool path against the execution environment."""
-    return get_or_throw(
-        await env.absolute_path(normalize_tool_path(path), context)
-    )
+def resolve_tool_path(cwd: Path, path: str) -> Path:
+    resolved = Path(normalize_tool_path(path)).expanduser()
+    return resolved if resolved.is_absolute() else cwd / resolved
 
 
-async def resolve_read_tool_path(
-    env: ExecutionEnv, path: str, context: Context
-) -> str:
-    """Resolve a read path, trying common Unicode and macOS variants."""
-    resolved = await resolve_tool_path(env, path, context)
-    for variant in read_path_variants(resolved):
-        if get_or_throw(await env.exists(variant, context)):
-            return variant
+def resolve_read_tool_path(cwd: Path, path: str) -> Path:
+    resolved = resolve_tool_path(cwd, path)
+    for variant in read_path_variants(str(resolved)):
+        candidate = Path(variant)
+        if candidate.exists():
+            return candidate
     return resolved
-

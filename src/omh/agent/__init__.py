@@ -8,33 +8,38 @@ not imported from here.
 from __future__ import annotations
 
 from omh.agent.agent import Agent
-from omh.agent.coding_tools import (
-    BashToolOptions,
-    ReadImageProcessor,
-    ReadImageProcessorFailure,
-    ReadImageProcessorOptions,
-    ReadImageProcessorResult,
-    ReadImageProcessorSuccess,
-    ReadToolOptions,
-    create_bash_tool,
-    create_edit_tool,
-    create_read_tool,
-    create_write_tool,
-)
-from omh.agent.compaction import (
+from omh.agent.compaction.types import (
     CompactionFailure,
     CompactionResult,
     CompactionSettings,
 )
-from omh.agent.context import AgentContext
-from omh.agent.context_files import (
-    ProjectContextFile,
-    ProjectContextResult,
-    ResourceDiagnostic,
-    load_project_context_files,
+from omh.agent.conversation.history import (
+    AgentHistory,
+    AgentHistoryEntry,
+    AgentHistorySettings,
+    CompactionHistoryEntry,
+    ContextEditHistoryEntry,
+    CustomMessageHistoryEntry,
+    MessageHistoryEntry,
+    ModelChangeHistoryEntry,
+    ThinkingLevelChangeHistoryEntry,
+    validate_history,
 )
-from omh.agent.event_stream import AgentEventStream
-from omh.agent.events import (
+from omh.agent.conversation.messages import (
+    AgentMessage,
+    CompactionSummaryMessage,
+    ContextEditReplacement,
+    ConvertToLlm,
+    CustomAgentMessage,
+    LoopApplicationMessage,
+    LoopConvertToLlm,
+    LoopMessage,
+    LoopTransformContext,
+    TransformContext,
+)
+from omh.agent.execution.context import AgentContext
+from omh.agent.execution.event_stream import AgentEventStream
+from omh.agent.execution.events import (
     AgentEndEvent,
     AgentEvent,
     AgentEventSink,
@@ -56,19 +61,7 @@ from omh.agent.events import (
     TurnEndEvent,
     TurnStartEvent,
 )
-from omh.agent.history import (
-    AgentHistory,
-    AgentHistoryEntry,
-    AgentHistorySettings,
-    CompactionHistoryEntry,
-    ContextEditHistoryEntry,
-    CustomMessageHistoryEntry,
-    MessageHistoryEntry,
-    ModelChangeHistoryEntry,
-    ThinkingLevelChangeHistoryEntry,
-    validate_history,
-)
-from omh.agent.hooks import (
+from omh.agent.execution.hooks import (
     AfterToolCall,
     AfterToolCallContext,
     AfterToolCallResult,
@@ -87,27 +80,43 @@ from omh.agent.hooks import (
     PrepareRequest,
     PrepareRequestContext,
 )
+from omh.agent.execution.loop_config import AgentLoopConfig
+from omh.agent.execution.retry import RetryPolicy
+from omh.agent.execution.state import (
+    AgentInitialState,
+    AgentQueueSnapshot,
+    AgentState,
+)
+from omh.agent.execution.stream_fn import (
+    StreamFn,
+    clear_default_stream_fn,
+    get_default_stream_fn,
+    set_default_stream_fn,
+)
+from omh.agent.execution.tools import (
+    AgentTool,
+    AgentToolCall,
+    AgentToolExecute,
+    AgentToolPrepareArguments,
+    AgentToolResult,
+    AgentToolUpdateCallback,
+    ToolExecutionMode,
+    to_tool_declaration,
+)
 from omh.agent.loop import (
     agent_loop,
     agent_loop_continue,
     run_agent_loop,
     run_agent_loop_continue,
 )
-from omh.agent.loop_config import AgentLoopConfig
-from omh.agent.messages import (
-    AgentMessage,
-    CompactionSummaryMessage,
-    ContextEditReplacement,
-    ConvertToLlm,
-    CustomAgentMessage,
-    LoopApplicationMessage,
-    LoopConvertToLlm,
-    LoopMessage,
-    LoopTransformContext,
-    TransformContext,
-)
 from omh.agent.options import AgentOptions, QueueMode
-from omh.agent.prompt_templates import (
+from omh.agent.resources.context_files import (
+    ProjectContextFile,
+    ProjectContextResult,
+    ResourceDiagnostic,
+    load_project_context_files,
+)
+from omh.agent.resources.prompt_templates import (
     PromptTemplate,
     PromptTemplateDiagnostic,
     PromptTemplateLoadResult,
@@ -117,8 +126,7 @@ from omh.agent.prompt_templates import (
     parse_command_args,
     substitute_args,
 )
-from omh.agent.retry import RetryPolicy
-from omh.agent.skills import (
+from omh.agent.resources.skills import (
     Skill,
     SkillDiagnostic,
     SkillExpansionResult,
@@ -129,27 +137,19 @@ from omh.agent.skills import (
     load_skills,
     load_skills_from_dir,
 )
-from omh.agent.state import (
-    AgentInitialState,
-    AgentQueueSnapshot,
-    AgentState,
-)
-from omh.agent.stream_fn import (
-    StreamFn,
-    clear_default_stream_fn,
-    get_default_stream_fn,
-    set_default_stream_fn,
-)
-from omh.agent.system_prompt import build_system_sections
+from omh.agent.resources.system_prompt import build_system_sections
 from omh.agent.tools import (
-    AgentTool,
-    AgentToolCall,
-    AgentToolExecute,
-    AgentToolPrepareArguments,
-    AgentToolResult,
-    AgentToolUpdateCallback,
-    ToolExecutionMode,
-    to_tool_declaration,
+    BashToolOptions,
+    ReadImageProcessor,
+    ReadImageProcessorFailure,
+    ReadImageProcessorOptions,
+    ReadImageProcessorResult,
+    ReadImageProcessorSuccess,
+    ReadToolOptions,
+    create_bash_tool,
+    create_edit_tool,
+    create_read_tool,
+    create_write_tool,
 )
 from omh.llm.types import ModelThinkingLevel as ThinkingLevel
 from omh.llm.types import OnPayload, OnProviderStreamEvent, OnResponse

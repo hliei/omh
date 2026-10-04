@@ -27,7 +27,10 @@ from omh.agent import (
     PrepareRequestContext,
     ThinkingLevelChangeEvent,
 )
-from omh.agent.history import ModelChangeHistoryEntry, ThinkingLevelChangeHistoryEntry
+from omh.agent.conversation.history import (
+    ModelChangeHistoryEntry,
+    ThinkingLevelChangeHistoryEntry,
+)
 from omh.llm.types import (
     AbortSignal,
     AssistantMessage,

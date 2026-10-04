@@ -690,7 +690,7 @@ request.
 `create_read_tool(cwd, options=None)`, `create_bash_tool(cwd, options=None)`,
 `create_edit_tool(cwd)`, and `create_write_tool(cwd)` return ordinary
 `AgentTool` instances, with no default installation. Import them from `omh.agent`
-or `omh.agent.coding_tools`, then pass the selected tools through
+or `omh.agent.tools`, then pass the selected tools through
 `AgentInitialState.tools` or `await agent.set_tools(...)`:
 
 ```python
@@ -837,9 +837,10 @@ Migration: these factories return `AgentTool`; existing
 `omh.durable.create_read_tool`, `create_bash_tool`, `create_edit_tool`, and
 `create_write_tool` retain their
 `AgentHarnessTool` contracts and execution context. Neither adapter can be passed
-as the other's tool type. Only pure path, text-budget, argument, MIME, and
-edit/diff mechanisms are shared; importing the main factories does not load durable
-execution or add checkpoints or replay guarantees. Run the offline
+as the other's tool type. Path, text-budget, argument, MIME, and edit/diff
+mechanisms are maintained within each execution path; importing the main
+factories does not load durable execution or add checkpoints or replay
+guarantees. Run the offline
 [file-tools example](../examples/file_tools.py) with `python examples/file_tools.py`.
 
 ### Batch execution
@@ -1339,30 +1340,29 @@ Applications import the public Agent, loop entries, and contracts from
 | --- | --- |
 | [`agent.py`](../src/omh/agent/agent.py) | Agent operations, run ownership, queues, subscribers, and state reduction |
 | [`loop.py`](../src/omh/agent/loop.py) | Four standalone entries, request and turn hooks, queue polling, continuation, and termination |
-| [`model_response.py`](../src/omh/agent/model_response.py) | Context conversion, credentials, request options, and streamed assistant message updates |
-| [`tool_execution.py`](../src/omh/agent/tool_execution.py) | Batch preflight, serial or parallel execution, tool hooks, progress, and ordered results |
-| [`tool_declarations.py`](../src/omh/agent/tool_declarations.py) | Synchronizing executable tools with transcript declarations |
-| [`event_stream.py`](../src/omh/agent/event_stream.py) | Event consumers, independent producer tasks, and final result or failure delivery |
-| [`events.py`](../src/omh/agent/events.py) | Event contracts and awaited delivery to an event sink |
-| [`state.py`](../src/omh/agent/state.py) | Initial values and read-only Agent observations |
-| [`history.py`](../src/omh/agent/history.py) | Conversation identity, append-only records, and history snapshots |
-| [`retry.py`](../src/omh/agent/retry.py) | Selected provider-response classification, retry policy, and cancellable backoff |
-| [`compaction.py`](../src/omh/agent/compaction.py) | Compaction settings and results, projection-based cut points, and summary requests |
-| [`data.py`](../src/omh/agent/data.py), [`isolation.py`](../src/omh/agent/isolation.py) | Agent history validation and isolated views around the open loop contracts |
-| [`options.py`](../src/omh/agent/options.py), [`loop_config.py`](../src/omh/agent/loop_config.py) | Agent construction options and standalone loop configuration |
-| [`messages.py`](../src/omh/agent/messages.py) | Application messages and model-input conversion contracts |
-| [`tools.py`](../src/omh/agent/tools.py) | Executable tools, result and callback contracts, and model-facing declarations |
-| [`coding_tools/`](../src/omh/agent/coding_tools/) | Host-selected read/bash/edit/write factories, local process and file I/O ownership, and canonical-path mutation coordination |
-| [`context.py`](../src/omh/agent/context.py) | Conversation messages and executable tools passed to the loop |
-| [`context_files.py`](../src/omh/agent/context_files.py), [`system_prompt.py`](../src/omh/agent/system_prompt.py) | Explicit context-file loading with diagnostics and data-only system section assembly |
-| [`skills.py`](../src/omh/agent/skills.py) | Host-selected skill discovery, source precedence and diagnostics, capability-gated catalogs, and explicit input expansion |
-| [`prompt_templates.py`](../src/omh/agent/prompt_templates.py) | Ordered explicit template loading, diagnostics, quoted arguments and single-pass input expansion |
-| [`hooks.py`](../src/omh/agent/hooks.py) | Request, turn, tool, credential, and queue hooks with their inputs and results |
-| [`stream_fn.py`](../src/omh/agent/stream_fn.py) | Model stream function contract and host-installed default |
+| [`options.py`](../src/omh/agent/options.py) | Agent construction options and queue modes |
+| [`conversation/`](../src/omh/agent/conversation/) | Messages, validated history, and isolated data snapshots |
+| [`compaction/`](../src/omh/agent/compaction/) | Settings and result types, budget estimates and cut preparation, and summary requests and result construction |
+| [`execution/`](../src/omh/agent/execution/) | Agent initial state and read-only runtime observations; loop context, configuration, hooks, events, tool and stream contracts; model response handling, tool batches and declarations, event streams, retry helpers, and isolated loop inputs |
+| [`resources/`](../src/omh/agent/resources/) | Explicit context-file, skill, and template loading; catalogs, input expansion, system section assembly, and internal frontmatter and ignore parsing |
+| [`tools/`](../src/omh/agent/tools/) | Host-selected read/bash/edit/write factories, local process and file I/O ownership, and canonical-path mutation coordination |
 
 `QueueMode` lives with Agent construction options; reasoning levels and provider
 callbacks use the shared LLM contracts. Applications can import these through
 the `omh.agent` public exports.
+
+The grouped modules retain the `omh.agent` public exports. Direct submodule
+imports use the owning package, such as `omh.agent.conversation.history` or
+`omh.agent.resources.skills`; the previous flat paths have no forwarding modules.
+
+Compaction keeps its settings and outcome declarations in `types.py`, history
+budgeting and cut selection in `preparation.py`, and model summary requests in
+`summarization.py`. The Agent owns when compaction runs and when its result is
+committed to conversation history. Tool factories use `omh.agent.tools`; the
+previous `omh.agent.coding_tools` path has no forwarding package.
+Tool contracts such as `AgentTool` live in `omh.agent.execution.tools` and remain
+available from `omh.agent`; the former flat `omh.agent.tools` contract module
+has moved there.
 
 The loop retains scheduling decisions. Its execution modules do not import the
 loop or the Agent. Model response handling updates the active context's assistant

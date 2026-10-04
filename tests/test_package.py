@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import pkgutil
 import subprocess
 import sys
 
@@ -11,6 +12,21 @@ import pytest
 def test_omh_is_importable() -> None:
     module = importlib.import_module("omh")
     assert module.__name__ == "omh"
+
+
+@pytest.mark.parametrize(
+    ("package", "expected"),
+    [
+        ("omh", {"agent", "durable", "llm", "session_backends"}),
+        (
+            "omh.agent",
+            {"agent", "loop", "options", "conversation", "compaction", "execution", "resources", "tools"},
+        ),
+    ],
+)
+def test_sdk_modules_have_explicit_ownership(package: str, expected: set[str]) -> None:
+    module = importlib.import_module(package)
+    assert {item.name for item in pkgutil.iter_modules(module.__path__)} == expected
 
 
 def test_llm_does_not_import_agent() -> None:

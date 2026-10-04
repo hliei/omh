@@ -15,11 +15,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from omh.agent._async import call_with_signal, maybe_await
-from omh.agent.context import AgentContext
-from omh.agent.event_stream import AgentEventStream as AgentEventStream
-from omh.agent.event_stream import start_producer
-from omh.agent.events import (
+from omh.agent.conversation.messages import LoopMessage
+from omh.agent.execution._async import call_with_signal, maybe_await
+from omh.agent.execution.context import AgentContext
+from omh.agent.execution.event_stream import AgentEventStream as AgentEventStream
+from omh.agent.execution.event_stream import start_producer
+from omh.agent.execution.events import (
     AgentEndEvent,
     AgentStartEvent,
     MessageEndEvent,
@@ -28,20 +29,24 @@ from omh.agent.events import (
     TurnStartEvent,
     emit_event,
 )
-from omh.agent.events import AgentEventSink as AgentEventSink
-from omh.agent.hooks import (
+from omh.agent.execution.events import AgentEventSink as AgentEventSink
+from omh.agent.execution.hooks import (
     AgentLoopTurnUpdate,
     AgentRequestUpdate,
     AgentTurnContext,
     AgentTurnDecision,
     PrepareRequestContext,
 )
-from omh.agent.loop_config import AgentLoopConfig as AgentLoopConfig
-from omh.agent.messages import LoopMessage
-from omh.agent.model_response import stream_assistant_response
-from omh.agent.stream_fn import StreamFn, get_default_stream_fn
-from omh.agent.tool_declarations import declare_tool_changes as declare_tool_changes
-from omh.agent.tool_execution import execute_tool_calls, fail_truncated_tool_calls
+from omh.agent.execution.loop_config import AgentLoopConfig as AgentLoopConfig
+from omh.agent.execution.model_response import stream_assistant_response
+from omh.agent.execution.stream_fn import StreamFn, get_default_stream_fn
+from omh.agent.execution.tool_declarations import (
+    declare_tool_changes as declare_tool_changes,
+)
+from omh.agent.execution.tool_execution import (
+    execute_tool_calls,
+    fail_truncated_tool_calls,
+)
 from omh.llm.types import (
     AbortSignal,
     Model,

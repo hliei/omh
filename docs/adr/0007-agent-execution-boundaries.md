@@ -8,7 +8,13 @@ omh 提供进程内有状态的 Agent，供宿主构建应用；现有 AgentHarn
 
 Session／Memory、持久化 runtime、结构操作和现有 harness 工具随持久化路径归位；SQLite 保持独立后端边界。共享类型与机制仅在语义相容时复用。具体声明与迁移清单在规格中展开。
 
-2026-10-03 补充：进程内 read／write 工厂位于 `omh.agent.coding_tools`，返回普通 AgentTool，由宿主显式注入。文本预算、图片 MIME 检测、字符串参数和路径文本规范化提取到内部 `omh._tool_utils`；durable 原有导入路径保留并使用这些纯机制，两种工具的执行接口与结果类型保持独立，主工具导入不加载 durable 内核。
+2026-10-03 补充：进程内 read／write 工厂位于 `omh.agent.tools`，返回普通 AgentTool，由宿主显式注入。两种工具的执行接口与结果类型保持独立，主工具导入不加载 durable 内核。
+
+2026-10-04 更新：SDK 顶层包只保留 `agent`、`llm`、`durable` 与 `session_backends`。进程内工具的文本预算、图片检测、参数、路径与 edit/diff 机制归入 Agent 的内置工具模块（当前路径为 `agent.tools`）；持久化工具在 `durable.tools` 与 `durable.utils` 内拥有各自实现。frontmatter 与 ignore 解析分别由 Agent 和 durable 的内部模块维护。接受相容算法的重复实现，使工具与资源规则的修改归属于各自执行路径，避免跨路径引用内部辅助模块；修复共同问题时须分别评估和验证两边。durable 原有工具与解析导入路径保留，进程内与持久化模块的导入互不加载另一条执行路径。
+
+Agent 内部按职责分为 `conversation`（消息、历史与数据校验）、`compaction`（压缩配置、预算准备与摘要生成）、`execution`（运行状态、执行契约及模型、工具、事件流和重试辅助实现）、`resources`（skills、模板、上下文文件和系统提示）与 `tools`（内置编码工具）。外层保留 `agent.py`、`loop.py`、`options.py` 和公开导出；这样从入口即可定位一组相关实现，避免辅助文件与入口平铺。`omh.agent` 的公开导出保留，直接子模块引用迁入所属目录，不保留旧路径转发。此整理只改变文件归属，调度仍由 loop 负责，对话活动与运行策略仍由 Agent 负责。
+
+2026-10-05 更新：内置工具目录命名为 `tools`，原 `coding_tools` 路径直接迁移。压缩从对话数据模块中独立成包，分别维护 `types.py`、`preparation.py` 与 `summarization.py`；消息、历史和数据校验继续围绕对话数据模型组织，Agent 的初始值和运行观察归入 `execution.state`。压缩辅助实现不拥有活动调度和历史提交，所有公开 Agent 声明及执行行为保持不变。
 
 进程内文件调用通过 worker thread 执行，避免阻塞整个 asyncio loop；取消执行 task 时保留该线程调用的所有权并等到结束，再传播取消。write 工厂在同一 event loop 共享按 canonical path 的协调，覆盖现存 symlink 和新文件的 symlink 父目录，不沿用依赖 ExecutionEnv／Context 的 durable 队列。路径解析和队列登记按提交顺序串行，登记后的不同文件操作可并行；macOS 根据目标 volume 的大小写敏感性归一化键，保证同文件大小写别名和文件创建前后的协调一致。直接取消线程 awaitable 会在实际写入仍进行时释放锁，因此不采用该方式。协调只保护本 SDK 同一 event loop 内的调用，不提供进程间锁或持久化恢复；durable 原有同步文件执行及协调边界保持不变。
 

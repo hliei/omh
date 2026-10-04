@@ -4,7 +4,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import cast
 
-from omh._tool_utils.read_text import read_text
 from omh.durable.agent_harness import (
     AgentHarnessTool,
     AgentHarnessToolInvocation,
@@ -19,6 +18,7 @@ from omh.durable.tools.image import (
     encode_base64,
 )
 from omh.durable.tools.path_utils import resolve_read_tool_path
+from omh.durable.tools.read_text import read_text
 from omh.durable.tools.tool_context import execution_env
 from omh.durable.utils.truncate import (
     DEFAULT_MAX_BYTES,

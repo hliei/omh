@@ -144,7 +144,7 @@ async def test_silent_overflow_compacts_without_repeating_successful_response() 
 def test_capacity_classification_uses_input_and_cache_read_only(
     stop, input_tokens: int, cache_read: int, output_tokens: int, expected: bool,
 ) -> None:
-    from omh.agent.retry import is_context_overflow
+    from omh.agent.execution.retry import is_context_overflow
 
     message = replace(text_message("reply", stop), usage=replace(
         usage(input_tokens, output_tokens), cache_read=cache_read, cache_write=10000,
@@ -545,7 +545,7 @@ async def test_old_response_in_restored_history_never_retriggers_response_recove
 def test_explicit_overflow_classification_excludes_temporary_throttling_and_other_errors(
     text: str, provider: str, expected: bool,
 ) -> None:
-    from omh.agent.retry import is_context_overflow
+    from omh.agent.execution.retry import is_context_overflow
 
     assert is_context_overflow(replace(error(text), provider=provider)) is expected
 
@@ -553,7 +553,7 @@ def test_explicit_overflow_classification_excludes_temporary_throttling_and_othe
 @pytest.mark.parametrize("output_tokens,desired,expected", [(0, 4096, True), (4095, 4096, True),
     (4096, 4096, False), (4097, 4096, False), (64, 4096, True), (64, 64, False), (0, 0, False)])
 def test_length_classifier_uses_original_output_target(output_tokens: int, desired: int, expected: bool) -> None:
-    from omh.agent.retry import is_recoverable_length
+    from omh.agent.execution.retry import is_recoverable_length
 
     message = replace(text_message("truncated", "length"), usage=usage(100, output_tokens))
     assert is_recoverable_length(message, desired) is expected

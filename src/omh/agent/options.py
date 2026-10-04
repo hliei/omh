@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from omh.agent.compaction import CompactionSettings
-from omh.agent.hooks import (
+from omh.agent.compaction.types import CompactionSettings
+from omh.agent.conversation.messages import ConvertToLlm, TransformContext
+from omh.agent.execution.hooks import (
     AfterToolCall,
     BeforeToolCall,
     FinishTurn,
@@ -15,11 +16,10 @@ from omh.agent.hooks import (
     PrepareNextTurnWithSignal,
     PrepareRequest,
 )
-from omh.agent.messages import ConvertToLlm, TransformContext
-from omh.agent.retry import RetryPolicy
-from omh.agent.state import AgentInitialState
-from omh.agent.stream_fn import StreamFn
-from omh.agent.tools import ToolExecutionMode
+from omh.agent.execution.retry import RetryPolicy
+from omh.agent.execution.state import AgentInitialState
+from omh.agent.execution.stream_fn import StreamFn
+from omh.agent.execution.tools import ToolExecutionMode
 from omh.llm.types import (
     OnPayload,
     OnProviderStreamEvent,
