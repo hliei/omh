@@ -100,23 +100,25 @@ jobs:
           sdist_names = set(tarfile.open(sdist).getnames())
           if not any(name.endswith("src/omh/py.typed") for name in sdist_names):
               sys.exit(f"{sdist} is missing src/omh/py.typed")
+          unexpected = sorted(
+              name for name in sdist_names
+              if any(part in {"coding_agent", "tests", ".scratch", ".agents"}
+                     for part in name.split("/")[1:])
+          )
+          if unexpected:
+              sys.exit(f"{sdist} contains unexpected entries: {unexpected}")
 
           print(f"{wheel}: {len(wheel_names)} entries, contents verified")
           print(f"{sdist}: {len(sdist_names)} entries, contents verified")
           PY
 
-      # Provides pytest; versions come from the dev extra so they are not declared twice.
-      - name: Install test tooling
-        run: python -m pip install -e ".[dev]"
-
-      # The editable install is only a .pth pointer; swap it for the artifact under test.
-      - name: Swap the editable install for the built wheel
+      - name: Install the built wheel and test tooling
         run: |
-          python -m pip uninstall --yes omh
           python -m pip install dist/*.whl
+          python -m pip install "omh[dev]"
 
-      # The src layout keeps the source tree off sys.path, so this proves the wheel is exercised.
-      - name: Test the built wheel
+      - name: Test installation outside repository
+        working-directory: ${{ runner.temp }}
         run: |
           python -c "import pathlib, omh; assert 'site-packages' in str(pathlib.Path(omh.__file__)), omh.__file__"
-          python -m pytest
+          python -m pytest "$GITHUB_WORKSPACE/tests" -c "$GITHUB_WORKSPACE/pyproject.toml"

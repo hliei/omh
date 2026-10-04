@@ -1,6 +1,6 @@
 # Agent 统一拥有进程内运行策略
 
-状态：设计已接受，尚未实施。本文确定能力归属与首版范围；历史及生命周期见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)，具体接口在规格阶段展开。已交付行为见 [Agent 契约](../agent.md)。
+状态：已接受并实施。Agent 的手动／自动压缩、对话与摘要重试、有界容量恢复、编码工具及资源 helpers 已交付；coding-agent 已交付独立应用会话、保存／重开与切换基础。print／interactive 仍属后续范围。历史及生命周期见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)，当前行为见 [Agent 契约](../agent.md)和[应用契约](../../coding_agent/README.md)。
 
 扩展现有 `Agent`，使其成为完整的进程内运行时公开入口，统一拥有 `compact()`、自动压缩、选定的重试策略、有效上下文管理，以及取消、输入队列和运行事件的协调。宿主提供模型、工具与策略配置，SDK 负责执行策略，并定义压缩记录的含义、有效上下文的构建与恢复规则。内部可按职责拆分模块，调用者通过 Agent 使用这些能力。
 
@@ -14,7 +14,7 @@
 
 首版压缩范围包含手动压缩、阈值自动压缩，以及上下文溢出和可恢复响应截断的压缩恢复；达到模型声明输出上限的截断不因此触发恢复。选定的暂时性模型错误重试同时用于普通对话响应和压缩摘要请求，各自维护重试计数；压缩恢复另有恢复额度，不占用普通重试计数。取消、账户或额度类永久错误、工具失败和监听器失败不进入这项自动重试。
 
-自动压缩与选定重试默认启用，宿主可以显式关闭或调整。压缩默认 reserve_tokens 为 16384、keep_recent_tokens 为 20000；每条连续暂时性响应错误链默认最多重试 3 次，不含初始请求，退避为 2/4/8 秒，单次等待上限 60 秒。相比要求显式开启，这让统一运行时默认具备选定长对话能力；现有调用者升级后可能产生额外摘要、重试请求及历史记录。具体配置签名在规格阶段展开。
+自动压缩与选定重试默认启用，宿主可以显式关闭或调整。压缩默认 reserve_tokens 为 16384、keep_recent_tokens 为 20000；每条连续暂时性响应错误链默认最多重试 3 次，不含初始请求，退避为 2/4/8 秒，单次等待上限 60 秒。相比要求显式开启，这让统一运行时默认具备选定长对话能力；现有调用者升级后可能产生额外摘要、重试请求及历史记录。具体配置签名见 Agent 契约。
 
 策略配置可以在忙碌时更新，不等于取消已安排工作。对话重试在每次准备下一次重试时读取当前配置，已计算的退避与已安排的这次尝试不被之后的开关或预算变更撤销。本次压缩及其摘要重试使用开始时取得的各自配置，之后的变更影响后续压缩；取消当前活动通过取消入口处理。
 
@@ -24,4 +24,4 @@ SDK 提供 read、bash、edit、write 的工具工厂，供 Python 嵌入者直�
 
 首版资源范围包含 AGENTS/context 文件、skills 的目录与显式调用，以及 prompt templates 的名称调用与参数展开。SDK 提供可复用的资源加载、系统指令装配和输入展开辅助能力；coding-agent 按工作目录与配置调用并组装，Agent 接收组装后的配置与已展开的消息。相比让 Agent 解释产品调用语法，这保留宿主的产品输入与配置组装职责，同时供 Python 嵌入者复用资源行为。动态扩展、包管理和 themes 留待后续；命名基础指令的更新与生效边界见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)。
 
-本决定演进 [ADR-0007](0007-agent-execution-boundaries.md) 中将压缩与自动重试留待后续阶段的职责安排，不表示这些能力已经交付。传统 Agent 与 durable 仍是两条执行路径；借鉴能力归属不增加事务、跨进程中断恢复或副作用重放保证。完整历史的进程内所有权、Agent 的对话绑定与首版历史操作范围见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)；公共通知与 hooks 的迁移见 [ADR-0011](0011-agent-awaited-event-listeners.md)、[ADR-0012](0012-agent-request-projection-and-overrides.md) 及 [ADR-0013](0013-agent-explicit-activity-end.md)，具体签名与实施方案在规格阶段展开。
+本决定演进 [ADR-0007](0007-agent-execution-boundaries.md) 中将压缩与自动重试留待后续阶段的职责安排，这些能力现已交付。传统 Agent 与 durable 仍是两条执行路径；借鉴能力归属不增加事务、跨进程中断恢复或副作用重放保证。完整历史的进程内所有权、Agent 的对话绑定与首版历史操作范围见 [ADR-0010](0010-agent-conversation-history-and-lifetime.md)；公共通知与 hooks 的迁移见 [ADR-0011](0011-agent-awaited-event-listeners.md)、[ADR-0012](0012-agent-request-projection-and-overrides.md) 及 [ADR-0013](0013-agent-explicit-activity-end.md)，具体签名与实施规则见 Agent 契约。

@@ -331,3 +331,50 @@ files. There is no fork, navigation, queue persistence or process recovery here.
 
 Run the offline [session switching example](examples/session_switch.py) with
 `python coding_agent/examples/session_switch.py` from the repository root.
+
+## Long conversations and installation acceptance
+
+The application delegates threshold compaction, dialogue/summary retry and
+bounded overflow or truncated-response recovery to the SDK Agent. Configure
+these through `agent_options.compaction` and `agent_options.retry`. JSONL saving
+keeps the full original history, including failed assistant responses, omission
+records and compaction checkpoints. Reopening reconstructs the same effective
+context and identity without starting model or tool work.
+
+A successful manual summary can commit before its file append fails. In that
+case `compact()` raises the saving exception, while the committed compaction,
+new context and successful `CompactionEndEvent.result` remain available. The
+event also reports the notification error. An automatic-summary saving failure
+stops the activity and propagates through `prompt()`; it does not continue as an
+ordinary summary-model failure. Both paths leave the session `unsaved`. Export
+or fully save the retained history before accepting more work. Switching can
+retire that session while keeping its history, error and unconsumed queues in
+`runtime.retained_sessions`.
+
+Run the offline [long conversation example](examples/long_conversation.py):
+
+```bash
+python coding_agent/examples/long_conversation.py
+```
+
+It writes and edits a real temporary file, reads a large tool result that
+triggers threshold compaction, retries transient dialogue and summary failures,
+checks the one-attempt recovery bound, saves, reopens, and continues. All model
+responses are controlled and require no credentials. The script also runs from
+any working directory when given its absolute path after installing both packages.
+
+CI builds each project's sdist and then its wheel, checks distribution contents
+and the application's SDK dependency, and runs the application tests and this
+example from outside the repository with imports from `site-packages`. SDK tests
+run against their independent installation too. Separate quality jobs run Ruff,
+mypy and offline tests on macOS and Ubuntu 24.04, including file and process
+cancellation. These checks validate the Python embedding APIs; they make no
+live-provider or performance claim.
+
+Migration: hosts that previously implemented summaries or response retry around
+application prompts can configure the SDK policies instead. Observe
+`agent_settled` for dialogue completion; automatic `compaction_end` is an
+intermediate stage. Continue to use application `prompt`/`continue_`/`compact`
+wrappers for saving protection, and retain unsaved sessions during replacement.
+CLI print/interactive/RPC modes, dynamic extensions and execution recovery
+across processes remain outside this application contract.
