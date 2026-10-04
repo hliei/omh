@@ -11,6 +11,7 @@ The [Agent contract](agent.md) describes the stateful Agent and its standalone l
 - [Built-in read, bash, edit, and write](agent.md#built-in-read-bash-edit-and-write), with an offline [file-tools example](../examples/file_tools.py).
 - [Project context and system sections](agent.md#project-context-and-system-sections), with an offline [context resource example](../examples/context_resources.py).
 - [Skills resources](agent.md#skills-resources), with an offline [skills example](../examples/skills_resources.py).
+- [Prompt templates](agent.md#prompt-templates), with an offline [template example](../examples/prompt_templates.py).
 - [Events](agent.md#events-and-subscribers), [cancellation](agent.md#cancellation), [standalone loop](agent.md#standalone-loop).
 
 ## LLM layer

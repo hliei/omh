@@ -107,6 +107,16 @@ from omh.agent.messages import (
     TransformContext,
 )
 from omh.agent.options import AgentOptions, QueueMode
+from omh.agent.prompt_templates import (
+    PromptTemplate,
+    PromptTemplateDiagnostic,
+    PromptTemplateLoadResult,
+    PromptTemplateSource,
+    expand_prompt_template,
+    load_prompt_templates,
+    parse_command_args,
+    substitute_args,
+)
 from omh.agent.retry import RetryPolicy
 from omh.agent.skills import (
     Skill,
@@ -144,6 +154,14 @@ from omh.llm.types import ModelThinkingLevel as ThinkingLevel
 from omh.llm.types import OnPayload, OnProviderStreamEvent, OnResponse
 
 __all__ = [
+    "PromptTemplate",
+    "PromptTemplateDiagnostic",
+    "PromptTemplateLoadResult",
+    "PromptTemplateSource",
+    "expand_prompt_template",
+    "load_prompt_templates",
+    "parse_command_args",
+    "substitute_args",
     "Skill",
     "SkillDiagnostic",
     "SkillExpansionResult",
