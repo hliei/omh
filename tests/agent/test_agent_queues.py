@@ -48,6 +48,27 @@ from omh.llm.utils.event_stream import (
 NOW = 1_700_000_000_000
 
 
+@pytest.mark.parametrize("mode", ["one-at-a-time", "all"])
+async def test_complete_queue_snapshots_preserve_both_queues_after_close(mode):
+    agent = Agent(AgentOptions(stream_fn=ScriptedStreamFn([]), steering_mode=mode, follow_up_mode=mode))
+    for text in ("first steer", "second steer"):
+        agent.steer(UserMessage(content=text, timestamp=NOW))
+    for text in ("first follow-up", "second follow-up"):
+        agent.follow_up(UserMessage(content=text, timestamp=NOW))
+    before = agent.get_queued_messages()
+    assert [message.content for message in before.steering] == ["first steer", "second steer"]
+    assert [message.content for message in before.follow_up] == ["first follow-up", "second follow-up"]
+    before.follow_up[0].content = "modified copy"
+    await agent.close()
+    after = agent.get_queued_messages()
+    assert after.follow_up[0].content == "first follow-up"
+    assert len(after.steering) == len(after.follow_up) == 2
+    agent.clear_all_queues()
+    assert len(after.steering) == len(after.follow_up) == 2
+    assert not agent.get_queued_messages().steering
+    assert not agent.get_queued_messages().follow_up
+
+
 def make_model() -> Model:
     return Model(
         id="test-model",

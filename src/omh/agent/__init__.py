@@ -131,6 +131,7 @@ from omh.agent.skills import (
 )
 from omh.agent.state import (
     AgentInitialState,
+    AgentQueueSnapshot,
     AgentState,
 )
 from omh.agent.stream_fn import (
@@ -208,6 +209,7 @@ __all__ = [
     "AgentSettledEvent",
     "AgentStartEvent",
     "AgentState",
+    "AgentQueueSnapshot",
     "AgentTurnContext",
     "AgentTurnDecision",
     "AgentTool",
