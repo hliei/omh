@@ -1,0 +1,97 @@
+name: Coding agent
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coding-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Application quality (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            coding_agent/pyproject.toml
+      - name: Install SDK and application dependencies
+        run: |
+          python -m pip install .
+          python -m pip install -e "coding_agent[dev]"
+      - name: Lint
+        working-directory: coding_agent
+        run: python -m ruff check src tests
+      - name: Type check
+        working-directory: coding_agent
+        run: python -m mypy
+      - name: Offline tests
+        working-directory: coding_agent
+        run: python -m pytest
+
+  package:
+    name: Application package verification
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Build both sdists and wheels
+        run: |
+          python -m pip install build
+          python -m build --outdir dist/sdk
+          python -m build coding_agent --outdir coding_agent/dist
+      - name: Verify independent distribution contents
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          sdk = next(Path("dist/sdk").glob("*.whl"))
+          app = next(Path("coding_agent/dist").glob("*.whl"))
+          sdk_names = zipfile.ZipFile(sdk).namelist()
+          app_names = zipfile.ZipFile(app).namelist()
+          assert not any(name.startswith("coding_agent/") for name in sdk_names)
+          assert "omh/py.typed" in sdk_names
+          assert "omh/session_backends/sqlite/migrations/001_initial.sql" in sdk_names
+          assert "coding_agent/py.typed" in app_names
+          assert "coding_agent/runtime.py" in app_names
+          assert not any(name.startswith(("omh/", "tests/", ".scratch/", "examples/")) for name in app_names)
+          for archive_path in Path("coding_agent/dist").glob("*.tar.gz"):
+              names = tarfile.open(archive_path).getnames()
+              assert any(name.endswith("src/coding_agent/py.typed") for name in names)
+              assert not any("/src/omh/" in name or "/.scratch/" in name for name in names)
+          PY
+      - name: Install built wheels and application test tooling
+        run: |
+          python -m pip install dist/sdk/*.whl coding_agent/dist/*.whl
+          python -m pip install "omh-coding-agent[dev]"
+      - name: Test installation outside repository
+        working-directory: ${{ runner.temp }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import omh
+          import coding_agent
+          assert "site-packages" in str(Path(omh.__file__))
+          assert "site-packages" in str(Path(coding_agent.__file__))
+          PY
+          python -m pytest "$GITHUB_WORKSPACE/coding_agent/tests" -c "$GITHUB_WORKSPACE/coding_agent/pyproject.toml"

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omh-coding-agent"
+version = "0.1.0"
+description = "Embeddable coding conversations with full JSONL history"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = ["omh>=0.1.0,<0.2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4", "pytest-asyncio>=1.1", "mypy>=1.17", "ruff==0.16.7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+coding_agent = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+packages = ["coding_agent"]
+mypy_path = "src"
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
