@@ -221,21 +221,56 @@ bytes lack a newline appends one newline. The original bytes, including a
 malformed tail, remain intact, so new records cannot stick to the fragment.
 Files are not truncated during open or ordinary append.
 
-## Current lifecycle scope
+## Save failures and repair
 
 `saved` means the application's current-history write completed. `pending`
 means no initial write has happened; `unsaved` and `save_error` expose a failed
 write while the Agent retains its in-memory history. Later commits keep this
 failed state and propagate the saved error until a complete explicit save succeeds.
-Notification errors
-propagate through the SDK. Ordinary file I/O does not guarantee fsync or
-power-loss durability and is not atomic with the SDK's memory commit.
+Serialization and file errors propagate through the awaited history listener.
+The SDK settles the activity and retains committed history and effective context;
+it does not retry saving as a model request or fabricate a failed assistant response.
+Already completed tool side effects remain completed, even if saving their result fails.
 
-Automatic save-failure admission protection and repair orchestration are not
-implemented yet. The session wrappers do not currently promise to reject new
-runs after a failed save. Keep the history for explicit save/export and handle
-errors in the host. Direct SDK Agent access is governed by the SDK contract.
-Prepared session switching is also pending.
+While `unsaved`, session and runtime `prompt`, `continue_`, `compact`, `steer`
+and `follow_up` raise `RuntimeError` before accepting input, expanding resources,
+changing history or adding queued messages. The original `save_error` is the
+exception's cause. Previously queued input remains available through the Agent.
+History/state reads, `session.agent.abort()`, `session.agent.close()`, full
+`save` and `export` remain usable, including saving or exporting after close.
+Resource reload retains its configuration-only behavior; it does not clear a
+save failure. Direct `session.agent` calls follow the SDK contract and bypass
+application admission checks; the SDK has no permanent save-failure state.
+
+Repair with `await session.save()` or `await runtime.save_session()` to write
+the complete current history to the bound file. Even after a partial write,
+success replaces the file with a full snapshot, updates saved record positions,
+clears `save_error` and restores application admission. A failed repair keeps
+the session `unsaved` and all memory history available. `save(new_path)` can
+instead save the full history and bind a replacement destination; later appends
+use that file. Exporting a separate copy neither rebinds the session nor repairs
+the original file; exporting to the currently bound path performs a full save.
+
+```python
+try:
+    await runtime.prompt("Continue editing.")
+except (OSError, ValueError):
+    if session.save_state != "unsaved":
+        raise
+    await runtime.export_session("unsaved-backup.jsonl")
+    # Once the destination is writable, explicitly repair the complete history.
+    await runtime.save_session()
+```
+
+Run the offline [save repair example](examples/save_repair.py) with
+`python coding_agent/examples/save_repair.py`. Ordinary file I/O does not
+guarantee fsync, atomic replacement or power-loss durability and is not atomic
+with the SDK's memory commit. Partial on-disk files require repair; the retained
+in-memory history is the source for that repair.
+
+## Current lifecycle scope
+
+Prepared session switching is pending.
 A runtime rejects new/open while its current Agent remains open; close it or
 use a separate runtime to prepare another session. Long-lived provider and
 tool resources remain host-owned.

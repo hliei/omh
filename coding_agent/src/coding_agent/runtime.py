@@ -1,4 +1,4 @@
-"""Host assembly and normal-path file persistence for application sessions."""
+"""Host assembly and file persistence for application sessions."""
 
 from __future__ import annotations
 
@@ -118,10 +118,15 @@ class ApplicationSession:
     def save_error(self) -> Exception | None:
         return self._save_error
 
+    def _ensure_can_accept_work(self) -> None:
+        if self._save_state == "unsaved":
+            raise RuntimeError("Session has unsaved history; save the complete history before continuing") from self._save_error
+
     async def prompt(
         self, message: str | AgentMessage | list[AgentMessage],
         images: list[ImageContent] | None = None,
     ) -> None:
+        self._ensure_can_accept_work()
         if isinstance(message, str):
             message = self._expand_input(message)
         await self.agent.prompt(message, images)
@@ -146,9 +151,11 @@ class ApplicationSession:
         )
 
     def steer(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
+        self._ensure_can_accept_work()
         self.agent.steer(self._queued_input(message, images))
 
     def follow_up(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
+        self._ensure_can_accept_work()
         self.agent.follow_up(self._queued_input(message, images))
 
     async def reload_resources(self) -> ApplicationResources:
@@ -163,9 +170,11 @@ class ApplicationSession:
         return resources
 
     async def continue_(self) -> None:
+        self._ensure_can_accept_work()
         await self.agent.continue_()
 
     async def compact(self, custom_instructions: str | None = None) -> CompactionResult:
+        self._ensure_can_accept_work()
         return await self.agent.compact(custom_instructions)
 
     async def _on_history_commit(self, event: AgentEvent, signal: AbortSignal | None) -> None:
