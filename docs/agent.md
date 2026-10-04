@@ -1479,3 +1479,15 @@ do not validate a live service or performance.
 
 Run the offline [history example](../examples/history.py) with
 `python examples/history.py` after installing the SDK.
+
+
+## Installed application verification
+
+The separate [coding-agent application](../coding_agent/README.md) composes the
+public Agent and coding tools with application-owned JSONL saving, resources
+and session switching. Its [offline long conversation example](../coding_agent/examples/long_conversation.py)
+exercises threshold compaction after a large tool result, independent dialogue
+and summary retries, bounded overflow recovery, and identity/context preservation
+through save/reopen. The SDK distribution contains no application code; the
+application declares its SDK dependency and has separate checks. Both projects
+verify sdist→wheel builds and installed-package behavior outside the repository.

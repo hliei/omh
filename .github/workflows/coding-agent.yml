@@ -62,6 +62,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          from email.parser import Parser
           import tarfile
           import zipfile
 
@@ -75,6 +76,9 @@ jobs:
           assert "coding_agent/py.typed" in app_names
           assert "coding_agent/runtime.py" in app_names
           assert not any(name.startswith(("omh/", "tests/", ".scratch/", "examples/")) for name in app_names)
+          metadata_name = next(name for name in app_names if name.endswith(".dist-info/METADATA"))
+          metadata = Parser().parsestr(zipfile.ZipFile(app).read(metadata_name).decode())
+          assert any(value.startswith("omh<") for value in metadata.get_all("Requires-Dist", []))
           for archive_path in Path("coding_agent/dist").glob("*.tar.gz"):
               names = tarfile.open(archive_path).getnames()
               assert any(name.endswith("src/coding_agent/py.typed") for name in names)
@@ -95,3 +99,4 @@ jobs:
           assert "site-packages" in str(Path(coding_agent.__file__))
           PY
           python -m pytest "$GITHUB_WORKSPACE/coding_agent/tests" -c "$GITHUB_WORKSPACE/coding_agent/pyproject.toml"
+          python "$GITHUB_WORKSPACE/coding_agent/examples/long_conversation.py"

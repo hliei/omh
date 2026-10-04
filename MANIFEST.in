@@ -1,0 +1,4 @@
+prune tests
+prune coding_agent
+prune .scratch
+prune .agents

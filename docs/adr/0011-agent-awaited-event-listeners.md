@@ -1,6 +1,6 @@
 # Agent 保留被等待的公共事件监听器
 
-状态：部分实施。顺序 awaited 公共监听器、最终 agent_settled、终结 prompt 后续链、故障传播及自我等待拒绝已交付；手动 compaction_end 规则待压缩执行接入。沿用 [ADR-0010](0010-agent-conversation-history-and-lifetime.md) 的内层循环与最终收束事件区分；当前已交付订阅行为见 [Agent 契约](../agent.md#events-and-subscribers)。
+状态：已接受并实施。顺序 awaited 公共监听器、最终 agent_settled、手动 compaction_end 的 prompt 接纳、后续链等待、故障传播及自我等待拒绝已交付。沿用 [ADR-0010](0010-agent-conversation-history-and-lifetime.md) 的内层循环与最终收束事件区分；当前订阅行为见 [Agent 契约](../agent.md#events-and-subscribers)。
 
 Agent 的公共事件订阅继续支持同步、异步监听器，并按订阅顺序逐个等待。相比仅同步通知、将订阅方异步工作完全交给宿主管理，这保留已有 Python 嵌入式接口的等待契约，使监听器明确等待的工作进入事件处理和收尾范围。代价是慢监听器会延长运行或收尾，完成回调中的工作提交必须定义安全的接纳规则。
 
@@ -12,7 +12,7 @@ Agent 的公共事件订阅继续支持同步、异步监听器，并按订阅�
 
 终结监听器返回后才公开空闲并完成空闲等待；若最终通知已接纳后续对话，则串行处理后续工作直到收尾完成。最终通知阶段的 prompt 接纳是明确特例。仅有尚未消费的 steering/follow-up、没有执行活动时，Agent 可以空闲。这保留现有被等待监听器的空闲语义，对最终通知前先公开空闲的另一种契约作出明确适配。
 
-这些是 [ADR-0009](0009-agent-runtime-policy-ownership.md) 所要求单独确认的订阅契约取舍；职责迁移没有自动将公共通知改成不等待异步工作。具体签名与事件字段在规格阶段展开。
+这些是 [ADR-0009](0009-agent-runtime-policy-ownership.md) 所要求单独确认的订阅契约取舍；职责迁移没有自动将公共通知改成不等待异步工作。具体签名与事件字段见 Agent 契约。
 
 ## 终结回调的递归接纳限制
 

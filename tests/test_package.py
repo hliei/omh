@@ -71,3 +71,19 @@ def test_durable_imports_do_not_load_agent(module: str) -> None:
 
 def test_old_durable_namespace_is_removed() -> None:
     assert importlib.util.find_spec("omh.agent.durable") is None
+
+
+def test_sdk_does_not_import_application() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import omh.agent, omh.durable, omh.session_backends.sqlite\n"
+            "import sys\n"
+            "assert not any(name == 'coding_agent' or name.startswith('coding_agent.') "
+            "for name in sys.modules)\n",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
