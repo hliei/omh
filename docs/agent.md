@@ -1199,6 +1199,67 @@ Applications own reload, watches, directory trust and resource selection.
 Run the offline [context resource example](../examples/context_resources.py)
 with `python examples/context_resources.py` after installing the SDK.
 
+## Skills resources
+
+Hosts can discover skills with `load_skills(sources, cwd=...)`, where `sources`
+is an ordered sequence of `SkillSource(path, source="explicit")`. Each path is
+a selected directory or Markdown file; relative paths resolve against `cwd`
+(the process working directory by default), and `~` expands to the user's home.
+The source string is preserved for host-defined provenance. Hosts assemble
+global, project and explicit sources in their desired precedence order; no
+default global directory or project trust policy is selected by the SDK.
+`load_skills_from_dir(directory, source=...)` loads a single selected directory.
+Both return `SkillLoadResult.skills` and `.diagnostics`.
+
+A readable, non-ignored `SKILL.md` makes its directory a skill root and stops
+recursion, including when its metadata is invalid. Otherwise the loader reads
+direct root `.md` files and recurses into subdirectories for `SKILL.md`; loose
+Markdown in nested directories is not a skill. Hidden entries and `node_modules`
+are skipped. `.gitignore`, `.ignore`, then `.fdignore` rules apply in that order,
+with directory-relative patterns, anchoring, globs, escapes and negation. Nested
+rules can override inherited file rules; an ignored directory is not traversed.
+Rules remain local to their directory subtree. Directory entries are visited
+in sorted name order, making precedence within each source deterministic.
+Valid symlinks are followed, directory cycles terminate, and real file paths
+are deduplicated before resolving names. The first skill of a given name wins;
+collision diagnostics include the full `winner` and `loser` skill metadata.
+
+Each `Skill` contains `name`, `description`, `file_path`, `base_dir`, `source`
+and `disable_model_invocation`. UTF-8 BOM is stripped. Frontmatter supports a
+YAML subset: scalar fields, single/double quoted strings and literal/folded
+block strings. A missing or empty string description excludes a skill; for
+declared `SKILL.md` it produces a diagnostic. Names fall back to the parent
+directory name. Invalid name syntax or length and descriptions longer than
+1024 characters produce warnings while retaining the skill. Ordinary root
+Markdown without skill metadata is skipped silently. Unreadable resources,
+invalid declared frontmatter and source paths that are not Markdown files or
+directories produce diagnostics. `SkillDiagnostic` exposes `path`, `source`,
+`reason`, `message` and optional `winner`/`loser`; callers own presentation.
+
+`format_skills_for_prompt(skills, tools=...)` emits an XML catalog with escaped
+name, description and location. Pass the actual selected `AgentTool` objects:
+the catalog is empty unless an executable tool named `read` or `bash` is
+present. When both are available, its instructions prefer `read`.
+`disable-model-invocation: true` hides a skill from the catalog while keeping it
+available for explicit invocation; quoted `"true"` does not enable the flag.
+The catalog uses loaded metadata until the host reloads resources.
+
+`expand_skill_command(text, skills)` returns `SkillExpansionResult.text` and
+`.diagnostics`. A leading `/skill:name` rereads the first matching skill's file,
+strips frontmatter, trims the body and wraps it with its name, location and
+`base_dir` reference instructions. Arguments after the first separating
+whitespace character are appended verbatim, preserving quotes, placeholders,
+additional whitespace and newlines. Unknown names and other input pass through
+unchanged; reading or parsing failures preserve the complete original text and
+return a diagnostic. Expansion needs no model-facing read tool and works for
+skills hidden from the catalog.
+
+Hosts append the catalog to their system sections and pass expanded text to
+the existing `prompt`, `steer` or `follow_up` APIs as ordinary input. The Agent
+does not interpret slash commands, discover skills, watch files or load
+executable extensions. Run the offline [skills example](../examples/skills_resources.py)
+with `python examples/skills_resources.py` after installing the SDK.
+
 ## Module organization
 
 Applications import the public Agent, loop entries, and contracts from
@@ -1224,6 +1285,7 @@ Applications import the public Agent, loop entries, and contracts from
 | [`coding_tools/`](../src/omh/agent/coding_tools/) | Host-selected read/bash/edit/write factories, local process and file I/O ownership, and canonical-path mutation coordination |
 | [`context.py`](../src/omh/agent/context.py) | Conversation messages and executable tools passed to the loop |
 | [`context_files.py`](../src/omh/agent/context_files.py), [`system_prompt.py`](../src/omh/agent/system_prompt.py) | Explicit context-file loading with diagnostics and data-only system section assembly |
+| [`skills.py`](../src/omh/agent/skills.py) | Host-selected skill discovery, source precedence and diagnostics, capability-gated catalogs, and explicit input expansion |
 | [`hooks.py`](../src/omh/agent/hooks.py) | Request, turn, tool, credential, and queue hooks with their inputs and results |
 | [`stream_fn.py`](../src/omh/agent/stream_fn.py) | Model stream function contract and host-installed default |
 
@@ -1244,7 +1306,8 @@ The main SDK includes the in-process Agent, complete conversation records and
 isolated snapshots, standalone loop, request/turn/tool hooks, input queues,
 events, bounded dialogue and summary retries, manual and automatic compaction,
 one-attempt overflow and truncated-response recovery, host-selected read/bash/edit/write
-tools, explicit context-file loading and system section assembly, and cooperative cancellation.
+tools, explicit context-file loading and system section assembly, skill discovery
+and explicit expansion helpers, and cooperative cancellation.
 Applications supply executable tools and retry configuration and own
 application-level session files, resource selection and reload, and UI/CLI behavior.
 
@@ -1258,6 +1321,13 @@ do not validate a live service or performance.
 
 ## Migration from mutable Agent state
 
+- Hosts can use `SkillSource` and `load_skills` to replace their skill discovery,
+  add `format_skills_for_prompt(..., tools=actual_tools)` to a system section,
+  and pass `expand_skill_command(...).text` to the existing input APIs. Display
+  its diagnostics before accepting input as appropriate. Expand once before
+  submission so retries reuse the accepted text. These helpers do not add slash
+  syntax to the Agent or change the separate durable skill APIs; in-process
+  `Skill` stores metadata and explicit invocation rereads its file.
 - Hosts can replace hand-written AGENTS discovery with
   `load_project_context_files(cwd=..., agent_dir=..., context_dirs=...)` and
   inspect its diagnostics. Use `build_system_sections` for prompt text and pass
