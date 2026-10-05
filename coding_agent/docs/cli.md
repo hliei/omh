@@ -34,6 +34,33 @@ Only providers whose runtime support is registered appear. The directory grows
 as provider deliveries land; the `source` column distinguishes built-in
 metadata from future user configuration.
 
+### Built-in model directory
+
+The built-in directory registers the eight provider/model combinations whose
+runtime support ships with this delivery. All eight use the
+`openai-completions` protocol; the protocol name describes the request shape,
+not an OpenAI provider or account.
+
+| Provider | Model | Input | Selectable thinking |
+| --- | --- | --- | --- |
+| `deepseek` | `deepseek-flash` | text, image | off, low, high, max |
+| `deepseek` | `deepseek-v4-pro` | text | off, high, max |
+| `opencode-go` | `deepseek-v4.1-flash` | text, image | low, high, max |
+| `opencode-go` | `deepseek-v4-pro` | text | high, max |
+| `opencode-go` | `glm-5.3` | text | low, high, max |
+| `opencode-go` | `glm-5.3-flash` | text, image | low, high, max |
+| `opencode-go` | `kimi-k3` | text, image | max |
+| `opencode-go` | `kimi-k2.7-code` | text, image | `-` (fixed, no adjustable level) |
+
+The thinking column lists the levels the selected model really accepts. `off`
+is absent where the model cannot disable thinking, so the directory never offers
+a fabricated off. A model with a fixed thinking mode shows `-` and rejects an
+explicit `--thinking` value with a fixed-mode diagnostic rather than inventing a
+level. The listing also shows each model's context window, output limit and
+estimated input/output rates. Built-in capability and price entries are offline
+declarations; they are not evidence that a live request or an account
+entitlement has been verified.
+
 ## Mode selection
 
 | Situation | Mode |
@@ -70,7 +97,7 @@ All values are validated before any request; an explicit `--skill` or
 | `--cwd <dir>` | Working directory for a new session or explicit reopen override |
 | `--provider <name>` | Provider ID |
 | `--model <provider/id\|id>` | Exact model ID, never fuzzy-replaced |
-| `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; the selected model restricts the valid set |
+| `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; the selected model restricts the valid set, and a fixed thinking model accepts none |
 | `--api-key <key>` | API key for this process only |
 | `--name <name>` | Session display name |
 | `--tools <names>` | Comma-separated distinct subset of `read`, `bash`, `edit`, `write` |
@@ -104,7 +131,8 @@ The command exits `2` before any request for:
 - An unknown option, unknown tool, missing value or repeated single-value option.
 - An explicit `--skill` or `--prompt-template` path that does not exist.
 - A provider mismatch between `--provider` and `--model provider/id`, an unknown
-  provider or model, or a thinking level the selected model does not support.
+  provider or model, or a thinking level the selected model does not support,
+  including any level on a fixed thinking model.
 - More than one of `--session`, `-c`/`--continue` and `-r`/`--resume`.
 - `--no-session` with any reopen selector or `--session-dir`.
 - `-p`/`--print` with `--mode interactive`, `--tools` with `--no-tools`, or
