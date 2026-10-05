@@ -40,13 +40,27 @@ if [ "${#subject}" -gt 72 ]; then
   fail "the subject is ${#subject} characters; keep it within 72"
 fi
 
-# Merge and revert commits are git-generated rather than written deliveries.
+branch=$(git symbolic-ref --quiet --short HEAD || true)
+
+# Git-generated integration commits belong on delivery branches, not local main.
 case "$subject" in
-  Merge\ *|Revert\ *) exit 0 ;;
+  Merge\ *|Revert\ *)
+    if [ "$branch" = main ]; then
+      fail "main accepts direct docs/chore commits; integrate deliveries through PRs"
+    fi
+    exit 0
+    ;;
 esac
 
 if ! printf '%s\n' "$subject" | grep -Eq '^(feat|fix|docs|refactor|test|chore)(\([a-z0-9._/-]+\))?!?: .+$'; then
   fail "the subject is not a Conventional Commit subject"
+fi
+
+if [ "$branch" = main ]; then
+  case "$subject" in
+    docs:*|docs\(*|docs\!:*|chore:*|chore\(*|chore\!:*) ;;
+    *) fail "main accepts direct docs/chore commits; start a delivery with scripts/workflow.sh" ;;
+  esac
 fi
 
 exit 0
