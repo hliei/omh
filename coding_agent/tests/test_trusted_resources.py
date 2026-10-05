@@ -440,6 +440,18 @@ async def test_explicit_system_and_ordered_append_win_over_project_and_global(tm
     assert "project append" not in prompt and "global append" not in prompt
 
 
+async def test_all_empty_explicit_append_falls_back_to_project_addendum(tmp_path: Path) -> None:
+    cwd, agent_dir, home = build_trusted_project(tmp_path)
+    host = CodingAgentHost(
+        startup_dir=cwd, agent_dir=agent_dir, home=home, project_trusted=True,
+        append_system=(("text", ""), ("text", "")),
+    )
+    _, stream = await assemble(host)
+    prompt = prompt_of(stream)
+    assert "project append" in prompt
+    assert "global append" not in prompt
+
+
 async def test_explicit_empty_system_prompt_replaces_the_base(tmp_path: Path) -> None:
     cwd, agent_dir, home = build_trusted_project(tmp_path)
     host = CodingAgentHost(

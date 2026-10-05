@@ -21,10 +21,10 @@ reported as a diagnostic instead of silently switching provider or directory.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 
 from omh.agent import (
     AgentHistorySettings,
@@ -66,6 +66,7 @@ from coding_agent.config import (
     TRUST_FILE,
     ConfigDiagnostic,
     ConfigError,
+    DiagnosticReason,
     DiagnosticSource,
     FileCredentialStore,
     load_settings,
@@ -101,6 +102,8 @@ DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "high"
 _TIER_FOR_SCOPE: dict[DiagnosticSource, str] = {
     "cli": "explicit", "project": "project-config", "global": "global-config",
 }
+
+_SourceT = TypeVar("_SourceT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,9 +468,13 @@ class CodingAgentHost:
             parts: list[str] = []
             for kind, value in self._append_system:
                 text = value if kind == "text" else self._read_explicit_file(value, diagnostics)
-                if text is not None:
+                if text:
                     parts.append(text)
-            append: str | None = "\n\n".join(parts)
+            # An all-empty explicit append adds nothing; fall back instead of
+            # silently suppressing a project or global addendum.
+            append: str | None = (
+                "\n\n".join(parts) if parts else self._read_fallback(cwd, trusted, diagnostics, APPEND_SYSTEM_FILE)
+            )
         else:
             append = self._read_fallback(cwd, trusted, diagnostics, APPEND_SYSTEM_FILE)
         return custom, append
@@ -476,35 +483,48 @@ class CodingAgentHost:
         self, value: str | Path, diagnostics: list[ConfigDiagnostic],
     ) -> str | None:
         path = self._resolve_path(value)
-        try:
-            return path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            diagnostics.append(ConfigDiagnostic(
-                str(path), "cli", "unavailable", f"Cannot read {path.name}: {error}",
-            ))
-            return None
+        return self._read_text(
+            path, diagnostics, source="cli", reason="unavailable", name=path.name, missing_ok=False,
+        )
 
     def _read_fallback(
         self, cwd: Path, trusted: bool, diagnostics: list[ConfigDiagnostic], name: str,
     ) -> str | None:
         if trusted:
             project_file = cwd / CONFIG_DIR_NAME / name
-            text = self._read_resource(project_file, diagnostics, "project", name)
+            text = self._read_text(
+                project_file, diagnostics, source="project", reason="recoverable",
+                name=name, missing_ok=True,
+            )
             if text is not None:
                 return text
-        return self._read_resource(self.agent_dir / name, diagnostics, "global", name)
+        return self._read_text(
+            self.agent_dir / name, diagnostics, source="global", reason="recoverable",
+            name=name, missing_ok=True,
+        )
 
     @staticmethod
-    def _read_resource(
-        path: Path, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, name: str,
+    def _read_text(
+        path: Path, diagnostics: list[ConfigDiagnostic], *, source: DiagnosticSource,
+        reason: DiagnosticReason, name: str, missing_ok: bool,
     ) -> str | None:
+        """Read one UTF-8 text input, diagnosing a failure at its source.
+
+        ``missing_ok`` distinguishes an optional fallback candidate, which is
+        simply absent, from an explicit file whose absence blocks readiness.
+        """
         try:
             return path.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        except FileNotFoundError as error:
+            if missing_ok:
+                return None
+            diagnostics.append(ConfigDiagnostic(
+                str(path), source, reason, f"Cannot read {name}: {error}",
+            ))
             return None
         except (OSError, UnicodeError) as error:
             diagnostics.append(ConfigDiagnostic(
-                str(path), source, "recoverable", f"Cannot read {name}: {error}",
+                str(path), source, reason, f"Cannot read {name}: {error}",
             ))
             return None
 
@@ -693,36 +713,40 @@ class CodingAgentHost:
         return DEFAULT_TOOLS
 
     def _skill_sources(self) -> tuple[SkillSource, ...]:
-        sources = [
-            SkillSource(self._resolve_path(value), "explicit")
-            for value in self._explicit_skills
-        ]
-        sources.extend(
-            SkillSource(value, self._configured_tier("skills"))
-            for value in settings_strings(self.settings, "skills")
-        )
-        if not self._no_skills:
-            sources.extend(automatic_skill_sources(
+        automatic = (
+            automatic_skill_sources(
                 cwd=self._settings_cwd, agent_dir=self.agent_dir, home=self.home,
                 project_trusted=self._trusted,
-            ))
-        return tuple(sources)
+            )
+            if not self._no_skills else ()
+        )
+        return self._resource_sources("skills", self._explicit_skills, SkillSource, automatic)
 
     def _template_sources(self) -> tuple[PromptTemplateSource, ...]:
-        sources = [
-            PromptTemplateSource(self._resolve_path(value), "explicit")
-            for value in self._explicit_templates
-        ]
-        sources.extend(
-            PromptTemplateSource(value, self._configured_tier("prompts"))
-            for value in settings_strings(self.settings, "prompts")
-        )
-        if not self._no_prompt_templates:
-            sources.extend(automatic_template_sources(
+        automatic = (
+            automatic_template_sources(
                 cwd=self._settings_cwd, agent_dir=self.agent_dir,
                 project_trusted=self._trusted,
-            ))
-        return tuple(sources)
+            )
+            if not self._no_prompt_templates else ()
+        )
+        return self._resource_sources("prompts", self._explicit_templates, PromptTemplateSource, automatic)
+
+    def _resource_sources(
+        self, key: str, explicit: tuple[str, ...], configured: Callable[[str | Path, str], _SourceT],
+        automatic: tuple[_SourceT, ...],
+    ) -> tuple[_SourceT, ...]:
+        """Compose explicit, configured and automatic sources, preserving tier order.
+
+        ``automatic`` is empty when discovery is disabled; explicit and
+        configured paths still load.
+        """
+        tier = self._configured_tier(key)
+        return (
+            *(configured(self._resolve_path(value), "explicit") for value in explicit),
+            *(configured(value, tier) for value in settings_strings(self.settings, key)),
+            *automatic,
+        )
 
     def _configured_tier(self, key: str) -> str:
         """Map the effective settings scope for a resource array onto its tier."""
