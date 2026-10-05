@@ -35,7 +35,8 @@ subsequence match. An empty result prints nothing.
 Only providers whose runtime support is registered appear. Built-in catalog
 entries report `source=builtin`; metadata supplied or overridden by the global
 `models.json` reports `source=user`. A missing required `models.json` field is
-diagnosed rather than inferred.
+diagnosed on stderr rather than inferred, and the listing still prints the
+models it could resolve.
 
 ## Mode selection
 

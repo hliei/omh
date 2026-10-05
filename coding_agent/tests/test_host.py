@@ -216,6 +216,21 @@ def test_open_reports_visible_thinking_clamp(tmp_path: Path) -> None:
     assert selection.thinking_level == "high"
     clamp = next(d for d in selection.diagnostics if "using" in d.message)
     assert "low" in clamp.message and "high" in clamp.message
+    assert clamp.source == "history"
+
+
+def test_configured_thinking_clamp_reports_settings_source(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    write_settings(agent_dir, {
+        "defaultModel": "deepseek/deepseek-v4-pro",
+        "defaultThinkingLevel": "low",
+    })
+    host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir)
+    selection = host.select_new()
+    assert selection.ready
+    assert selection.thinking_level == "high"
+    clamp = next(d for d in selection.diagnostics if "using" in d.message)
+    assert clamp.source == "global"
 
 
 async def test_key_source_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

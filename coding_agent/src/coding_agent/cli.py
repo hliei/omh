@@ -356,6 +356,8 @@ def run(
         return EXIT_OK
 
     if args.list_models:
+        for diagnostic in directory.diagnostics:
+            _diagnostic(stderr, f"{diagnostic.source}: {diagnostic.message}")
         _write_listings(stdout, directory.listings(args.list_models_search))
         return EXIT_OK
     if args.list_sessions:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from coding_agent.model_directory import (
@@ -50,6 +51,7 @@ def test_models_json_override_marks_user_source_and_preserves_identity(tmp_path:
             },
         },
     })
+    os.utime(agent_dir / "models.json", (1_577_923_200, 1_577_923_200))  # 2020-01-02 UTC
     directory = ModelDirectory(agent_dir=agent_dir)
     listing = next(entry for entry in directory.listings() if entry.model.id == "deepseek-v4.1-flash")
     assert listing.model.cost.input == 9.5
@@ -57,6 +59,8 @@ def test_models_json_override_marks_user_source_and_preserves_identity(tmp_path:
     # The override merges; fields the override omits keep the built-in value.
     assert listing.model.cost.cache_read == 0
     assert listing.source == SOURCE_USER
+    # User metadata carries its own configuration date, not the built-in catalog date.
+    assert listing.source_date == "2020-01-02"
     assert directory.diagnostics == ()
 
 
@@ -85,6 +89,50 @@ def test_models_json_adds_a_model_through_the_supported_protocol(tmp_path: Path)
     assert matches[0].provider == "deepseek"
     listing = next(entry for entry in directory.listings() if entry.model.id == "deepseek-experiment")
     assert listing.source == SOURCE_USER
+
+
+def test_models_json_duplicate_definition_is_diagnosed(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    write_models(agent_dir, {
+        "providers": {
+            "deepseek": {
+                "models": [{
+                    "id": "deepseek-flash",
+                    "api": "openai-completions",
+                    "reasoning": True,
+                    "input": ["text"],
+                    "cost": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0},
+                    "contextWindow": 1000,
+                    "maxTokens": 100,
+                }],
+            },
+        },
+    })
+    directory = ModelDirectory(agent_dir=agent_dir)
+    assert any("duplicates" in diagnostic.message for diagnostic in directory.diagnostics)
+    matches = directory.find_models("deepseek", "deepseek-flash")
+    assert len(matches) == 1 and matches[0].cost.input == 0.3
+
+
+def test_models_json_override_field_types_are_diagnosed(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    write_models(agent_dir, {
+        "providers": {
+            "deepseek": {
+                "bogusProviderKey": True,
+                "modelOverrides": {
+                    "deepseek-flash": {"headers": "not-an-object", "thinkingLevelMap": {"high": 5}},
+                },
+            },
+        },
+    })
+    directory = ModelDirectory(agent_dir=agent_dir)
+    reasons = [diagnostic.reason for diagnostic in directory.diagnostics]
+    assert "unknown-key" in reasons
+    assert "invalid-type" in reasons
+    assert "invalid-value" in reasons
+    listing = next(entry for entry in directory.listings() if entry.model.id == "deepseek-flash")
+    assert listing.model.headers is None
 
 
 def test_models_json_missing_fields_are_diagnosed_not_inferred(tmp_path: Path) -> None:

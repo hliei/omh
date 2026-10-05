@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
@@ -42,7 +43,7 @@ from omh.llm.types import (
 )
 from omh.llm.utils.event_stream import AssistantMessageEventStream
 
-from coding_agent.config import MODELS_FILE, ConfigDiagnostic
+from coding_agent.config import MODELS_FILE, ConfigDiagnostic, DiagnosticSource
 
 #: Marks model metadata that ships with the product rather than user config.
 SOURCE_BUILTIN = "builtin"
@@ -70,6 +71,7 @@ MODEL_OVERRIDE_FIELDS = frozenset({
     "name", "reasoning", "thinkingLevelMap", "input", "cost",
     "contextWindow", "maxTokens", "samplingParams", "headers", "compat",
 })
+_PROVIDER_FIELDS = frozenset({"models", "modelOverrides"})
 _REQUIRED_DEFINITION_FIELDS = ("id", "api", "reasoning", "input", "cost", "contextWindow", "maxTokens")
 _COMPAT_FIELDS = {
     "supportsStore": "supports_store",
@@ -141,12 +143,13 @@ class ModelDirectory:
         )
         diagnostics: list[ConfigDiagnostic] = []
         config = _load_models_config(path, diagnostics)
+        user_date = _user_source_date(path)
         directory = create_models()
         for factory in _BUILTIN_PROVIDERS:
             base = factory()
             provider_config = config.get(base.id, _ProviderConfig())
             directory.set_provider(_merge_provider(
-                base, provider_config, path, diagnostics, self._meta,
+                base, provider_config, path, diagnostics, self._meta, user_date,
             ))
         self.diagnostics = tuple(diagnostics)
         self._models = directory
@@ -162,16 +165,18 @@ class ModelDirectory:
 
     def listings(self, search: str | None = None) -> tuple[ModelListing, ...]:
         """Return every effective model, ordered by provider and ID, optionally searched."""
-        entries = [
-            ModelListing(
+        entries = []
+        for model in self._models.get_models():
+            source, source_date = self._meta.get(
+                (model.provider, model.id), (SOURCE_BUILTIN, BUILTIN_CATALOG_DATE),
+            )
+            entries.append(ModelListing(
                 provider=model.provider,
                 model=model,
                 thinking_levels=self.thinking_levels(model),
-                source=self._meta.get((model.provider, model.id), (SOURCE_BUILTIN, BUILTIN_CATALOG_DATE))[0],
-                source_date=self._meta.get((model.provider, model.id), (SOURCE_BUILTIN, BUILTIN_CATALOG_DATE))[1],
-            )
-            for model in self._models.get_models()
-        ]
+                source=source,
+                source_date=source_date,
+            ))
         entries.sort(key=lambda entry: (entry.provider, entry.model.id))
         if search is not None and search.strip():
             entries = [entry for entry in entries if _matches(entry, search.strip())]
@@ -214,6 +219,16 @@ def _is_subsequence(needle: str, haystack: str) -> bool:
 # --------------------------------------------------------------------------- #
 # models.json
 # --------------------------------------------------------------------------- #
+
+
+def _user_source_date(path: Path | None) -> str:
+    """Report when user-supplied metadata was configured, not the built-in date."""
+    if path is None:
+        return BUILTIN_CATALOG_DATE
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date().isoformat()
+    except OSError:
+        return BUILTIN_CATALOG_DATE
 
 
 def _load_models_config(
@@ -265,6 +280,12 @@ def _load_models_config(
                 str(path), "models", "invalid-type", f"models.json provider {provider_id} must be an object",
             ))
             continue
+        unknown = set(raw) - _PROVIDER_FIELDS
+        if unknown:
+            diagnostics.append(ConfigDiagnostic(
+                str(path), "models", "unknown-key",
+                f"models.json provider {provider_id} has unknown keys {', '.join(sorted(unknown))}",
+            ))
         entry = _ProviderConfig()
         definitions = raw.get("models", [])
         if not isinstance(definitions, list):
@@ -302,23 +323,30 @@ def _load_models_config(
 def _merge_provider(
     base: Provider, config: _ProviderConfig, path: Path | None,
     diagnostics: list[ConfigDiagnostic], meta: dict[tuple[str, str], tuple[str, str]],
+    user_date: str,
 ) -> Provider:
     models: list[Model] = []
-    seen: set[str] = set()
+    seen: set[str] = {model.id for model in base.get_models()}
     for model in base.get_models():
         override = config.overrides.get(model.id)
         if override is None:
             models.append(model)
             continue
         models.append(_apply_override(path, base.id, model, override, diagnostics))
-        meta[(base.id, model.id)] = (SOURCE_USER, BUILTIN_CATALOG_DATE)
-        seen.add(model.id)
+        meta[(base.id, model.id)] = (SOURCE_USER, user_date)
     for definition in config.models:
         definition_model = _definition_model(path, base, definition, diagnostics)
-        if definition_model is None or definition_model.id in seen:
+        if definition_model is None:
+            continue
+        if definition_model.id in seen:
+            diagnostics.append(ConfigDiagnostic(
+                _source(path), "models", "invalid-value",
+                f"models.json model {definition_model.id!r} duplicates an existing model; "
+                "use modelOverrides instead",
+            ))
             continue
         models.append(definition_model)
-        meta[(base.id, definition_model.id)] = (SOURCE_USER, BUILTIN_CATALOG_DATE)
+        meta[(base.id, definition_model.id)] = (SOURCE_USER, user_date)
         seen.add(definition_model.id)
     return _WrappedProvider(base, models)
 
@@ -355,7 +383,7 @@ def _definition_model(
     path: Path | None, base: Provider, definition: Mapping[str, object],
     diagnostics: list[ConfigDiagnostic],
 ) -> Model | None:
-    source = str(path) if path is not None else "models.json"
+    source = _source(path)
     provider_id = base.id
     unknown = set(definition) - MODEL_DEFINITION_FIELDS
     if unknown:
@@ -402,6 +430,9 @@ def _definition_model(
     if context_window is None or max_tokens is None:
         return None
     name = definition.get("name")
+    thinking_map = _thinking_map(definition.get("thinkingLevelMap"), diagnostics, source, model_id)
+    headers = _headers(definition.get("headers"), diagnostics, source, model_id)
+    sampling = _sampling_params(definition.get("samplingParams"), diagnostics, source, model_id)
     return Model(
         id=model_id,
         name=name if isinstance(name, str) and name else model_id,
@@ -413,9 +444,9 @@ def _definition_model(
         cost=cost,
         context_window=context_window,
         max_tokens=max_tokens,
-        thinking_level_map=_thinking_map(definition.get("thinkingLevelMap")),
-        sampling_params=cast("dict[str, object] | None", definition.get("samplingParams")),
-        headers=cast("dict[str, str] | None", definition.get("headers")),
+        thinking_level_map=thinking_map,
+        sampling_params=sampling,
+        headers=headers,
         compat=_compat(definition.get("compat"), diagnostics, source, model_id),
     )
 
@@ -424,7 +455,7 @@ def _apply_override(
     path: Path | None, provider_id: str, model: Model, override: Mapping[str, object],
     diagnostics: list[ConfigDiagnostic],
 ) -> Model:
-    source = str(path) if path is not None else "models.json"
+    source = _source(path)
     unknown = set(override) - MODEL_OVERRIDE_FIELDS
     if unknown:
         diagnostics.append(ConfigDiagnostic(
@@ -458,18 +489,22 @@ def _apply_override(
         if value is not None:
             changes[field_name] = value
     if "thinkingLevelMap" in override:
-        changes["thinking_level_map"] = _thinking_map(override["thinkingLevelMap"])
+        changes["thinking_level_map"] = _thinking_map(override["thinkingLevelMap"], diagnostics, source, model.id)
     if "samplingParams" in override:
-        changes["sampling_params"] = override["samplingParams"]
+        changes["sampling_params"] = _sampling_params(override["samplingParams"], diagnostics, source, model.id)
     if "headers" in override:
-        changes["headers"] = override["headers"]
+        changes["headers"] = _headers(override["headers"], diagnostics, source, model.id)
     if "compat" in override:
         changes["compat"] = _compat(override["compat"], diagnostics, source, model.id)
     return replace(model, **changes)  # type: ignore[arg-type]
 
 
+def _source(path: Path | None) -> DiagnosticSource:
+    return cast(DiagnosticSource, str(path)) if path is not None else "models"
+
+
 def _input(
-    value: object, diagnostics: list[ConfigDiagnostic], source: str, model_id: str,
+    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
 ) -> tuple[Literal["text", "image"], ...] | None:
     if not isinstance(value, list) or not value or not all(entry in ("text", "image") for entry in value):
         diagnostics.append(ConfigDiagnostic(
@@ -481,7 +516,8 @@ def _input(
 
 
 def _positive_int(
-    value: object, label: str, diagnostics: list[ConfigDiagnostic], source: str, model_id: str,
+    value: object, label: str, diagnostics: list[ConfigDiagnostic],
+    source: DiagnosticSource, model_id: str,
 ) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
@@ -493,7 +529,7 @@ def _positive_int(
 
 
 def _cost(
-    value: object, diagnostics: list[ConfigDiagnostic], source: str, model_id: str, *,
+    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str, *,
     base: ModelCost | None = None,
 ) -> ModelCost | None:
     if not isinstance(value, dict):
@@ -518,7 +554,7 @@ def _cost(
 
 
 def _compat(
-    value: object, diagnostics: list[ConfigDiagnostic], source: str, model_id: str,
+    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
 ) -> OpenAICompletionsCompat | None:
     if value is None:
         return None
@@ -551,12 +587,55 @@ def _compat(
     return OpenAICompletionsCompat(**options)  # type: ignore[arg-type]
 
 
-def _thinking_map(value: object) -> ThinkingLevelMap | None:
+def _thinking_map(
+    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
+) -> ThinkingLevelMap | None:
+    if value is None:
+        return None
     if not isinstance(value, dict):
+        diagnostics.append(ConfigDiagnostic(
+            source, "models", "invalid-type",
+            f"models.json model {model_id!r} thinkingLevelMap must be an object",
+        ))
         return None
     allowed = {"off", "minimal", "low", "medium", "high", "xhigh", "max"}
     result: ThinkingLevelMap = {}
     for key, entry in value.items():
-        if key in allowed and (entry is None or isinstance(entry, str)):
-            result[cast(ModelThinkingLevel, key)] = entry
+        if key not in allowed or not (entry is None or isinstance(entry, str)):
+            diagnostics.append(ConfigDiagnostic(
+                source, "models", "invalid-value",
+                f"models.json model {model_id!r} thinkingLevelMap {key!r} must be a string or null",
+            ))
+            continue
+        result[cast(ModelThinkingLevel, key)] = entry
     return result or None
+
+
+def _headers(
+    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
+) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not all(
+        isinstance(name, str) and isinstance(entry, str) for name, entry in value.items()
+    ):
+        diagnostics.append(ConfigDiagnostic(
+            source, "models", "invalid-type",
+            f"models.json model {model_id!r} headers must be an object of strings",
+        ))
+        return None
+    return {name: entry for name, entry in value.items()}
+
+
+def _sampling_params(
+    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        diagnostics.append(ConfigDiagnostic(
+            source, "models", "invalid-type",
+            f"models.json model {model_id!r} samplingParams must be an object",
+        ))
+        return None
+    return dict(value)

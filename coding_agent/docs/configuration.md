@@ -42,6 +42,7 @@ therefore does not append to the global array.
 | `compaction` | `enabled`, `reserveTokens`, `keepRecentTokens`, mapped to the SDK's public compaction settings |
 | `retry` | `enabled`, `maxRetries`, `baseDelayMs`, `maxAgentDelayMs`, mapped to the SDK's public retry policy |
 | `skills`, `prompts` | Additional resource paths resolved against the effective session cwd |
+| `sessionDir` | Session storage root preference consumed by session discovery |
 | `theme` | Built-in theme preference consumed by the interactive delivery |
 
 Unknown keys are reported with a hint and preserved; a known key with the wrong
@@ -115,9 +116,15 @@ A definition requires `id`, `api`, `reasoning`, `input`, `cost`,
 `contextWindow` and `maxTokens`. `cost` requires `input`, `output`, `cacheRead`
 and `cacheWrite`. An override merges into the built-in entry, so omitted fields
 keep their built-in value. Entries that come from `models.json` are listed with
-`source=user`. Adding a model does not make it verified support. Startup and
-reopen never fetch a catalog over the network and never replace a saved history
-selection.
+`source=user` and the date the file was configured. Adding a model does not make
+it verified support.
+
+Unknown keys, wrong field types, malformed `thinkingLevelMap` entries, an
+unreadable `headers` object and a `models` entry that duplicates an existing ID
+are all diagnosed; a duplicate must use `modelOverrides` instead. `--list-models`
+prints these diagnostics to stderr while still listing the models it could
+resolve. Startup and reopen never fetch a catalog over the network and never
+replace a saved history selection.
 
 ## Credentials
 

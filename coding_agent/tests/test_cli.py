@@ -153,6 +153,19 @@ def test_list_models_reads_global_models_json_without_writing(home: Path, tmp_pa
     assert_no_terminal_noise(result.stdout)
 
 
+def test_list_models_surfaces_models_json_diagnostics(home: Path, tmp_path: Path) -> None:
+    agent_dir = tmp_path / "omh-agent"
+    agent_dir.mkdir()
+    (agent_dir / "models.json").write_text(json.dumps({
+        "providers": {"deepseek": {"models": [{"id": "incomplete"}]}},
+    }))
+    result = run_cli("--list-models", home=home, env={"OMH_CODING_AGENT_DIR": str(agent_dir)})
+    assert result.returncode == 0
+    assert "incomplete" in result.stderr
+    assert "deepseek-flash" in result.stdout
+    assert_no_terminal_noise(result.stderr)
+
+
 def test_list_models_search_filters_the_directory(home: Path) -> None:
     matched = run_cli("--list-models", "flash", home=home)
     assert matched.returncode == 0

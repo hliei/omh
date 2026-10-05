@@ -56,9 +56,11 @@ from omh.llm.utils.event_stream import AssistantMessageEventStream
 from coding_agent.agent_session import CodingAgentOptions, ToolName
 from coding_agent.config import (
     AUTH_FILE,
+    DEFAULT_TOOLS,
     SETTINGS_FILE,
     ConfigDiagnostic,
     ConfigError,
+    DiagnosticSource,
     FileCredentialStore,
     SettingsSnapshot,
     load_settings,
@@ -71,6 +73,7 @@ from coding_agent.config import (
     settings_strings,
     settings_thinking,
     settings_tools,
+    validate_tools,
 )
 from coding_agent.history import DecodedHistory, decode_history
 from coding_agent.model_directory import ModelDirectory
@@ -79,8 +82,6 @@ from coding_agent.model_directory import ModelDirectory
 DEFAULT_MODEL_REFERENCE = ("opencode-go", "deepseek-v4.1-flash")
 #: The default thinking level for models that accept a choice.
 DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "high"
-#: The built-in tool selection.
-DEFAULT_TOOLS: tuple[ToolName, ...] = ("read", "bash", "edit", "write")
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +200,7 @@ class CodingAgentHost:
             environment = provider_api_key_env(provider)
             repair = f", save one with /login, or set {environment}" if environment else " or save one with /login"
             diagnostics.append(ConfigDiagnostic(
-                provider, "credentials", "invalid-value",
+                provider, "credentials", "unavailable",
                 f"No API key available for {provider}; pass --api-key{repair}",
             ))
         return tuple(diagnostics)
@@ -320,7 +321,7 @@ class CodingAgentHost:
             candidate = self._resolve_path(explicit)
             if not candidate.is_dir():
                 diagnostics.append(ConfigDiagnostic(
-                    str(candidate), "cli", "invalid-value", f"Working directory does not exist: {candidate}",
+                    str(candidate), "cli", "unavailable", f"Working directory does not exist: {candidate}",
                 ))
                 return None
             return candidate
@@ -328,7 +329,7 @@ class CodingAgentHost:
             stored = Path(history.cwd).expanduser()
             if not stored.is_dir():
                 diagnostics.append(ConfigDiagnostic(
-                    str(stored), "history", "invalid-value",
+                    str(stored), "history", "unavailable",
                     f"Saved working directory no longer exists: {stored}; choose a replacement directory",
                 ))
                 return None
@@ -349,7 +350,7 @@ class CodingAgentHost:
             if matches else
             f"Configured default model {provider}/{model_id} is not available"
         )
-        diagnostics.append(ConfigDiagnostic(str(self._settings_path()), "settings", "invalid-value", message))
+        diagnostics.append(ConfigDiagnostic(str(self._settings_path()), "settings", "unavailable", message))
         return None
 
     def _settings_path(self) -> Path:
@@ -357,17 +358,21 @@ class CodingAgentHost:
             return project_settings_path(self._settings_cwd)
         return self.agent_dir / SETTINGS_FILE
 
+    def _configured_or_product_model(self, diagnostics: list[ConfigDiagnostic]) -> Model | None:
+        """Apply the configured default, falling back to the product default only when unset."""
+        configured = self._configured_default_model(diagnostics)
+        if configured is not None or settings_model(self.settings) is not None:
+            return configured
+        return self._resolve_reference(
+            DEFAULT_MODEL_REFERENCE[0], DEFAULT_MODEL_REFERENCE[1], diagnostics, source="settings",
+        )
+
     def _resolve_new_model(
         self, provider: str | None, model: str | None, diagnostics: list[ConfigDiagnostic],
     ) -> Model | None:
         if model is not None or provider is not None:
             return self._resolve_reference(provider, model, diagnostics, source="cli")
-        configured = self._configured_default_model(diagnostics)
-        if configured is not None or settings_model(self.settings) is not None:
-            return configured
-        return self._resolve_reference(
-            DEFAULT_MODEL_REFERENCE[0], DEFAULT_MODEL_REFERENCE[1], diagnostics, source="default",
-        )
+        return self._configured_or_product_model(diagnostics)
 
     def _resolve_history_model(
         self, provider: str | None, model: str | None, settings: AgentHistorySettings,
@@ -379,22 +384,17 @@ class CodingAgentHost:
             matches = self.directory.find_models(settings.provider, settings.model_id)
             if not matches:
                 diagnostics.append(ConfigDiagnostic(
-                    f"{settings.provider}/{settings.model_id}", "history", "invalid-value",
+                    f"{settings.provider}/{settings.model_id}", "history", "unavailable",
                     f"Saved model {settings.provider}/{settings.model_id} is not available; "
                     "select a model explicitly",
                 ))
                 return None
             return matches[0]
-        configured = self._configured_default_model(diagnostics)
-        if configured is not None or settings_model(self.settings) is not None:
-            return configured
-        return self._resolve_reference(
-            DEFAULT_MODEL_REFERENCE[0], DEFAULT_MODEL_REFERENCE[1], diagnostics, source="default",
-        )
+        return self._configured_or_product_model(diagnostics)
 
     def _resolve_reference(
         self, provider: str | None, reference: str | None, diagnostics: list[ConfigDiagnostic],
-        *, source: str,
+        *, source: DiagnosticSource,
     ) -> Model | None:
         if reference is None:
             if provider is None:
@@ -423,12 +423,12 @@ class CodingAgentHost:
         matches = self.directory.find_models(provider, model_id)
         if not matches:
             diagnostics.append(ConfigDiagnostic(
-                reference, source, "invalid-value", f"Unknown model {reference!r}",
+                reference, source, "unavailable", f"Unknown model {reference!r}",
             ))
             return None
         if len(matches) > 1:
             diagnostics.append(ConfigDiagnostic(
-                reference, source, "invalid-value",
+                reference, source, "unavailable",
                 f"Ambiguous model {reference!r}; use <provider>/<model>",
             ))
             return None
@@ -451,17 +451,22 @@ class CodingAgentHost:
                 return None
             return explicit
         requested: ModelThinkingLevel | None = None
+        origin: DiagnosticSource = "settings"
         if history is not None and history.has_thinking_level:
             requested = history.thinking_level
+            origin = "history"
         if requested is None:
-            requested = settings_thinking(self.settings)
+            configured = settings_thinking(self.settings)
+            if configured is not None:
+                requested = configured
+                origin = self.settings.source_of("defaultThinkingLevel")
         if requested is None:
             requested = DEFAULT_THINKING_LEVEL
+            origin = "settings"
         clamped = clamp_thinking_level(model, requested)
         if clamped != requested:
             diagnostics.append(ConfigDiagnostic(
-                f"{model.provider}/{model.id}", "history" if history is not None else "settings",
-                "invalid-value",
+                f"{model.provider}/{model.id}", origin, "invalid-value",
                 f"Thinking level {requested!r} is not supported by {model.provider}/{model.id}; using {clamped!r}",
             ))
         return clamped
@@ -470,13 +475,14 @@ class CodingAgentHost:
         self, explicit: tuple[ToolName, ...] | None, diagnostics: list[ConfigDiagnostic],
     ) -> tuple[ToolName, ...]:
         if explicit is not None:
-            if len(set(explicit)) != len(explicit) or any(name not in DEFAULT_TOOLS for name in explicit):
+            validated = validate_tools(explicit)
+            if validated is None:
                 diagnostics.append(ConfigDiagnostic(
-                    "<cli>", "cli", "invalid-value",
+                    "--tools", "cli", "invalid-value",
                     f"--tools must be a distinct subset of {', '.join(DEFAULT_TOOLS)}",
                 ))
                 return DEFAULT_TOOLS
-            return explicit
+            return validated
         configured = settings_tools(self.settings)
         if configured is not None:
             return configured

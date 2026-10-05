@@ -59,11 +59,20 @@ PROVIDER_API_KEY_ENV = {
 }
 
 SettingsScope = Literal["global", "project"]
+DiagnosticSource = Literal["global", "project", "cli", "settings", "history", "models", "credentials"]
 DiagnosticReason = Literal[
-    "invalid-json", "invalid-schema", "unknown-key", "invalid-type", "invalid-value",
+    "invalid-json", "invalid-schema", "unknown-key", "invalid-type", "invalid-value", "unavailable",
 ]
 
-_TOOL_NAMES: tuple[ToolName, ...] = ("read", "bash", "edit", "write")
+#: The built-in tool selection shared by settings validation and the host.
+DEFAULT_TOOLS: tuple[ToolName, ...] = ("read", "bash", "edit", "write")
+
+
+def validate_tools(names: Sequence[str]) -> tuple[ToolName, ...] | None:
+    """Accept a distinct subset of the built-in tools; an empty subset disables them."""
+    if len(set(names)) != len(names) or any(name not in DEFAULT_TOOLS for name in names):
+        return None
+    return tuple(cast(ToolName, name) for name in names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +80,7 @@ class ConfigDiagnostic:
     """One explainable configuration or directory problem with its source."""
 
     path: str
-    source: str
+    source: DiagnosticSource
     reason: DiagnosticReason
     message: str
 
@@ -112,7 +121,7 @@ def provider_api_key_env(provider_id: str) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
-def _read_json_object(path: Path, source: str) -> tuple[dict[str, object], ConfigDiagnostic | None]:
+def _read_json_object(path: Path, source: DiagnosticSource) -> tuple[dict[str, object], ConfigDiagnostic | None]:
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -159,7 +168,6 @@ _SETTINGS_TYPES: dict[str, type] = {
     "defaultProvider": str,
     "defaultModel": str,
     "defaultThinkingLevel": str,
-    "modelThinkingLevels": dict,
     "enabledModels": list,
     "defaultTools": list,
     "skills": list,
@@ -172,7 +180,7 @@ _SETTINGS_TYPES: dict[str, type] = {
 
 
 def _validate_object(
-    values: Mapping[str, object], *, path: str, source: str,
+    values: Mapping[str, object], *, path: str, source: DiagnosticSource,
     schema: Mapping[str, type], label: str,
 ) -> tuple[dict[str, object], list[ConfigDiagnostic]]:
     """Validate one settings object, dropping invalid values and hinting unknown keys."""
@@ -247,7 +255,7 @@ _RETRY_TYPES: dict[str, type] = {
 
 
 def _validate_settings(
-    values: Mapping[str, object], *, path: str, source: str,
+    values: Mapping[str, object], *, path: str, source: DiagnosticSource,
 ) -> tuple[dict[str, object], list[ConfigDiagnostic]]:
     accepted, diagnostics = _validate_object(
         values, path=path, source=source, schema=_SETTINGS_TYPES, label="settings",
@@ -260,14 +268,12 @@ def _validate_settings(
         ))
         accepted.pop("defaultThinkingLevel", None)
     tools = accepted.get("defaultTools")
-    if isinstance(tools, list):
-        unknown = [entry for entry in tools if entry not in _TOOL_NAMES]
-        if unknown or len(set(tools)) != len(tools):
-            diagnostics.append(ConfigDiagnostic(
-                path, source, "invalid-value",
-                f"defaultTools must be a distinct subset of {', '.join(_TOOL_NAMES)}",
-            ))
-            accepted.pop("defaultTools", None)
+    if isinstance(tools, list) and validate_tools(tools) is None:
+        diagnostics.append(ConfigDiagnostic(
+            path, source, "invalid-value",
+            f"defaultTools must be a distinct subset of {', '.join(DEFAULT_TOOLS)}",
+        ))
+        accepted.pop("defaultTools", None)
     if isinstance(accepted.get("compaction"), dict):
         nested, nested_diagnostics = _validate_object(
             cast(Mapping[str, object], accepted["compaction"]),
@@ -371,14 +377,7 @@ def settings_tools(snapshot: SettingsSnapshot) -> tuple[ToolName, ...] | None:
     value = snapshot.values.get("defaultTools")
     if not isinstance(value, list):
         return None
-    return tuple(cast(ToolName, entry) for entry in value)
-
-
-def settings_enabled_models(snapshot: SettingsSnapshot) -> tuple[str, ...]:
-    value = snapshot.values.get("enabledModels")
-    if not isinstance(value, list):
-        return ()
-    return tuple(entry for entry in value if isinstance(entry, str))
+    return validate_tools(value)
 
 
 def settings_strings(snapshot: SettingsSnapshot, key: str) -> tuple[str, ...]:
