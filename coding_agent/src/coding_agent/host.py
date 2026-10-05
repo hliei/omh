@@ -533,7 +533,6 @@ class CodingAgentHost:
             ))
             return None
 
-
     def _resolve_path(self, path: str | Path) -> Path:
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():

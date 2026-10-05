@@ -123,10 +123,13 @@ path must exist.
 
 Literal text options never reinterpret file-looking values; the matching
 `-file` option reads a file. `--system-prompt` and `--system-prompt-file` are
-mutually exclusive; append options may mix text and files in any order. A
-project's controlled settings, resources and system files load only when the
-project is trusted; `--approve`/`--no-approve` decide one run without asking,
-and an already remembered decision or explicit path is used otherwise. See
+mutually exclusive; append options may mix text and files in any order. An
+append option whose value is empty adds nothing, so it does not suppress a
+project or global `APPEND_SYSTEM.md` fallback; `--system-prompt ""` does
+intentionally replace the base preamble. A project's controlled settings,
+resources and system files load only when the project is trusted;
+`--approve`/`--no-approve` decide one run without asking, and an already
+remembered decision or explicit path is used otherwise. See
 [project trust and resource discovery](configuration.md#project-trust).
 
 `--model` and `--thinking` must name an exact registered model and a level that

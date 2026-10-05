@@ -103,8 +103,11 @@ class ConfigDiagnostic:
 
     @property
     def blocking(self) -> bool:
-        # ``untrusted`` records a skipped controlled layer and ``recoverable``
-        # records a fallback resource read; both still leave a runnable session.
+        # ``untrusted`` records a skipped controlled layer, ``recoverable``
+        # records a fallback resource read, and any ``trust`` diagnostic only
+        # reports a lost remembered default; all still leave a runnable session.
+        if self.source == "trust":
+            return False
         return self.reason not in {"unknown-key", "adjusted", "untrusted", "recoverable"}
 
 

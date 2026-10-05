@@ -401,6 +401,21 @@ async def test_agents_follow_root_to_cwd_order_independently_of_trust(tmp_path: 
     assert prompt.index("repo instructions") < prompt.index("nested instructions")
 
 
+def test_corrupt_trust_file_is_diagnosed_but_never_blocks(tmp_path: Path) -> None:
+    cwd, agent_dir, home = build_trusted_project(tmp_path)
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "trust.json").write_text("{broken")
+    host = CodingAgentHost(
+        startup_dir=cwd, agent_dir=agent_dir, home=home, approve=True,
+    )
+    selection = host.select_new()
+    assert selection.ready
+    assert selection.model is not None and selection.model.id == "deepseek-v4-pro"
+    trust_diagnostics = [item for item in selection.diagnostics if item.source == "trust"]
+    assert any("Invalid JSON" in item.message for item in trust_diagnostics)
+    assert not any(item.blocking for item in trust_diagnostics)
+
+
 def test_git_ancestor_directories_stop_at_git_root_or_filesystem_root(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     nested = root / "a" / "b"
