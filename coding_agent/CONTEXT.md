@@ -48,6 +48,10 @@ _Avoid_: 当前选择、会话历史中的 model／thinking 记录
 一次请求实际采用的 API key 来源，依临时 override → 全局 auth.json → provider 环境变量的顺序确定；来源可解释不等于账户已验证。
 _Avoid_: 账户可用性、订阅余额
 
+**Fixed thinking（固定 thinking）**:
+模型只能始终思考、路由未公开任何可调档位时的有效 thinking 模式；目录不提供该模型的可调档位，也不以 `off` 伪装成可关闭。
+_Avoid_: 伪造的 off、虚假的可调档位
+
 **Interactive mode（终端交互模式）**:
 在终端持续编辑输入、观察执行并管理应用会话的使用方式。
 _Avoid_: 单次输入循环、SDK Agent
