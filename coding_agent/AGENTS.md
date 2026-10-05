@@ -3,8 +3,9 @@
 ## Product contracts
 
 Before changing this product, read [the application contracts](README.md#application-contracts)
-and the chapter owning the behavior: [AgentSession](docs/agent-session.md),
-[SessionManager](docs/session-manager.md), or [AgentSessionRuntime](docs/agent-session-runtime.md).
+and the chapter owning the behavior: [Command line entry](docs/cli.md),
+[AgentSession](docs/agent-session.md), [SessionManager](docs/session-manager.md),
+or [AgentSessionRuntime](docs/agent-session-runtime.md).
 [CONTEXT.md](CONTEXT.md) defines product vocabulary;
 [the product architecture decision](docs/adr/0001-sdk-composition-boundary.md)
 records composition and ownership choices.

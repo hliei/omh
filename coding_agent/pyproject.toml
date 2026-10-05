@@ -13,6 +13,9 @@ dependencies = ["omh>=0.1.0,<0.2"]
 [project.optional-dependencies]
 dev = ["pytest>=8.4", "pytest-asyncio>=1.1", "mypy>=1.17", "ruff==0.16.7"]
 
+[project.scripts]
+omh = "coding_agent.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

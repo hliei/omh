@@ -2,8 +2,15 @@
 
 An embeddable coding application built on `omh.agent`. The independently
 installable distribution is `omh-coding-agent`; its Python import is
-`coding_agent`. Installing the SDK alone does not install this application.
-Python 3.14 on macOS or Linux is required. There is no CLI or interactive UI.
+`coding_agent`, and it installs the `omh` command. Installing the SDK alone
+does not install this application or its command. Python 3.14 on macOS or
+Linux is required.
+
+This delivery provides the installed command, the read-only commands and the
+complete argument and mode contract. Print and interactive task execution, and
+session discovery, arrive in later deliveries; until then those paths report a
+diagnostic and exit non-zero rather than pretending to run. See the
+[command line entry](docs/cli.md).
 
 From the repository root, install both projects for development:
 
@@ -11,6 +18,8 @@ From the repository root, install both projects for development:
 python3.14 -m venv .venv
 source .venv/bin/activate
 pip install -e . -e "coding_agent[dev]"
+omh --version
+omh --list-models
 python coding_agent/examples/history_roundtrip.py
 ```
 
@@ -33,6 +42,7 @@ repository. The root SDK checks run separately.
 
 | Contract | Responsibility |
 | --- | --- |
+| [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands and argument validation |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
 | [SessionManager](docs/session-manager.md) | File metadata, JSONL, saving state, export and repair |
 | [AgentSessionRuntime](docs/agent-session-runtime.md) | Host assembly, current-session switching, subscriptions and retained sessions |
