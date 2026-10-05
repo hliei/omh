@@ -27,6 +27,13 @@ Internal typed objects are trusted and are not defensively deep-copied. Operatio
 
 ## Backends and lifecycle
 
+Usage records retain the optional `reported` marker from the [LLM contract](../llm.md).
+Missing reports remain unknown in ledger totals; an empty ledger is known zero.
+Older records without the marker decode with unknown provenance. Interrupted
+assistant recovery stores explicitly unreported placeholder counts rather than
+claiming measured zero consumption. This uses the existing JSON payloads and
+requires no SQLite schema change.
+
 Memory storage survives closing and reopening a Session in the same repository object, not process loss. SQLite uses one file per Session. Safe ids use `{id}.sqlite`; other ids use `~` plus base64url-encoded UTF-16LE. Paths derive from repository directory and id; metadata contains no physical path. Repository `list` skips unreadable, incompatible, or unrelated database files, whereas explicit `open` reports errors.
 
 Both backends share the Session facade: close stops new admissions, drains accepted operations, and closes the backend once. Closed Session and Branch handles cannot be reused. SQLite repository close is shared among waiters; cancelling one wait does not cancel the close. A pending custom database factory is checked when it returns, and cannot publish a Session after repository closure.

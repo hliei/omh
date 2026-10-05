@@ -42,7 +42,7 @@ from omh.session_backends.sqlite.session.session_row import insert_session_row
 
 SESSION_ID = "session"
 NOW = 1_700_000_000_000
-ZERO_USAGE = Usage(input=0, output=0, cache_read=0, cache_write=0, total_tokens=0, cost=UsageCost())
+ZERO_USAGE = Usage(input=0, output=0, cache_read=0, cache_write=0, total_tokens=0, cost=UsageCost(), reported=True)
 
 
 @pytest.fixture(params=["memory", "sqlite"])

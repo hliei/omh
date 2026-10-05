@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import pytest
 from omh.agent import Agent, AgentHistory, AgentOptions, MessageHistoryEntry
 from omh.llm.types import ImageContent, TextContent, UserMessage
 
@@ -26,7 +27,20 @@ def test_history_roundtrip_preserves_sdk_data_and_projection():
     assert restored.state.messages == (history.entries[0].message,)
 
 
-def complete_history():
+def test_legacy_usage_without_provenance_stays_unknown():
+    import json
+
+    history = complete_history()
+    records = [json.loads(line) for line in encode_history(history, cwd="/work").splitlines()]
+    for record in records:
+        for envelope in (record, record.get("message", {})):
+            if isinstance(envelope.get("usage"), dict):
+                envelope["usage"].pop("reported", None)
+    legacy = "\n".join(json.dumps(record) for record in records) + "\n"
+    assert decode_history(legacy).history == history
+
+
+def complete_history(reported=None):
     from omh.agent import (
         CompactionHistoryEntry,
         ContextEditHistoryEntry,
@@ -47,7 +61,7 @@ def complete_history():
         UsageCost,
     )
     saved_at = datetime(2026, 10, 4, 1, 2, 3, 456000, tzinfo=UTC)
-    usage = Usage(input=123, output=45, cache_read=6, cache_write=7, total_tokens=181,
+    usage = Usage(input=123, output=45, cache_read=6, cache_write=7, total_tokens=181, reported=reported,
                   cost=UsageCost(input=0.1, output=0.2, cache_read=0.3, cache_write=0.4, total=1.0),
                   reasoning=9, cache_write_1h=2)
     checkpoint = SystemMessage(content=[TextContent(text="checkpoint", text_signature="system_sig")],
@@ -96,12 +110,13 @@ def complete_history():
     return AgentHistory(conversation_id="rich", created_at=saved_at, entries=tuple(entries), leaf_id="last")
 
 
-async def test_all_records_roundtrip_and_continue_from_latest_projection(tmp_path):
+@pytest.mark.parametrize("reported", [True, False, None])
+async def test_all_records_roundtrip_and_continue_from_latest_projection(tmp_path, reported):
     from support import OfflineStream, model
 
     from coding_agent import AgentSessionRuntime, CodingAgentOptions
 
-    history = complete_history()
+    history = complete_history(reported)
     text = encode_history(history, cwd=str(tmp_path), display_name="all records")
     assert '"parentId"' in text and '"firstKeptEntryId"' in text
     assert '"snake_key"' in text and '"hidden_key"' in text

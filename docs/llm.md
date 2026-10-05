@@ -22,7 +22,7 @@ Here `models` is a registry from `create_models()` with the desired provider reg
 
 ## Models, inputs, and transport
 
-`Models` resolves provider/model identities; `create_models`, `create_provider`, and `deepseek_provider` build registries and the built-in provider. `omh.llm.Context` contains messages, system prompt, and tool definitions. It is distinct from `omh.agent.AgentContext`, which holds conversation messages and executable tools for the loop, and from `omh.durable.Context`, which carries invocation cancellation and telemetry. Tool parameters are JSON Schema dictionaries; Python objects use snake_case while message discriminants include `toolCall` and `toolUse`.
+`Models` resolves provider/model identities; `create_models`, `create_provider`, `deepseek_provider`, and `opencode_go_provider` build registries and the built-in providers. `omh.llm.Context` contains messages, system prompt, and tool definitions. It is distinct from `omh.agent.AgentContext`, which holds conversation messages and executable tools for the loop, and from `omh.durable.Context`, which carries invocation cancellation and telemetry. Tool parameters are JSON Schema dictionaries; Python objects use snake_case while message discriminants include `toolCall` and `toolUse`.
 
 `SystemMessage` carries system instructions and tool declarations at a point in the transcript. `TranscriptContext` is the normalized request input: its prompt and tool declarations live in system messages rather than separate fields. `normalize_context` folds the `Context.system_prompt`/`Context.tools` shorthand into a leading system message, and the transcript helpers replay system messages into the current prompt and tool set. `validate_tool_arguments` coerces and validates tool-call arguments against a plain JSON Schema, including primitive coercion, optional-null removal, nested values, and `allOf`/`anyOf`/`oneOf` composition. The in-process Agent passes a normalized transcript to its `StreamFn` and uses this validation before executing a tool; provider projection remains the provider's responsibility.
 
@@ -40,8 +40,8 @@ mid-conversation system messages, the projection folds later system messages
 into the leading one; otherwise it keeps them in place. A custom provider that
 read `context.system_prompt` or `context.tools` must migrate to
 `get_current_system_message`/`get_current_tools` (or `resolve_transcript`) and
-project from the system messages. The built-in DeepSeek path exercises this
-contract; other built-in provider catalogs are not supplied.
+project from the system messages. The built-in DeepSeek and OpenCode Go paths
+exercise this contract; other built-in provider catalogs are not supplied.
 
 ### Request options
 
@@ -50,7 +50,7 @@ Options are split between core forwarding and adapter consumption:
 | Option | Core forwarding | Built-in Chat Completions consumption |
 | --- | --- | --- |
 | `reasoning`, `max_tokens`, `temperature`, `sampling_params`, `tool_choice` | Passed to the adapter | Mapped to request fields; `reasoning` is clamped to the model's supported levels |
-| `session_id` | Passed to the adapter | Forwarded but not sent by DeepSeek; never a durable Session |
+| `session_id` | Passed to the adapter | Forwarded but not sent by DeepSeek; mapped to OpenCode Go's per-conversation routing header; never a durable Session |
 | `thinking_budgets` | Passed to the adapter | Forwarded; not consumed while no token-budget field is modeled |
 | `transport` | Passed to the adapter | HTTP SSE only; other values are ignored rather than implemented |
 | `max_retry_delay_ms` | Passed to the adapter | Forwarded; the built-in HTTP path performs no client-side retries |
@@ -61,7 +61,9 @@ Options are split between core forwarding and adapter consumption:
 Adapters that do not parse a provider stream do not invoke
 `on_provider_stream_event`; the callback is never exposed as a no-op interface.
 
-The built-in provider implements DeepSeek's official Chat Completions path, including thinking configuration, `max_tokens`, and reasoning-content replay. Shared Chat Completions field detection does not imply support for other providers. OAuth, deferred requests, image generation, and other built-in providers are not exposed.
+The built-in provider implements DeepSeek's official Chat Completions path, including thinking configuration, `max_tokens`, and reasoning-content replay. Shared Chat Completions field detection does not imply support for other providers. OAuth, deferred requests, image generation, and providers outside the built-in DeepSeek and OpenCode Go catalogs are not exposed.
+
+The built-in OpenCode Go provider uses the same Chat Completions adapter, HTTP transport, SSE parsing, and unified stream against the fixed `https://opencode.ai/zen/go/v1` route. It resolves `OPENCODE_API_KEY` and declares each model's supported thinking levels in the catalog: a request selects a level with `reasoning_effort`, and a level the model does not accept is omitted rather than sent as a fabricated disabled mode. A streamed or stored `reasoning` field is normalized to `reasoning_content` so a tool continuation replays the reasoning the upstream model requires. When a request carries `session_id`, the adapter adds the per-conversation `x-opencode-session` header; an explicit header on the model catalog or request options wins. Image content is projected from each model's declared `input` modalities, so a text-only model receives a placeholder instead of an image part. The catalog's capability and price entries are offline targets for the route, not evidence that a live request, image support, or account entitlement has been verified.
 
 HTTP uses an injectable `fetch` or httpx, not the OpenAI Python SDK. The default transport parses SSE incrementally as lines arrive. `AbortSignal` can interrupt response-header or subsequent-event waits and closes the response; it is process-local and never a durable operation cancellation marker.
 
@@ -69,12 +71,26 @@ HTTP uses an injectable `fetch` or httpx, not the OpenAI Python SDK. The default
 
 `stream` and `stream_simple` produce a unified event stream with a terminal message result. Preparation/request failures use an `error` event; successful completion uses `done`. Consumers should distinguish streamed partials from the final message and provider-reported usage.
 
+`Usage.reported` describes the token counters' provenance: `True` means the
+provider supplied both input and output counts, `False` means the request has
+no complete usage report, and `None` means a custom or older record did not
+specify provenance. Numeric zeros in an unreported usage object are placeholders;
+they do not establish zero consumption or a free request. Reported zero counts
+are distinct from a missing report.
+`empty_usage()` creates such an explicitly unreported placeholder, including
+for SDK-generated preparation failures and interrupted requests.
+Costs remain estimates from catalog rates,
+not a service bill. Summary and durable ledger totals retain missing or unknown
+provenance; an empty durable ledger starts at known zero. History codecs preserve
+the optional marker and decode older records without it as `None`. Context
+estimation ignores explicitly unreported counts and estimates the transcript.
+
 `AssistantMessageFrameEncoder` and `reduce_assistant_message_frames` encode/reduce durable stream prefixes. The durable harness uses these utilities instead of defining a second frame format. Frames alone cannot establish final usage, request completion, or whether an interrupted request was billed.
 
 Credential resolution works on request-option copies. In-memory credential updates serialize per provider with an asyncio lock; resolving auth does not mutate caller configuration.
 
 ## Implementation and checks
 
-- [Models](../src/omh/llm/models.py), [types](../src/omh/llm/types.py), [DeepSeek](../src/omh/llm/providers/deepseek.py), [Chat Completions](../src/omh/llm/api/openai_completions.py).
+- [Models](../src/omh/llm/models.py), [types](../src/omh/llm/types.py), [DeepSeek](../src/omh/llm/providers/deepseek.py), [OpenCode Go](../src/omh/llm/providers/opencode_go.py), [Go catalog](../src/omh/llm/providers/opencode_go_models.py), [Chat Completions](../src/omh/llm/api/openai_completions.py).
 - [Frames](../src/omh/llm/utils/assistant_message_frame.py), [event streams](../src/omh/llm/utils/event_stream.py), [transcript](../src/omh/llm/utils/transcript.py), [argument validation](../src/omh/llm/utils/validation.py), [system text](../src/omh/llm/utils/text.py), [auth](../src/omh/llm/auth/).
-- [LLM tests](../tests/llm/) use offline fixtures and controlled asynchronous streams. They do not establish real DeepSeek requests or image support in production.
+- [LLM tests](../tests/llm/) use offline fixtures and controlled asynchronous streams. They do not establish real DeepSeek or OpenCode Go requests or image support in production.

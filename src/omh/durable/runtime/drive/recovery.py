@@ -96,19 +96,21 @@ def interrupted_assistant_message(
         "Assistant request was interrupted. The preceding content is the latest committed partial; "
         "newer live output may be missing and the external outcome is unknown."
     )
+    usage = empty_usage()
+    usage.reported = False
     if partial is None:
         return AssistantMessage(
             api="unknown",
             provider=identity.provider,
             model=identity.model_id,
-            usage=empty_usage(),
+            usage=usage,
             stop_reason=stop_reason,
             timestamp=timestamp,
             error_message=warning,
         )
     return replace(
         partial,
-        usage=empty_usage(),
+        usage=usage,
         stop_reason=stop_reason,
         error_message=warning,
     )

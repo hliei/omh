@@ -49,6 +49,9 @@ SDK envelope fields use camelCase, including `parentId`, `firstKeptEntryId`,
 signatures. User arguments, tool parameters and details keep their keys.
 All original system/user/assistant/tool-result/custom messages, usage,
 model/thinking changes, compaction checkpoints and context edits are retained.
+Usage retains its optional `reported` marker: absent or incomplete reports are
+not confirmed zero consumption. Older version 1 records without the marker
+remain readable and retain unknown provenance.
 Only the SDK reconstructs the effective context, including omissions and the
 latest compaction summary. Unsupported versions, record/message/block kinds,
 missing discriminators, non-finite numbers and invalid decoded SDK history

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -557,7 +558,8 @@ async def test_reopen_is_inert_and_resume_recovers_unknown_partial_tool_call(
     assert [message.stop_reason for message in assistant_messages] == ["error", "stop"]
     assert assistant_messages[0].content[0].type == "toolCall"
     assert "external outcome is unknown" in assistant_messages[0].error_message
-    assert (await reopened_session.get_stats(BACKGROUND_CONTEXT)).usage == USAGE
+    assert assistant_messages[0].usage.reported is False
+    assert (await reopened_session.get_stats(BACKGROUND_CONTEXT)).usage == replace(USAGE, reported=False)
     recovery_events = [event for event in observed if getattr(event, "recovery", False)]
     assert [event.type for event in recovery_events] == [
         "message_start",

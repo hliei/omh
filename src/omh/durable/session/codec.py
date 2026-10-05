@@ -108,6 +108,7 @@ def encode_usage(usage: Usage) -> dict[str, JsonValue]:
     }
     _put_optional(encoded, "cacheWrite1h", usage.cache_write_1h)
     _put_optional(encoded, "reasoning", usage.reasoning)
+    _put_optional(encoded, "reported", usage.reported)
     return encoded
 
 
@@ -129,6 +130,7 @@ def decode_usage(value: JsonValue) -> Usage:
         ),
         cache_write_1h=_optional_integer(record, "cacheWrite1h", "usage"),
         reasoning=_optional_integer(record, "reasoning", "usage"),
+        reported=_optional_boolean(record, "reported", "usage"),
     )
 
 
@@ -347,4 +349,3 @@ def decode_message(value: JsonValue) -> AgentMessage:
             usage=None if usage is None else decode_usage(usage),
         )
     raise ValueError(f"message.role is not a known message role: {role!r}")
-

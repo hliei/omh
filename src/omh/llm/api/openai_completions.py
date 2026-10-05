@@ -4,7 +4,7 @@ import asyncio
 import json
 import platform
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, fields
 from inspect import isawaitable
@@ -112,7 +112,33 @@ def _user_agent() -> str:
     return f"omh ({platform.system()} {platform.release()}; {platform.machine()})"
 
 
-def _has_header(headers: ProviderHeaders | None, name: str) -> bool:
+def _is_opencode_route(model: Model) -> bool:
+    """Whether the model is served through an OpenCode gateway.
+
+    OpenCode's Go/Zen gateways are OpenAI-compatible proxies that reject the
+    standard OpenAI-only request fields and require their own routing header.
+    Provider id and base URL are both checked so a host-supplied catalog entry
+    on the same route behaves like the built-in one.
+    """
+
+    return model.provider == "opencode-go" or "opencode.ai" in model.base_url.lower()
+
+
+def _normalize_reasoning_signature(model: Model, field: str) -> str:
+    """Fold OpenCode Go's generic ``reasoning`` field into DeepSeek's field.
+
+    The Go route can surface DeepSeek thinking as ``reasoning`` while the
+    upstream model requires the same content back as ``reasoning_content`` on a
+    tool continuation. Normalizing the stored signature keeps the stream and
+    the replayed request consistent.
+    """
+
+    if _is_opencode_route(model) and field == "reasoning":
+        return "reasoning_content"
+    return field
+
+
+def _has_header(headers: Mapping[str, str | None] | None, name: str) -> bool:
     if not headers:
         return False
     expected = name.lower()
@@ -138,20 +164,21 @@ def detect_compat(model: Model) -> ResolvedOpenAICompletionsCompat:
     provider = model.provider
     base_url = model.base_url
     is_deepseek = provider == "deepseek" or "deepseek.com" in base_url.lower()
-    is_non_standard = is_deepseek
+    is_opencode = _is_opencode_route(model)
+    is_non_standard = is_deepseek or is_opencode
     return ResolvedOpenAICompletionsCompat(
         supports_store=not is_non_standard,
         supports_developer_role=not is_non_standard,
         supports_reasoning_effort=True,
         supports_usage_in_streaming=True,
         supports_finish_reason=True,
-        max_tokens_field="max_tokens" if is_deepseek else "max_completion_tokens",
+        max_tokens_field="max_tokens" if (is_deepseek or is_opencode) else "max_completion_tokens",
         requires_tool_result_name=False,
         requires_assistant_after_tool_result=False,
         requires_thinking_as_text=False,
         requires_reasoning_content_on_assistant_messages=is_deepseek,
         thinking_format="deepseek" if is_deepseek else "openai",
-        supports_strict_mode=True,
+        supports_strict_mode=not is_opencode,
         supports_mid_convo_system_messages=False,
     )
 
@@ -294,7 +321,9 @@ def convert_messages(
                         assistant["content"] = assistant_text
                     signature = thinking_blocks[0].thinking_signature
                     if signature in _REASONING_FIELDS:
-                        assistant[signature] = "\n".join(block.thinking for block in thinking_blocks)
+                        assistant[_normalize_reasoning_signature(model, signature)] = "\n".join(
+                            block.thinking for block in thinking_blocks
+                        )
             elif assistant_text:
                 assistant["content"] = assistant_text
             if tool_calls:
@@ -397,8 +426,15 @@ def build_params(
             mapped = None if model.thinking_level_map is None else model.thinking_level_map.get(options.reasoning_effort)
             params["reasoning_effort"] = mapped if isinstance(mapped, str) else options.reasoning_effort
     elif options and options.reasoning_effort and model.reasoning and compat.supports_reasoning_effort:
-        mapped = None if model.thinking_level_map is None else model.thinking_level_map.get(options.reasoning_effort)
-        params["reasoning_effort"] = mapped if isinstance(mapped, str) else options.reasoning_effort
+        level = options.reasoning_effort
+        level_map = model.thinking_level_map
+        if level_map is not None and level in level_map and level_map[level] is None:
+            # The catalog marks this level unsupported; omit the field instead of
+            # sending an effort the route does not accept.
+            pass
+        else:
+            mapped = None if level_map is None else level_map.get(level)
+            params["reasoning_effort"] = mapped if isinstance(mapped, str) else level
     if options and options.sampling_params:
         params.update(options.sampling_params)
     return params
@@ -412,12 +448,22 @@ def _request_headers(model: Model, api_key: str, options: OpenAICompletionsOptio
         "user-agent": _user_agent(),
     }
     if model.headers:
-        headers.update(model.headers)
+        headers.update({name.lower(): value for name, value in model.headers.items()})
+    # OpenCode Go requires a client-supplied per-conversation routing header. The
+    # public ``session_id`` carries the conversation identity; an explicit header
+    # from the model catalog or request options still wins.
+    if (
+        options
+        and options.session_id
+        and _is_opencode_route(model)
+        and not _has_header(headers, "x-opencode-session")
+    ):
+        headers["x-opencode-session"] = options.session_id
     if options and options.headers:
         for name, value in options.headers.items():
+            name = name.lower()
             if value is None:
                 headers.pop(name, None)
-                headers.pop(name.lower(), None)
             else:
                 headers[name] = value
     return headers
@@ -481,6 +527,10 @@ def parse_chunk_usage(raw_usage: dict[str, Any], model: Model) -> Usage:
     usage.cache_write = cache_write
     usage.reasoning = reasoning
     usage.total_tokens = input_tokens + output_tokens + cache_read + cache_write
+    usage.reported = all(
+        type(raw_usage.get(key)) is int and raw_usage[key] >= 0
+        for key in ("prompt_tokens", "completion_tokens")
+    )
     calculate_cost(model, usage)
     return usage
 
@@ -670,7 +720,7 @@ def stream(
                     if found_reasoning:
                         value = delta[found_reasoning]
                         if isinstance(value, str) and value:
-                            thinking = ensure_thinking(found_reasoning)
+                            thinking = ensure_thinking(_normalize_reasoning_signature(model, found_reasoning))
                             thinking.thinking += value
                             events.push(
                                 ThinkingDeltaEvent(content_index=content_index(thinking), delta=value, partial=output)

@@ -87,6 +87,7 @@ def estimate_tokens(message: AgentMessage) -> int:
 def _valid_usage(message: AgentMessage) -> Usage | None:
     if (
         isinstance(message, AssistantMessage)
+        and message.usage.reported is not False
         and message.stop_reason not in {"aborted", "error"}
         and calculate_context_tokens(message.usage) > 0
     ):

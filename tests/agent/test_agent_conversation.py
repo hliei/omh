@@ -419,6 +419,7 @@ async def test_stream_fn_exception_uses_failure_boundary() -> None:
     assert isinstance(final, AssistantMessage)
     assert final.stop_reason == "error"
     assert agent.state.error_message == "transport exploded"
+    assert final.usage.reported is False
     assert isinstance(events[-1], AgentSettledEvent)
 
 

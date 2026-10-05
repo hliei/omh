@@ -11,6 +11,7 @@ def empty_usage() -> Usage:
         cache_write=0,
         total_tokens=0,
         cost=UsageCost(),
+        reported=True,
     )
 
 
@@ -40,6 +41,10 @@ def add_usage(left: Usage, right: Usage) -> Usage:
         ),
         cache_write_1h=cache_write_1h,
         reasoning=reasoning,
+        reported=(
+            False if False in (left.reported, right.reported)
+            else True if left.reported is True and right.reported is True else None
+        ),
     )
 
 

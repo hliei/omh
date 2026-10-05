@@ -17,6 +17,7 @@ from omh.llm import (
     create_models,
     deepseek_provider,
     empty_usage,
+    opencode_go_provider,
     reduce_assistant_message_frames,
 )
 from omh.llm.utils.assistant_message_frame import AssistantMessageFrameEncoder
@@ -37,5 +38,6 @@ __all__ = [
     "create_models",
     "deepseek_provider",
     "empty_usage",
+    "opencode_go_provider",
     "reduce_assistant_message_frames",
 ]
