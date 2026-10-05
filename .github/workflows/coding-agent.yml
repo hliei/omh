@@ -77,10 +77,17 @@ jobs:
           assert {
               "coding_agent/agent_session.py",
               "coding_agent/agent_session_runtime.py",
+              "coding_agent/cli.py",
+              "coding_agent/model_directory.py",
               "coding_agent/session_manager.py",
           } <= set(app_names)
           assert "coding_agent/runtime.py" not in app_names
           assert not any(name.startswith(("omh/", "tests/", ".scratch/", "examples/")) for name in app_names)
+          app_entry_points = next(
+              name for name in app_names if name.endswith(".dist-info/entry_points.txt")
+          )
+          assert "omh = coding_agent.cli:main" in zipfile.ZipFile(app).read(app_entry_points).decode()
+          assert not any(name.endswith(".dist-info/entry_points.txt") for name in sdk_names)
           metadata_name = next(name for name in app_names if name.endswith(".dist-info/METADATA"))
           metadata = Parser().parsestr(zipfile.ZipFile(app).read(metadata_name).decode())
           assert any(value.startswith("omh<") for value in metadata.get_all("Requires-Dist", []))
@@ -107,5 +114,8 @@ jobs:
           assert "site-packages" in str(Path(omh.__file__))
           assert "site-packages" in str(Path(coding_agent.__file__))
           PY
+          omh --version
+          omh --help > /dev/null
+          omh --list-models
           python -m pytest "$GITHUB_WORKSPACE/coding_agent/tests" -c "$GITHUB_WORKSPACE/coding_agent/pyproject.toml"
           python "$GITHUB_WORKSPACE/coding_agent/examples/long_conversation.py"
