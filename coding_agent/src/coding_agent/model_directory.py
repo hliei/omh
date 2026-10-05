@@ -16,6 +16,7 @@ a live route has been verified.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -28,7 +29,7 @@ from omh.llm import (
     get_supported_thinking_levels,
     opencode_go_provider,
 )
-from omh.llm.models import Models, Provider
+from omh.llm.models import EXTENDED_THINKING_LEVELS, Models, Provider
 from omh.llm.types import (
     Api,
     Model,
@@ -43,7 +44,7 @@ from omh.llm.types import (
 )
 from omh.llm.utils.event_stream import AssistantMessageEventStream
 
-from coding_agent.config import MODELS_FILE, ConfigDiagnostic, DiagnosticSource
+from coding_agent.config import MODELS_FILE, ConfigDiagnostic
 
 #: Marks model metadata that ships with the product rather than user config.
 SOURCE_BUILTIN = "builtin"
@@ -383,6 +384,7 @@ def _definition_model(
     path: Path | None, base: Provider, definition: Mapping[str, object],
     diagnostics: list[ConfigDiagnostic],
 ) -> Model | None:
+    start = len(diagnostics)
     source = _source(path)
     provider_id = base.id
     unknown = set(definition) - MODEL_DEFINITION_FIELDS
@@ -430,9 +432,15 @@ def _definition_model(
     if context_window is None or max_tokens is None:
         return None
     name = definition.get("name")
-    thinking_map = _thinking_map(definition.get("thinkingLevelMap"), diagnostics, source, model_id)
+    thinking_map = (
+        _thinking_map(definition["thinkingLevelMap"], diagnostics, source, model_id)
+        if "thinkingLevelMap" in definition else None
+    )
     headers = _headers(definition.get("headers"), diagnostics, source, model_id)
     sampling = _sampling_params(definition.get("samplingParams"), diagnostics, source, model_id)
+    compat = _compat(definition.get("compat"), diagnostics, source, model_id)
+    if any(diagnostic.blocking for diagnostic in diagnostics[start:]):
+        return None
     return Model(
         id=model_id,
         name=name if isinstance(name, str) and name else model_id,
@@ -447,7 +455,7 @@ def _definition_model(
         thinking_level_map=thinking_map,
         sampling_params=sampling,
         headers=headers,
-        compat=_compat(definition.get("compat"), diagnostics, source, model_id),
+        compat=compat,
     )
 
 
@@ -488,23 +496,26 @@ def _apply_override(
         value = _positive_int(override[key], key, diagnostics, source, model.id)
         if value is not None:
             changes[field_name] = value
-    if "thinkingLevelMap" in override:
-        changes["thinking_level_map"] = _thinking_map(override["thinkingLevelMap"], diagnostics, source, model.id)
-    if "samplingParams" in override:
-        changes["sampling_params"] = _sampling_params(override["samplingParams"], diagnostics, source, model.id)
-    if "headers" in override:
-        changes["headers"] = _headers(override["headers"], diagnostics, source, model.id)
-    if "compat" in override:
-        changes["compat"] = _compat(override["compat"], diagnostics, source, model.id)
+    for key, field_name, parse in (
+        ("thinkingLevelMap", "thinking_level_map", _thinking_map),
+        ("samplingParams", "sampling_params", _sampling_params),
+        ("headers", "headers", _headers),
+        ("compat", "compat", _compat),
+    ):
+        if key in override:
+            start = len(diagnostics)
+            parsed_value = parse(override[key], diagnostics, source, model.id)
+            if not any(diagnostic.blocking for diagnostic in diagnostics[start:]):
+                changes[field_name] = parsed_value
     return replace(model, **changes)  # type: ignore[arg-type]
 
 
-def _source(path: Path | None) -> DiagnosticSource:
-    return cast(DiagnosticSource, str(path)) if path is not None else "models"
+def _source(path: Path | None) -> str:
+    return str(path) if path is not None else "models"
 
 
 def _input(
-    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
+    value: object, diagnostics: list[ConfigDiagnostic], source: str, model_id: str,
 ) -> tuple[Literal["text", "image"], ...] | None:
     if not isinstance(value, list) or not value or not all(entry in ("text", "image") for entry in value):
         diagnostics.append(ConfigDiagnostic(
@@ -517,7 +528,7 @@ def _input(
 
 def _positive_int(
     value: object, label: str, diagnostics: list[ConfigDiagnostic],
-    source: DiagnosticSource, model_id: str,
+    source: str, model_id: str,
 ) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
@@ -529,7 +540,7 @@ def _positive_int(
 
 
 def _cost(
-    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str, *,
+    value: object, diagnostics: list[ConfigDiagnostic], source: str, model_id: str, *,
     base: ModelCost | None = None,
 ) -> ModelCost | None:
     if not isinstance(value, dict):
@@ -543,7 +554,7 @@ def _cost(
         ("input", "input"), ("output", "output"), ("cacheRead", "cache_read"), ("cacheWrite", "cache_write"),
     ):
         entry = value.get(key, getattr(base, field_name) if base is not None else None)
-        if not isinstance(entry, int | float) or isinstance(entry, bool) or entry < 0:
+        if not isinstance(entry, int | float) or isinstance(entry, bool) or not math.isfinite(entry) or entry < 0:
             diagnostics.append(ConfigDiagnostic(
                 source, "models", "invalid-value",
                 f"models.json model {model_id!r} cost.{key} must be a non-negative number",
@@ -554,7 +565,7 @@ def _cost(
 
 
 def _compat(
-    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
+    value: object, diagnostics: list[ConfigDiagnostic], source: str, model_id: str,
 ) -> OpenAICompletionsCompat | None:
     if value is None:
         return None
@@ -564,6 +575,12 @@ def _compat(
         ))
         return None
     options: dict[str, object] = {}
+    unknown = set(value) - _COMPAT_FIELDS.keys() - _COMPAT_ENUMS.keys()
+    if unknown:
+        diagnostics.append(ConfigDiagnostic(
+            source, "models", "unknown-key",
+            f"models.json model {model_id!r} compat has unknown keys {', '.join(sorted(unknown))}",
+        ))
     for key, field_name in _COMPAT_FIELDS.items():
         if key in value:
             if isinstance(value[key], bool):
@@ -576,22 +593,21 @@ def _compat(
                 return None
     for key, field_name in _COMPAT_ENUMS.items():
         if key in value:
-            if isinstance(value[key], str):
+            allowed = {"max_tokens", "max_completion_tokens"} if key == "maxTokensField" else {"openai", "deepseek"}
+            if isinstance(value[key], str) and value[key] in allowed:
                 options[field_name] = value[key]
             else:
                 diagnostics.append(ConfigDiagnostic(
-                    source, "models", "invalid-type",
-                    f"models.json model {model_id!r} compat.{key} must be a string",
+                    source, "models", "invalid-value",
+                    f"models.json model {model_id!r} compat.{key} must be one of {', '.join(sorted(allowed))}",
                 ))
                 return None
     return OpenAICompletionsCompat(**options)  # type: ignore[arg-type]
 
 
 def _thinking_map(
-    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
+    value: object, diagnostics: list[ConfigDiagnostic], source: str, model_id: str,
 ) -> ThinkingLevelMap | None:
-    if value is None:
-        return None
     if not isinstance(value, dict):
         diagnostics.append(ConfigDiagnostic(
             source, "models", "invalid-type",
@@ -608,11 +624,11 @@ def _thinking_map(
             ))
             continue
         result[cast(ModelThinkingLevel, key)] = entry
-    return result or None
+    return {level: result.get(level) for level in EXTENDED_THINKING_LEVELS}
 
 
 def _headers(
-    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
+    value: object, diagnostics: list[ConfigDiagnostic], source: str, model_id: str,
 ) -> dict[str, str] | None:
     if value is None:
         return None
@@ -628,7 +644,7 @@ def _headers(
 
 
 def _sampling_params(
-    value: object, diagnostics: list[ConfigDiagnostic], source: DiagnosticSource, model_id: str,
+    value: object, diagnostics: list[ConfigDiagnostic], source: str, model_id: str,
 ) -> dict[str, object] | None:
     if value is None:
         return None

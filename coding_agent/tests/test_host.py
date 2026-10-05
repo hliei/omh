@@ -23,6 +23,7 @@ from coding_agent import (
     decode_history,
     encode_history,
 )
+from coding_agent.config import ConfigError
 
 STAMP = datetime(2026, 10, 5, tzinfo=UTC)
 
@@ -126,7 +127,7 @@ def test_invalid_configured_default_model_is_not_ready(tmp_path: Path) -> None:
     host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir)
     selection = host.select_new()
     assert not selection.ready
-    assert any("not available" in diagnostic.message for diagnostic in selection.diagnostics)
+    assert any("Unknown model" in diagnostic.message for diagnostic in selection.diagnostics)
 
 
 def test_cwd_resolution_prefers_explicit_then_startup(tmp_path: Path) -> None:
@@ -351,3 +352,122 @@ async def test_open_through_runtime_keeps_history_identity(tmp_path: Path) -> No
     session = await runtime.open_session(path)
     assert session.agent.history == original
     assert session.cwd == project.resolve()
+
+
+@pytest.mark.parametrize("document", [
+    {"defaultThinkingLevel": "bogus"},
+    {"defaultTools": ["unknown"]},
+    {"retry": {"maxRetries": -1}},
+    {"retry": {"baseDelayMs": float("inf")}},
+    {"compaction": {"reserveTokens": -1}},
+    {"compaction": {"keepRecentTokens": 2**53}},
+])
+async def test_invalid_settings_block_assembly_without_requests(tmp_path: Path, document: object) -> None:
+    agent_dir = tmp_path / "agent"
+    write_settings(agent_dir, document)
+    fetch = RecordingFetch()
+    host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir, api_key="temporary", fetch=fetch)
+    selection = host.select_new()
+    assert not selection.ready
+    assert any(diagnostic.blocking for diagnostic in await host.readiness(selection))
+    with pytest.raises(ConfigError):
+        host.build_options(selection)
+    assert fetch.requests == []
+
+
+async def test_malformed_models_and_settings_files_block_both_selection_paths(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    history = tmp_path / "saved.jsonl"
+    write_history(history, cwd=tmp_path)
+    for name in ("settings.json", "models.json"):
+        path = agent_dir / name
+        path.write_text("{broken")
+        host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir, api_key="temporary")
+        for selection in (host.select_new(), host.select_open(history)):
+            assert not selection.ready
+            assert any(diagnostic.reason == "invalid-json" for diagnostic in await host.readiness(selection))
+            with pytest.raises(ConfigError):
+                host.build_options(selection)
+        path.unlink()
+
+
+def test_invalid_explicit_tools_cannot_assemble_default_tools(tmp_path: Path) -> None:
+    host = CodingAgentHost(startup_dir=tmp_path, agent_dir=tmp_path / "agent")
+    selection = host.select_new(tools=("unknown",))  # type: ignore[arg-type]
+    assert not selection.ready
+    with pytest.raises(ConfigError):
+        host.build_options(selection)
+
+
+async def test_corrupt_credentials_return_repair_diagnostic(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "auth.json").write_text("{broken")
+    host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir)
+    diagnostics = await host.readiness(host.select_new())
+    assert any(diagnostic.source == "credentials" and diagnostic.blocking for diagnostic in diagnostics)
+
+
+@pytest.mark.parametrize("settings", [
+    {"defaultModel": "typo"},
+    {"defaultProvider": "deepseek", "defaultModel": "opencode-go/deepseek-v4.1-flash"},
+])
+def test_invalid_configured_model_does_not_fall_back(tmp_path: Path, settings: dict[str, str]) -> None:
+    agent_dir = tmp_path / "agent"
+    write_settings(agent_dir, settings)
+    host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir)
+    selection = host.select_new()
+    assert not selection.ready
+    assert selection.model is None
+    assert any(diagnostic.source == "global" and diagnostic.blocking for diagnostic in selection.diagnostics)
+
+
+def test_bare_configured_model_uses_exact_directory_lookup(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    write_settings(agent_dir, {"defaultModel": "deepseek-flash"})
+    host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir)
+    selection = host.select_new()
+    assert selection.ready and selection.model is not None
+    assert selection.model.provider == "deepseek"
+
+
+async def test_unknown_settings_keys_are_nonblocking_hints(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    write_settings(agent_dir, {"futurePreference": True, "retry": {"baseDelayMs": 0.5}})
+    host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir, api_key="temporary")
+    selection = host.select_new()
+    assert selection.ready
+    assert any(diagnostic.reason == "unknown-key" for diagnostic in await host.readiness(selection))
+    assert not any(diagnostic.blocking for diagnostic in await host.readiness(selection))
+    retry = host.build_options(selection).agent_options.retry
+    assert retry is not None and retry.base_delay_ms == 0.5
+
+
+async def test_fixed_mode_display_and_request_never_offer_off(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "models.json").write_text(json.dumps({"providers": {"opencode-go": {"modelOverrides": {
+        "deepseek-v4.1-flash": {"thinkingLevelMap": {}},
+    }}}}))
+    fetch = RecordingFetch()
+    host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir, api_key="temporary", fetch=fetch)
+    selection = host.select_new()
+    assert selection.ready and selection.thinking_mode == "fixed-on"
+    assert selection.diagnostics == ()
+    runtime = AgentSessionRuntime(host.build_options(selection))
+    session = await runtime.new_session()
+    await session.prompt("hello")
+    assert len(fetch.requests) == 1
+    assert "reasoning_effort" not in fetch.requests[0].json_body
+    assert "thinking" not in fetch.requests[0].json_body
+
+    history = tmp_path / "saved.jsonl"
+    write_history(history, cwd=tmp_path, provider="opencode-go", model_id="deepseek-v4.1-flash")
+    restored = host.select_open(history)
+    assert restored.ready and restored.thinking_mode == "fixed-on"
+    assert any(diagnostic.reason == "adjusted" for diagnostic in restored.diagnostics)
+    assert all("using 'off'" not in diagnostic.message for diagnostic in restored.diagnostics)
+    explicit_off = host.select_new(thinking="off")
+    assert not explicit_off.ready
+    assert any("fixed thinking mode" in diagnostic.message for diagnostic in explicit_off.diagnostics)

@@ -46,7 +46,10 @@ therefore does not append to the global array.
 | `theme` | Built-in theme preference consumed by the interactive delivery |
 
 Unknown keys are reported with a hint and preserved; a known key with the wrong
-type is reported and dropped. Compaction and retry are passed to the existing
+type or an invalid compaction/retry budget prevents session assembly until
+the configuration is repaired. Unsupported nested keys such as
+`compaction.modelOverrides` and `retry.provider` produce unknown-key hints.
+Compaction and retry are passed to the existing
 SDK assembly; this product does not build a second retry or compaction loop.
 Writing a default changes only the selected file: it never mutates the current
 session selection, and selecting a model or tool never writes a default.
@@ -70,6 +73,14 @@ silently switching provider or directory. The host never falls back to another
 provider. When history clamps a thinking level, the diagnostic names both the
 requested and effective levels. A fixed or single-level model keeps its real
 effective mode; no fabricated `off` is offered.
+
+`SessionSelection.thinking_mode` exposes the effective mode for display: a
+fixed reasoning model reports `fixed-on`. Its SDK `thinking_level` retains the
+internal `off` sentinel that omits adjustable effort; this sentinel does not
+mean thinking can be disabled. Valid history/configuration clamps are reported
+as `adjusted` diagnostics and remain executable. Bare configured model IDs use
+an exact directory lookup; unavailable or ambiguous references and conflicting
+provider prefixes produce configuration errors.
 
 CLI paths are resolved against the startup directory first. Settings resource
 paths and automatic resource discovery resolve against the effective session
@@ -126,6 +137,11 @@ prints these diagnostics to stderr while still listing the models it could
 resolve. Startup and reopen never fetch a catalog over the network and never
 replace a saved history selection.
 
+An invalid override preserves the affected built-in field, and a definition
+with invalid metadata is skipped. An explicit empty `thinkingLevelMap` denotes
+fixed thinking with no adjustable levels. It does not enable every level.
+For a nonempty map, only its declared non-null levels are selectable.
+
 ## Credentials
 
 API keys resolve in this order:
@@ -146,7 +162,8 @@ check.
 ## Readiness and repair
 
 The host reports a session selection as ready only when it has an existing cwd,
-a resolvable model and an effective thinking level. Diagnostics carry a path,
+a resolvable model, an effective thinking level and no blocking configuration
+diagnostic. `build_options()` rejects an unresolved selection. Diagnostics carry a path,
 scope and reason, and name the actual and requested values where they differ.
 
 Print should fail non-zero before any request when the selection is not ready or
@@ -154,3 +171,8 @@ no key is available, with the diagnostics as repair steps. Interactive keeps its
 interface usable and lets the user fix or choose a replacement through the
 configuration UI delivered later. Read-only commands, configuration and
 selection never send a verification inference request.
+
+`readiness()` includes the selected settings/model-directory diagnostics and
+credential repair failures. A diagnostic's `blocking` property distinguishes
+configuration errors from nonblocking unknown-key hints and `adjusted` notices;
+consumers must use that property rather than rejecting every diagnostic.

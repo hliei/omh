@@ -36,7 +36,7 @@ from omh.agent import (
     StreamFn,
     validate_history,
 )
-from omh.llm import create_models
+from omh.llm import ModelsError, create_models
 from omh.llm.models import (
     CreateModelsOptions,
     ModelsImpl,
@@ -98,7 +98,17 @@ class SessionSelection:
     @property
     def ready(self) -> bool:
         """Whether the selection can assemble an executable session."""
-        return self.cwd is not None and self.model is not None and self.thinking_level is not None
+        return (
+            self.cwd is not None and self.model is not None and self.thinking_level is not None
+            and not any(diagnostic.blocking for diagnostic in self.diagnostics)
+        )
+
+    @property
+    def thinking_mode(self) -> str | None:
+        """The effective mode for display, including models with fixed thinking."""
+        if self.model is not None and self.model.reasoning and not get_supported_thinking_levels(self.model):
+            return "fixed-on"
+        return self.thinking_level
 
 
 class CodingAgentHost:
@@ -195,7 +205,14 @@ class CodingAgentHost:
         interactive should surface as a repair step. It sends no request.
         """
         diagnostics = list(selection.diagnostics)
-        if selection.ready and selection.model is not None and await self.key_source(selection.model) is None:
+        try:
+            source = await self.key_source(selection.model) if selection.ready and selection.model is not None else None
+        except (ConfigError, ModelsError) as error:
+            diagnostics.append(ConfigDiagnostic(
+                str(self.agent_dir / AUTH_FILE), "credentials", "invalid-schema", str(error),
+            ))
+            return tuple(diagnostics)
+        if selection.ready and selection.model is not None and source is None:
             provider = selection.model.provider
             environment = provider_api_key_env(provider)
             repair = f", save one with /login, or set {environment}" if environment else " or save one with /login"
@@ -223,7 +240,7 @@ class CodingAgentHost:
         effective_tools = self._resolve_tools(tools, diagnostics)
         return SessionSelection(
             cwd=effective_cwd, model=resolved_model, thinking_level=effective_thinking,
-            tools=effective_tools, diagnostics=tuple(diagnostics),
+            tools=effective_tools, diagnostics=(*self.diagnostics, *diagnostics),
         )
 
     def select_open(
@@ -256,7 +273,7 @@ class CodingAgentHost:
         effective_tools = self._resolve_tools(tools, diagnostics)
         return SessionSelection(
             cwd=effective_cwd, model=resolved_model, thinking_level=effective_thinking,
-            tools=effective_tools, history=decoded, diagnostics=tuple(diagnostics),
+            tools=effective_tools, history=decoded, diagnostics=(*self.diagnostics, *diagnostics),
         )
 
     def build_options(
@@ -342,16 +359,13 @@ class CodingAgentHost:
         if configured is None:
             return None
         provider, model_id = configured
-        matches = self.directory.find_models(provider, model_id)
-        if len(matches) == 1:
-            return matches[0]
-        message = (
-            f"Configured default model {provider}/{model_id} is ambiguous; use <provider>/<model>"
-            if matches else
-            f"Configured default model {provider}/{model_id} is not available"
+        start = len(diagnostics)
+        model = self._resolve_reference(
+            provider, model_id, diagnostics, source=self.settings.source_of("defaultModel"),
         )
-        diagnostics.append(ConfigDiagnostic(str(self._settings_path()), "settings", "unavailable", message))
-        return None
+        for index in range(start, len(diagnostics)):
+            diagnostics[index] = replace(diagnostics[index], path=str(self._settings_path()))
+        return model
 
     def _settings_path(self) -> Path:
         if self.settings.source_of("defaultModel") == "project":
@@ -445,6 +459,8 @@ class CodingAgentHost:
             if explicit not in supported:
                 diagnostics.append(ConfigDiagnostic(
                     f"{model.provider}/{model.id}", "cli", "invalid-value",
+                    f"{model.provider}/{model.id} has a fixed thinking mode with no adjustable level"
+                    if model.reasoning and not supported else
                     f"Thinking level {explicit!r} is not supported by {model.provider}/{model.id}; "
                     f"valid levels: {', '.join(supported)}",
                 ))
@@ -465,10 +481,13 @@ class CodingAgentHost:
             origin = "settings"
         clamped = clamp_thinking_level(model, requested)
         if clamped != requested:
-            diagnostics.append(ConfigDiagnostic(
-                f"{model.provider}/{model.id}", origin, "invalid-value",
-                f"Thinking level {requested!r} is not supported by {model.provider}/{model.id}; using {clamped!r}",
-            ))
+            fixed = model.reasoning and not get_supported_thinking_levels(model)
+            if not fixed or history is not None or settings_thinking(self.settings) is not None:
+                mode = "fixed-on" if fixed else clamped
+                diagnostics.append(ConfigDiagnostic(
+                    f"{model.provider}/{model.id}", origin, "adjusted",
+                    f"Thinking level {requested!r} is not supported by {model.provider}/{model.id}; using {mode!r}",
+                ))
         return clamped
 
     def _resolve_tools(

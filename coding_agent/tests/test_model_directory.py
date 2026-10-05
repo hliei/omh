@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from coding_agent.model_directory import (
     SOURCE_BUILTIN,
     SOURCE_USER,
@@ -196,3 +198,50 @@ def test_directory_never_contacts_a_provider(tmp_path: Path) -> None:
     directory = ModelDirectory(agent_dir=agent_dir)
     assert directory.listings()
     assert not agent_dir.exists()
+
+
+@pytest.mark.parametrize("value", [17, None, {"high": 5}, {"bogus": "max"}])
+def test_bad_thinking_override_preserves_builtin_levels(tmp_path: Path, value: object) -> None:
+    agent_dir = tmp_path / "agent"
+    write_models(agent_dir, {"providers": {"opencode-go": {"modelOverrides": {
+        "deepseek-v4.1-flash": {"thinkingLevelMap": value},
+    }}}})
+    directory = ModelDirectory(agent_dir=agent_dir)
+    listing = next(entry for entry in directory.listings() if entry.model.id == "deepseek-v4.1-flash")
+    assert listing.thinking_levels == ("low", "high", "max")
+    assert any(diagnostic.blocking for diagnostic in directory.diagnostics)
+
+
+def test_empty_thinking_override_is_fixed_without_adjustable_levels(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    write_models(agent_dir, {"providers": {"opencode-go": {"modelOverrides": {
+        "deepseek-v4.1-flash": {"thinkingLevelMap": {}},
+    }}}})
+    directory = ModelDirectory(agent_dir=agent_dir)
+    listing = next(entry for entry in directory.listings() if entry.model.id == "deepseek-v4.1-flash")
+    assert listing.thinking_levels == ()
+    assert directory.diagnostics == ()
+
+
+def test_partial_thinking_map_only_exposes_declared_levels(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    write_models(agent_dir, {"providers": {"opencode-go": {"modelOverrides": {
+        "deepseek-v4.1-flash": {"thinkingLevelMap": {"max": "max"}},
+    }}}})
+    directory = ModelDirectory(agent_dir=agent_dir)
+    listing = next(entry for entry in directory.listings() if entry.model.id == "deepseek-v4.1-flash")
+    assert listing.thinking_levels == ("max",)
+    assert directory.diagnostics == ()
+
+
+@pytest.mark.parametrize("compat", [{"thinkingFormat": "other"}, {"maxTokensField": []}, {"supportsReasoningEffort": 17}])
+def test_bad_compat_override_keeps_original_contract(tmp_path: Path, compat: object) -> None:
+    agent_dir = tmp_path / "agent"
+    original = ModelDirectory().find_models("opencode-go", "deepseek-v4.1-flash")[0]
+    write_models(agent_dir, {"providers": {"opencode-go": {"modelOverrides": {
+        "deepseek-v4.1-flash": {"compat": compat},
+    }}}})
+    directory = ModelDirectory(agent_dir=agent_dir)
+    actual = directory.find_models("opencode-go", "deepseek-v4.1-flash")[0]
+    assert actual.compat == original.compat
+    assert any(diagnostic.blocking for diagnostic in directory.diagnostics)

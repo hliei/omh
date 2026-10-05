@@ -204,3 +204,11 @@ async def test_credential_store_rejects_corrupt_file(tmp_path: Path) -> None:
     store = FileCredentialStore(path)
     with pytest.raises(ConfigError):
         await store.read("deepseek")
+
+
+@pytest.mark.parametrize("env", [{"KEY": 17}, {"KEY": []}])
+async def test_credential_store_rejects_non_string_environment_values(tmp_path: Path, env: object) -> None:
+    path = tmp_path / "auth.json"
+    path.write_text(json.dumps({"deepseek": {"type": "api_key", "key": "temporary", "env": env}}))
+    with pytest.raises(ConfigError):
+        await FileCredentialStore(path).read("deepseek")

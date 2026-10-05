@@ -62,6 +62,7 @@ SettingsScope = Literal["global", "project"]
 DiagnosticSource = Literal["global", "project", "cli", "settings", "history", "models", "credentials"]
 DiagnosticReason = Literal[
     "invalid-json", "invalid-schema", "unknown-key", "invalid-type", "invalid-value", "unavailable",
+    "adjusted",
 ]
 
 #: The built-in tool selection shared by settings validation and the host.
@@ -83,6 +84,10 @@ class ConfigDiagnostic:
     source: DiagnosticSource
     reason: DiagnosticReason
     message: str
+
+    @property
+    def blocking(self) -> bool:
+        return self.reason not in {"unknown-key", "adjusted"}
 
 
 class ConfigError(Exception):
@@ -218,6 +223,14 @@ def _validate_object(
                 continue
             accepted[key] = value
             continue
+        if expected is float:
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                diagnostics.append(ConfigDiagnostic(
+                    path, source, "invalid-type", f"{label} {key} must be a number",
+                ))
+                continue
+            accepted[key] = value
+            continue
         if expected is list:
             if not isinstance(value, list) or not all(isinstance(entry, str) for entry in value):
                 diagnostics.append(ConfigDiagnostic(
@@ -242,15 +255,13 @@ _COMPACTION_TYPES: dict[str, type] = {
     "enabled": bool,
     "reserveTokens": int,
     "keepRecentTokens": int,
-    "modelOverrides": dict,
 }
 
 _RETRY_TYPES: dict[str, type] = {
     "enabled": bool,
     "maxRetries": int,
-    "baseDelayMs": int,
-    "maxAgentDelayMs": int,
-    "provider": dict,
+    "baseDelayMs": float,
+    "maxAgentDelayMs": float,
 }
 
 
@@ -281,6 +292,11 @@ def _validate_settings(
         )
         accepted["compaction"] = nested
         diagnostics.extend(nested_diagnostics)
+        try:
+            settings_compaction(SettingsSnapshot(values={"compaction": nested}))
+        except ValueError as error:
+            diagnostics.append(ConfigDiagnostic(path, source, "invalid-value", str(error)))
+            accepted.pop("compaction")
     if isinstance(accepted.get("retry"), dict):
         nested, nested_diagnostics = _validate_object(
             cast(Mapping[str, object], accepted["retry"]),
@@ -288,6 +304,11 @@ def _validate_settings(
         )
         accepted["retry"] = nested
         diagnostics.extend(nested_diagnostics)
+        try:
+            settings_retry(SettingsSnapshot(values={"retry": nested}))
+        except ValueError as error:
+            diagnostics.append(ConfigDiagnostic(path, source, "invalid-value", str(error)))
+            accepted.pop("retry")
     return accepted, diagnostics
 
 
@@ -298,10 +319,13 @@ class SettingsSnapshot:
     values: Mapping[str, object] = field(default_factory=dict)
     global_values: Mapping[str, object] = field(default_factory=dict)
     project_values: Mapping[str, object] = field(default_factory=dict)
+    explicit_values: Mapping[str, object] = field(default_factory=dict)
     diagnostics: tuple[ConfigDiagnostic, ...] = ()
 
-    def source_of(self, key: str) -> SettingsScope:
+    def source_of(self, key: str) -> DiagnosticSource:
         """Report which scope supplied the effective value for ``key``."""
+        if key in self.explicit_values:
+            return "cli"
         return "project" if key in self.project_values else "global"
 
 
@@ -336,6 +360,7 @@ def load_settings(
         diagnostics.extend(project_diagnostics)
 
     merged = merge_settings(global_values, project_values)
+    explicit_clean: dict[str, object] = {}
     if explicit:
         explicit_clean, explicit_diagnostics = _validate_settings(
             explicit, path="<cli>", source="cli",
@@ -344,6 +369,7 @@ def load_settings(
         merged = merge_settings(merged, explicit_clean)
     return SettingsSnapshot(
         values=merged, global_values=global_values, project_values=project_values,
+        explicit_values=explicit_clean,
         diagnostics=tuple(diagnostics),
     )
 
@@ -353,15 +379,11 @@ def _as_str(values: Mapping[str, object], key: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def settings_model(snapshot: SettingsSnapshot) -> tuple[str, str] | None:
-    """Return the configured default model as ``(provider, model_id)`` when both parts exist."""
+def settings_model(snapshot: SettingsSnapshot) -> tuple[str | None, str] | None:
+    """Return the configured provider and exact model reference when set."""
     provider = _as_str(snapshot.values, "defaultProvider")
     model = _as_str(snapshot.values, "defaultModel")
     if model is None:
-        return None
-    if "/" in model:
-        return (model.split("/", 1)[0], model.split("/", 1)[1])
-    if provider is None:
         return None
     return (provider, model)
 
@@ -485,7 +507,10 @@ def _parse_auth(text: str, path: Path) -> dict[str, ApiKeyCredential]:
         env = entry.get("env")
         if key is not None and not isinstance(key, str):
             raise ConfigError(f"Invalid {path.name} credential for provider {provider_id!r}")
-        if env is not None and not isinstance(env, dict):
+        if env is not None and (
+            not isinstance(env, dict)
+            or not all(isinstance(name, str) and isinstance(value, str) for name, value in env.items())
+        ):
             raise ConfigError(f"Invalid {path.name} credential for provider {provider_id!r}")
         credentials[provider_id] = ApiKeyCredential(
             key=key, env=cast(dict[str, str] | None, env),
