@@ -137,6 +137,7 @@ class Usage:
     cost: UsageCost
     cache_write_1h: int | None = None
     reasoning: int | None = None
+    reported: bool | None = None
 
 
 def empty_usage() -> Usage:
@@ -148,6 +149,7 @@ def empty_usage() -> Usage:
         total_tokens=0,
         cost=UsageCost(),
         reasoning=0,
+        reported=False,
     )
 
 

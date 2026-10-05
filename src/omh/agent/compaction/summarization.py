@@ -123,6 +123,10 @@ def _add_usage(left: Usage, right: Usage) -> Usage:
             if left.reasoning is None and right.reasoning is None
             else (left.reasoning or 0) + (right.reasoning or 0)
         ),
+        reported=(
+            False if False in (left.reported, right.reported)
+            else True if left.reported is True and right.reported is True else None
+        ),
     )
 
 

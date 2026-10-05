@@ -1039,8 +1039,9 @@ async def test_retained_tail_never_starts_on_a_tool_result() -> None:
     assert isinstance(agent.state.messages[-1], ToolResultMessage)
 
 
-async def test_split_turn_summarizes_prefix_and_merges_usage() -> None:
-    stream = SummaryStreamFn(summary_usage=usage(10, 5))
+@pytest.mark.parametrize("reported", [True, False, None])
+async def test_split_turn_summarizes_prefix_and_merges_usage(reported: bool | None) -> None:
+    stream = SummaryStreamFn(summary_usage=replace(usage(10, 5), reported=reported))
     agent = seeded_agent(stream, keep_recent_tokens=1, messages=[
         UserMessage(content="older", timestamp=NOW),
         text_message("assistant-0"),
@@ -1054,6 +1055,7 @@ async def test_split_turn_summarizes_prefix_and_merges_usage() -> None:
     assert "Turn Context (split turn)" in result.summary
     assert result.usage is not None
     assert result.usage.input == 20 and result.usage.output == 10
+    assert result.usage.reported is reported
     # The manual focus reaches both the history and the turn-prefix requests.
     assert all(
         "focus on the open question" in _request_text(request)

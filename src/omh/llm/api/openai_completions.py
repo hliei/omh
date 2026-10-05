@@ -448,7 +448,7 @@ def _request_headers(model: Model, api_key: str, options: OpenAICompletionsOptio
         "user-agent": _user_agent(),
     }
     if model.headers:
-        headers.update(model.headers)
+        headers.update({name.lower(): value for name, value in model.headers.items()})
     # OpenCode Go requires a client-supplied per-conversation routing header. The
     # public ``session_id`` carries the conversation identity; an explicit header
     # from the model catalog or request options still wins.
@@ -461,9 +461,9 @@ def _request_headers(model: Model, api_key: str, options: OpenAICompletionsOptio
         headers["x-opencode-session"] = options.session_id
     if options and options.headers:
         for name, value in options.headers.items():
+            name = name.lower()
             if value is None:
                 headers.pop(name, None)
-                headers.pop(name.lower(), None)
             else:
                 headers[name] = value
     return headers
@@ -527,6 +527,10 @@ def parse_chunk_usage(raw_usage: dict[str, Any], model: Model) -> Usage:
     usage.cache_write = cache_write
     usage.reasoning = reasoning
     usage.total_tokens = input_tokens + output_tokens + cache_read + cache_write
+    usage.reported = all(
+        type(raw_usage.get(key)) is int and raw_usage[key] >= 0
+        for key in ("prompt_tokens", "completion_tokens")
+    )
     calculate_cost(model, usage)
     return usage
 

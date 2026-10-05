@@ -62,7 +62,7 @@ def estimate_context_tokens(context: TranscriptContext) -> int:
         chars += len(tool.name) + len(tool.description) + len(str(tool.parameters))
     tokens = estimate_text_tokens("x" * chars) if chars else 0
     for message in reversed(context.messages):
-        if isinstance(message, AssistantMessage) and message.usage.total_tokens:
+        if isinstance(message, AssistantMessage) and message.usage.reported is not False and message.usage.total_tokens:
             return message.usage.total_tokens + estimate_text_tokens(
                 "x" * sum(estimate_message_chars(item) for item in context.messages[context.messages.index(message) + 1 :])
             )

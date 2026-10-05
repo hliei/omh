@@ -126,6 +126,7 @@ def _context_tokens(usage: Usage) -> int:
 def _assistant_usage(message: AgentMessage) -> Usage | None:
     if (
         isinstance(message, AssistantMessage)
+        and message.usage.reported is not False
         and message.stop_reason not in {"aborted", "error"}
         and _context_tokens(message.usage) > 0
     ):

@@ -71,6 +71,20 @@ HTTP uses an injectable `fetch` or httpx, not the OpenAI Python SDK. The default
 
 `stream` and `stream_simple` produce a unified event stream with a terminal message result. Preparation/request failures use an `error` event; successful completion uses `done`. Consumers should distinguish streamed partials from the final message and provider-reported usage.
 
+`Usage.reported` describes the token counters' provenance: `True` means the
+provider supplied both input and output counts, `False` means the request has
+no complete usage report, and `None` means a custom or older record did not
+specify provenance. Numeric zeros in an unreported usage object are placeholders;
+they do not establish zero consumption or a free request. Reported zero counts
+are distinct from a missing report.
+`empty_usage()` creates such an explicitly unreported placeholder, including
+for SDK-generated preparation failures and interrupted requests.
+Costs remain estimates from catalog rates,
+not a service bill. Summary and durable ledger totals retain missing or unknown
+provenance; an empty durable ledger starts at known zero. History codecs preserve
+the optional marker and decode older records without it as `None`. Context
+estimation ignores explicitly unreported counts and estimates the transcript.
+
 `AssistantMessageFrameEncoder` and `reduce_assistant_message_frames` encode/reduce durable stream prefixes. The durable harness uses these utilities instead of defining a second frame format. Frames alone cannot establish final usage, request completion, or whether an interrupted request was billed.
 
 Credential resolution works on request-option copies. In-memory credential updates serialize per provider with an asyncio lock; resolving auth does not mutate caller configuration.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -54,7 +55,7 @@ USAGE = Usage(
     total_tokens=10,
     cost=UsageCost(input=0.4, output=0.6, cache_read=0.1, total=1.1),
 )
-ZERO_USAGE = Usage(input=0, output=0, cache_read=0, cache_write=0, total_tokens=0, cost=UsageCost())
+ZERO_USAGE = Usage(input=0, output=0, cache_read=0, cache_write=0, total_tokens=0, cost=UsageCost(), reported=True)
 
 
 def _repo(tmp_path: Path) -> SqliteSessionRepo:
@@ -115,6 +116,31 @@ async def test_repo_lists_and_reopens_a_session_with_all_its_state(tmp_path: Pat
         UsageRow(id="usage", usage=USAGE, adjustment=False, seq=10, entry_id="second")
     ]
 
+    await reopened.close(BACKGROUND_CONTEXT)
+    await reopened_repo.close(BACKGROUND_CONTEXT)
+
+
+@pytest.mark.parametrize("reported", [True, False, None])
+async def test_usage_provenance_survives_reopen_and_aggregation(tmp_path: Path, reported: bool | None) -> None:
+    repo = _repo(tmp_path)
+    session = await repo.create(SessionCreateOptions(id=SESSION_ID), BACKGROUND_CONTEXT)
+    known = replace(USAGE, reported=True)
+    other = replace(ZERO_USAGE, reported=reported)
+
+    async def record(mutator: SessionMutator, context: Context) -> CommitResult:
+        return await mutator.commit([
+            insert_usage(UsageRow(id="known", usage=known, adjustment=False)),
+            insert_usage(UsageRow(id="other", usage=other, adjustment=False)),
+        ], context)
+
+    await session.mutate(record, BACKGROUND_CONTEXT)
+    await session.close(BACKGROUND_CONTEXT)
+    await repo.close(BACKGROUND_CONTEXT)
+    reopened_repo = _repo(tmp_path)
+    reopened = await reopened_repo.open(session.metadata, BACKGROUND_CONTEXT)
+    rows = await reopened.scan_usage(UsageScan(), BACKGROUND_CONTEXT)
+    assert [row.usage.reported for row in rows] == [True, reported]
+    assert (await reopened.get_stats(BACKGROUND_CONTEXT)).usage == replace(known, reported=reported)
     await reopened.close(BACKGROUND_CONTEXT)
     await reopened_repo.close(BACKGROUND_CONTEXT)
 

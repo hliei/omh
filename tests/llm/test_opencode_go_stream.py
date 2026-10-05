@@ -25,6 +25,7 @@ from omh.agent import (
     create_read_tool,
     create_write_tool,
 )
+from omh.agent.compaction.preparation import estimate_history_tokens
 from omh.llm.models import create_models, get_supported_thinking_levels
 from omh.llm.providers.opencode_go import opencode_go_provider
 from omh.llm.types import (
@@ -216,6 +217,28 @@ async def test_session_header_is_absent_without_a_session_id() -> None:
     assert "x-opencode-session" not in fetch.requests[0].headers
 
 
+@pytest.mark.parametrize("model_headers", [None, {"X-OpenCode-Session": "from-model"}])
+@pytest.mark.parametrize("override", ["explicit", None])
+async def test_session_header_override_and_removal_ignore_case(
+    model_headers: dict[str, str] | None, override: str | None,
+) -> None:
+    models = _models()
+    model = replace(_model(models, "deepseek-v4.1-flash"), headers=model_headers)
+    fetch = RecordingFetch(
+        sse_response({"choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}]})
+    )
+    await models.complete_simple(
+        model,
+        Context(messages=[UserMessage(content="Hi", timestamp=1)]),
+        SimpleStreamOptions(
+            api_key="test-key", fetch=fetch, session_id="conversation",
+            headers={"X-OPENCODE-SESSION": override},
+        ),
+    )
+    values = [value for name, value in fetch.requests[0].headers.items() if name.lower() == "x-opencode-session"]
+    assert values == ([] if override is None else [override])
+
+
 @pytest.mark.asyncio
 async def test_reasoning_field_is_normalized_to_reasoning_content() -> None:
     models = _models()
@@ -396,6 +419,55 @@ async def test_usage_reports_reasoning_as_an_output_subset() -> None:
     assert result.usage.total_tokens == 120
     assert result.usage.cost.output == pytest.approx(1.20 / 1_000_000 * 20)
     assert result.usage.cost.total > 0
+    assert result.usage.reported is True
+
+
+@pytest.mark.parametrize(
+    ("provider_usage", "reported"),
+    [
+        (None, False),
+        ({}, False),
+        ({"prompt_tokens": 10}, False),
+        ({"prompt_tokens": 0, "completion_tokens": 0}, True),
+    ],
+)
+async def test_missing_usage_is_distinct_from_reported_zero(
+    provider_usage: dict[str, int] | None, reported: bool,
+) -> None:
+    models = _models()
+    chunk: dict[str, object] = {
+        "choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}],
+    }
+    if provider_usage is not None:
+        chunk["usage"] = provider_usage
+    fetch = RecordingFetch(sse_response(chunk))
+    result = await models.complete_simple(
+        _model(models, "deepseek-v4.1-flash"),
+        Context(messages=[UserMessage(content="Hi", timestamp=1)]),
+        SimpleStreamOptions(api_key="test-key", fetch=fetch),
+    )
+    assert result.stop_reason == "stop"
+    assert result.usage.reported is reported
+
+
+async def test_incomplete_usage_does_not_override_context_estimate() -> None:
+    fetch = RecordingFetch(sse_response({
+        "choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1},
+    }))
+    provider = opencode_go_provider()
+
+    def stream_fn(model: Any, context: Any, options: Any) -> Any:
+        return provider.stream_simple(model, context, replace(options, fetch=fetch))
+
+    agent = Agent(AgentOptions(
+        initial_state=AgentInitialState(model=_model(_models(), "deepseek-v4.1-flash")),
+        stream_fn=stream_fn,
+        api_key="test-key",
+        compaction=CompactionSettings(enabled=False),
+    ))
+    await agent.prompt("x" * 800)
+    assert estimate_history_tokens(agent.history) >= 200
 
 
 @pytest.mark.asyncio
@@ -411,6 +483,21 @@ async def test_http_error_stays_a_provider_error() -> None:
     assert result.stop_reason == "error"
     assert "401" in (result.error_message or "")
     assert "bad key" in (result.error_message or "")
+    assert result.usage.reported is False
+
+
+async def test_missing_credentials_have_unreported_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    models = _models()
+    fetch = RecordingFetch(sse_response({"choices": []}))
+    result = await models.complete_simple(
+        _model(models, "deepseek-v4.1-flash"),
+        Context(messages=[UserMessage(content="Hi", timestamp=1)]),
+        SimpleStreamOptions(fetch=fetch),
+    )
+    assert result.stop_reason == "error"
+    assert result.usage.reported is False
+    assert fetch.requests == []
 
 
 @pytest.mark.asyncio
@@ -437,6 +524,7 @@ async def test_cancel_marks_the_go_stream_aborted() -> None:
     assert events[0].type == "start"
     assert events[-1].type == "error"
     assert result.stop_reason == "aborted"
+    assert result.usage.reported is False
 
 
 @pytest.mark.asyncio
