@@ -19,11 +19,10 @@ from omh.llm.models import EXTENDED_THINKING_LEVELS
 from omh.llm.types import ModelThinkingLevel
 
 from coding_agent.agent_session import ToolName
-from coding_agent.config import resolve_agent_dir
+from coding_agent.config import AppendKind, resolve_agent_dir
 from coding_agent.model_directory import ModelDirectory, ModelListing
 
 Mode = Literal["interactive", "text", "json"]
-AppendKind = Literal["text", "file"]
 
 _MODES: tuple[Mode, ...] = ("interactive", "text", "json")
 _TOOLS: tuple[ToolName, ...] = ("read", "bash", "edit", "write")

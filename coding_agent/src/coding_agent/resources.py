@@ -84,6 +84,22 @@ def git_ancestor_directories(cwd: str | Path) -> tuple[Path, ...]:
     return tuple(directories)
 
 
+def project_skill_directories(cwd: str | Path) -> tuple[Path, ...]:
+    """Directories whose automatic skills are trust-controlled for a project.
+
+    That is ``<cwd>/.omh/skills`` and ``.agents/skills`` from the cwd through
+    the nearest Git root (or the filesystem root).
+    """
+    working_dir = Path(cwd).expanduser().resolve()
+    return (
+        working_dir / CONFIG_DIR_NAME / SKILLS_DIR,
+        *(
+            directory / AGENTS_RESOURCES_DIR / SKILLS_DIR
+            for directory in git_ancestor_directories(working_dir)
+        ),
+    )
+
+
 def automatic_skill_sources(
     *, cwd: str | Path, agent_dir: str | Path, home: str | Path, project_trusted: bool,
 ) -> tuple[SkillSource, ...]:
@@ -92,20 +108,17 @@ def automatic_skill_sources(
     Project tiers appear only for a trusted project: ``<cwd>/.omh/skills`` and
     then ``.agents/skills`` from the cwd through the nearest Git root. Global
     tiers are the agent directory's ``skills`` and ``<home>/.agents/skills``.
+    Absent directories are omitted so a normal run reports no read error.
     """
     working_dir = Path(cwd).expanduser().resolve()
     global_dir = Path(agent_dir).expanduser()
     home_dir = Path(home).expanduser()
     entries: list[tuple[Path, str]] = []
     if project_trusted:
-        entries.append((working_dir / CONFIG_DIR_NAME / SKILLS_DIR, "project-auto"))
-        entries.extend(
-            (directory / AGENTS_RESOURCES_DIR / SKILLS_DIR, "project-auto")
-            for directory in git_ancestor_directories(working_dir)
-        )
+        entries.extend((path, "project-auto") for path in project_skill_directories(working_dir))
     entries.append((global_dir / SKILLS_DIR, "global-auto"))
     entries.append((home_dir / AGENTS_RESOURCES_DIR / SKILLS_DIR, "global-auto"))
-    return tuple(SkillSource(path, tier) for path, tier in entries)
+    return tuple(SkillSource(path, tier) for path, tier in entries if path.is_dir())
 
 
 def automatic_template_sources(
@@ -115,6 +128,7 @@ def automatic_template_sources(
 
     Only direct Markdown children of ``<cwd>/.omh/prompts`` (trusted project)
     and ``<agent_dir>/prompts`` are discovered; discovery does not recurse.
+    Absent directories are omitted so a normal run reports no read error.
     """
     working_dir = Path(cwd).expanduser().resolve()
     global_dir = Path(agent_dir).expanduser()
@@ -122,7 +136,7 @@ def automatic_template_sources(
     if project_trusted:
         entries.append((working_dir / CONFIG_DIR_NAME / PROMPTS_DIR, "project-auto"))
     entries.append((global_dir / PROMPTS_DIR, "global-auto"))
-    return tuple(PromptTemplateSource(path, tier) for path, tier in entries)
+    return tuple(PromptTemplateSource(path, tier) for path, tier in entries if path.is_dir())
 
 
 def _ordered(sources: Sequence[_SourceT], tiers: tuple[str, ...] | None) -> list[_SourceT]:

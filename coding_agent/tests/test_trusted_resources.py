@@ -279,6 +279,87 @@ def test_trust_store_reports_invalid_entries_and_round_trips(tmp_path: Path) -> 
     assert any(diagnostic.reason == "invalid-value" for diagnostic in malformed.diagnostics)
 
 
+async def test_normal_run_reports_no_diagnostics_for_absent_automatic_directories(tmp_path: Path) -> None:
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    mark_git_root(cwd)
+    host = CodingAgentHost(
+        startup_dir=cwd, agent_dir=tmp_path / "agent", home=tmp_path / "home",
+    )
+    session, _ = await assemble(host)
+    assert session.resources.diagnostics == ()
+    assert session.resources.skills == () and session.resources.templates == ()
+
+
+async def test_project_agents_skills_alone_require_a_trust_decision(tmp_path: Path) -> None:
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    mark_git_root(cwd)
+    skill(cwd / ".agents" / "skills" / "review" / "SKILL.md", name="review", description="scoped skill")
+    host = CodingAgentHost(startup_dir=cwd, agent_dir=tmp_path / "agent", home=tmp_path / "home")
+    selection = host.select_new()
+    assert host.needs_trust_decision is True
+    assert any(diagnostic.reason == "untrusted" for diagnostic in selection.diagnostics)
+
+
+def test_trust_decision_is_resolved_per_effective_cwd(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    projects = {}
+    for name, model_id in (("first", "deepseek-v4-pro"), ("second", "deepseek-flash")):
+        project = tmp_path / name
+        (project / ".omh").mkdir(parents=True)
+        (project / ".omh" / "settings.json").write_text(json.dumps({"defaultModel": f"deepseek/{model_id}"}))
+        projects[name] = project
+    write_settings(agent_dir, {"defaultModel": "deepseek/deepseek-flash"})
+    host = CodingAgentHost(startup_dir=projects["first"], agent_dir=agent_dir, home=tmp_path / "home")
+    host.remember_trust("approved")
+    selected = host.select_new()
+    assert selected.model is not None and selected.model.id == "deepseek-v4-pro"
+
+    other = host.select_new(cwd=projects["second"])
+    assert other.model is not None and other.model.id == "deepseek-flash"
+    assert any(diagnostic.reason == "untrusted" for diagnostic in other.diagnostics)
+
+
+def test_remembered_decision_outranks_embedding_but_not_explicit_flags(tmp_path: Path) -> None:
+    cwd, agent_dir, home = build_trusted_project(tmp_path)
+    store = TrustStore(agent_dir / "trust.json")
+    store.remember(cwd, "approved")
+    # A recorded decision beats the embedding default in both directions.
+    embedding_denied = CodingAgentHost(
+        startup_dir=cwd, agent_dir=agent_dir, home=home, trust_store=store, project_trusted=False,
+    )
+    assert embedding_denied.select_new().model is not None
+    assert embedding_denied.select_new().model.id == "deepseek-v4-pro"
+    overridden = CodingAgentHost(
+        startup_dir=cwd, agent_dir=agent_dir, home=home, trust_store=store, no_approve=True,
+    )
+    assert overridden.select_new().model is not None
+    assert overridden.select_new().model.id == "deepseek-flash"
+
+    store.remember(cwd, "denied")
+    embedding_approved = CodingAgentHost(
+        startup_dir=cwd, agent_dir=agent_dir, home=home, trust_store=store, project_trusted=True,
+    )
+    assert embedding_approved.select_new().model is not None
+    assert embedding_approved.select_new().model.id == "deepseek-flash"
+    approved = CodingAgentHost(
+        startup_dir=cwd, agent_dir=agent_dir, home=home, trust_store=store, approve=True,
+    )
+    assert approved.select_new().model is not None
+    assert approved.select_new().model.id == "deepseek-v4-pro"
+
+
+async def test_remembering_another_project_does_not_rebase_the_current_session(tmp_path: Path) -> None:
+    cwd, agent_dir, home = build_trusted_project(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    host = CodingAgentHost(startup_dir=cwd, agent_dir=agent_dir, home=home, project_trusted=True)
+    assert host.select_new().model is not None and host.select_new().model.id == "deepseek-v4-pro"
+    host.remember_trust("approved", cwd=other)
+    assert host.select_new().model is not None and host.select_new().model.id == "deepseek-v4-pro"
+
+
 # --------------------------------------------------------------------------- #
 # Discovery switches
 # --------------------------------------------------------------------------- #

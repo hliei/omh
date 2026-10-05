@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, TypeVar, cast
+from typing import TypeVar, cast
 
 from omh.agent import (
     AgentHistorySettings,
@@ -61,9 +61,9 @@ from coding_agent.config import (
     DEFAULT_TOOLS,
     PROMPTS_DIR,
     SETTINGS_FILE,
-    SKILLS_DIR,
     SYSTEM_FILE,
     TRUST_FILE,
+    AppendKind,
     ConfigDiagnostic,
     ConfigError,
     DiagnosticReason,
@@ -87,11 +87,9 @@ from coding_agent.resources import (
     RESOURCE_TIERS,
     automatic_skill_sources,
     automatic_template_sources,
+    project_skill_directories,
 )
 from coding_agent.trust import TrustDecision, TrustStore
-
-#: One explicit system-prompt addendum: literal text or a file path.
-AppendKind = Literal["text", "file"]
 
 #: The product's default model when neither history nor configuration selects one.
 DEFAULT_MODEL_REFERENCE = ("opencode-go", "deepseek-v4.1-flash")
@@ -223,10 +221,15 @@ class CodingAgentHost:
         return self._trust_unknown and self._project_resources(self._settings_cwd)
 
     def remember_trust(self, decision: TrustDecision, *, cwd: str | Path | None = None) -> None:
-        """Persist a project trust decision and refresh the effective layer."""
+        """Persist a project trust decision and refresh the effective layer.
+
+        An explicit ``cwd`` for another project only records the decision; the
+        current session's settings and system inputs stay untouched.
+        """
         target = Path(cwd).expanduser().resolve() if cwd is not None else self._settings_cwd
         self._trust_store.remember(target, decision)
-        self._refresh_settings(target, [])
+        if target == self._settings_cwd:
+            self._refresh_settings(target, [])
 
     @property
     def models(self) -> ModelsImpl:
@@ -412,22 +415,24 @@ class CodingAgentHost:
         """Resolve the project's loading authorization without asking a question.
 
         Explicit one-run flags win over a remembered decision, which wins over
-        the embedding default. With no decision and real controlled project
-        resources present, the layer is skipped and reported so print never
-        waits for an answer; interactive can ask and then remember one.
+        the embedding's ``project_trusted`` default. With no decision and real
+        controlled project resources present, the layer is skipped and reported
+        so print never waits for an answer; interactive can ask and then
+        remember one. The store is always consulted so a malformed trust file is
+        diagnosed even when a flag decides the outcome.
         """
         self._trust_unknown = False
+        decision = self._trust_store.decision(cwd)
         if self._approve:
             return True
         if self._no_approve:
             return False
-        if self._project_trusted is not None:
-            return self._project_trusted
-        decision = self._trust_store.decision(cwd)
         if decision == "approved":
             return True
         if decision == "denied":
             return False
+        if self._project_trusted is not None:
+            return self._project_trusted
         self._trust_unknown = True
         if self._project_resources(cwd):
             diagnostics.append(ConfigDiagnostic(
@@ -445,8 +450,8 @@ class CodingAgentHost:
             (base / SETTINGS_FILE).is_file()
             or (base / SYSTEM_FILE).exists()
             or (base / APPEND_SYSTEM_FILE).exists()
-            or (base / SKILLS_DIR).is_dir()
             or (base / PROMPTS_DIR).is_dir()
+            or any(directory.is_dir() for directory in project_skill_directories(cwd))
         )
 
     def _resolve_system(

@@ -17,7 +17,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
-from coding_agent.config import TRUST_FILE, ConfigDiagnostic, _atomic_write
+from coding_agent.config import (
+    TRUST_FILE,
+    ConfigDiagnostic,
+    _atomic_write,
+    _read_json_object,
+)
 
 #: The remembered outcome for one project directory.
 TrustDecision = Literal["approved", "denied"]
@@ -40,45 +45,24 @@ class TrustStore:
         if self._decisions is not None:
             return self._decisions
         self.diagnostics = []
+        parsed, error = _read_json_object(self.path, "trust")
+        if error is not None:
+            self.diagnostics.append(error)
         decisions: dict[str, TrustDecision] = {}
-        try:
-            text = self.path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            text = ""
-        except OSError as error:
+        base = parsed.get("projects", {})
+        if base is not None and not isinstance(base, dict):
             self.diagnostics.append(ConfigDiagnostic(
-                str(self.path), "trust", "recoverable", f"Cannot read {self.path.name}: {error}",
+                str(self.path), "trust", "invalid-schema", "trust projects must be an object",
             ))
-            text = ""
-        if text.strip():
-            try:
-                parsed = json.loads(text)
-            except ValueError as error:
-                self.diagnostics.append(ConfigDiagnostic(
-                    str(self.path), "trust", "invalid-json", f"Invalid JSON in {self.path.name}: {error}",
-                ))
-            else:
-                if not isinstance(parsed, dict):
-                    self.diagnostics.append(ConfigDiagnostic(
-                        str(self.path), "trust", "invalid-schema",
-                        f"{self.path.name} must contain a JSON object",
-                    ))
+        elif base:
+            for project, value in cast(Mapping[str, object], base).items():
+                if value in ("approved", "denied"):
+                    decisions[project_key(project)] = value
                 else:
-                    base = parsed.get("projects", {})
-                    if not isinstance(base, dict):
-                        self.diagnostics.append(ConfigDiagnostic(
-                            str(self.path), "trust", "invalid-schema",
-                            "trust projects must be an object",
-                        ))
-                    else:
-                        for project, value in cast(Mapping[str, object], base).items():
-                            if value in ("approved", "denied"):
-                                decisions[str(Path(project).expanduser().resolve())] = value
-                            else:
-                                self.diagnostics.append(ConfigDiagnostic(
-                                    str(self.path), "trust", "invalid-value",
-                                    f'Trust decision for {project!r} must be "approved" or "denied"',
-                                ))
+                    self.diagnostics.append(ConfigDiagnostic(
+                        str(self.path), "trust", "invalid-value",
+                        f'Trust decision for {project!r} must be "approved" or "denied"',
+                    ))
         self._decisions = decisions
         return decisions
 

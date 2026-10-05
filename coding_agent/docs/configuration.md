@@ -16,6 +16,10 @@ actual user task surfaces authentication failure.
 | --- | --- |
 | `~/.omh/agent` | Global agent directory, overridable with `OMH_CODING_AGENT_DIR` |
 | `~/.omh/agent/settings.json` | Global settings |
+| `~/.omh/agent/SYSTEM.md` | Global base system prompt fallback |
+| `~/.omh/agent/APPEND_SYSTEM.md` | Global system addendum fallback |
+| `~/.omh/agent/skills`, `~/.agents/skills` | Global automatic skill directories |
+| `~/.omh/agent/prompts` | Global automatic prompt-template directory |
 | `~/.omh/agent/auth.json` | Global API keys, mode `0600` |
 | `~/.omh/agent/models.json` | Global model metadata overrides |
 | `~/.omh/agent/sessions` | Default session storage root |
@@ -113,8 +117,11 @@ catalog still join as independent named sections. A project `APPEND_SYSTEM.md`
 replaces the global addendum instead of stacking on it, and repeated
 `--append-system-prompt`/`--append-system-prompt-file` values keep command-line
 order. Literal text is never reinterpreted as a path, and an explicit file is
-read as text. The embedded `CodingAgentOptions` keeps the historical
-`global -> project -> explicit` source ordering unless a host supplies tiers.
+read as text. An explicit append whose parts are all empty adds nothing and
+falls back to the project/global addendum, while `--system-prompt ""` still
+intentionally replaces the base with an empty preamble. The embedded
+`CodingAgentOptions` keeps the historical `global -> project -> explicit` source
+ordering unless a host supplies tiers.
 
 ## Model, thinking and cwd precedence
 

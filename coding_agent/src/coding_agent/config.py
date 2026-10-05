@@ -38,6 +38,8 @@ from omh.llm.types import ModelThinkingLevel
 
 #: The built-in model tool identifiers shared by settings and the host.
 ToolName = Literal["read", "bash", "edit", "write"]
+#: One explicit system-prompt addendum: literal text or a file path.
+AppendKind = Literal["text", "file"]
 
 #: Product application name; drives the environment variable name and defaults.
 APP_NAME = "omh"
