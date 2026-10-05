@@ -37,7 +37,6 @@ from coding_agent.images import (
     count_history_images,
     create_read_image_processor,
     degradation_notice,
-    detect_image_mime_type,
     process_image,
     read_image,
 )
@@ -53,7 +52,7 @@ __all__ = [
     "ProcessedImage", "SaveState", "SessionManager", "SessionSelection", "SettingsSnapshot",
     "ToolName", "UnsupportedImageModelError", "attachment_images", "compose_first_task",
     "count_history_images", "create_read_image_processor", "decode_history", "degradation_notice",
-    "detect_image_mime_type", "encode_history", "load_settings", "merge_settings", "process_image",
+    "encode_history", "load_settings", "merge_settings", "process_image",
     "project_settings_path", "read_file_attachment", "read_image", "render_attachment",
     "resolve_agent_dir", "update_settings",
 ]

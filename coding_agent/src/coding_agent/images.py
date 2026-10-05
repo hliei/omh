@@ -27,8 +27,8 @@ from omh.agent import (
     ReadImageProcessorOptions,
     ReadImageProcessorResult,
     ReadImageProcessorSuccess,
+    detect_supported_image_mime_type,
 )
-from omh.agent.tools.image import detect_supported_image_mime_type
 from omh.llm.types import AbortSignal, ImageContent
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -36,8 +36,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 IMAGE_MAX_DIMENSION = 2000
 #: Default maximum base64 payload per image: strictly below 4.5 MiB.
 IMAGE_MAX_BASE64_BYTES = int(4.5 * 1024 * 1024)
-#: JPEG qualities tried, in order, when PNG does not fit the byte limit.
-JPEG_QUALITIES = (80, 85, 70, 55, 40)
+#: JPEG qualities tried, in decreasing order, when PNG does not fit the byte limit.
+JPEG_QUALITIES = (80, 70, 55, 40)
 #: Dimensions shrink by this factor when no encoding fits the byte limit.
 SHRINK_FACTOR = 0.75
 
@@ -81,28 +81,17 @@ class ProcessedImage:
         return ImageContent(data=self.data, mime_type=self.mime_type)
 
 
-def detect_image_mime_type(data: bytes) -> str | None:
-    """Return the supported MIME type for ``data`` using the SDK read contract."""
-    return detect_supported_image_mime_type(data)
-
-
 def process_image(
-    data: bytes, *, mime_type: str | None = None, limits: ImageLimits | None = None,
-    auto_resize: bool = True,
+    data: bytes, *, limits: ImageLimits | None = None, auto_resize: bool = True,
 ) -> ProcessedImage:
     """Convert and bound ``data`` for sending, explaining any failure.
 
-    ``mime_type`` is the caller's already-detected type (the read tool passes
-    it); the byte signature remains authoritative and must match a supported
-    format.
+    The byte signature is authoritative and must match a supported format.
     """
-    del mime_type
     effective = limits or ImageLimits()
-    detected = detect_image_mime_type(data)
+    detected = detect_supported_image_mime_type(data)
     if detected is None:
         raise ImageInputError(_unsupported_message(data))
-    if detected not in _SUPPORTED_MIME_TYPES:
-        raise ImageInputError(f"{detected} is not a supported image format; supported: {_supported_list()}")
 
     image = _decode(data, detected)
     original_width, original_height = image.size
@@ -312,11 +301,14 @@ def _unsupported_message(data: bytes) -> str:
     try:
         with Image.open(io.BytesIO(data)) as opened:
             image_format = opened.format
+            frames = getattr(opened, "n_frames", 1)
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
         return (
             "image could not be decoded and is not a supported image format; "
             f"supported: {_supported_list()}"
         )
+    if image_format == "PNG" and frames > 1:
+        return "animated PNG is not supported; save a single-frame PNG"
     if image_format is None:
         return f"image could not be decoded; supported: {_supported_list()}"
     return f"{image_format} is not a supported image format; supported: {_supported_list()}"

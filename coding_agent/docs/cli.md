@@ -140,7 +140,8 @@ sent as real image content. The first task combines piped stdin, the
 attachments in argument order and the first prompt, separated so that no part
 runs into the next. A missing file, or bytes that are neither a supported image
 nor UTF-8 text, is rejected before the request. Formats, limits and the model
-modality rule are in [input and attachments](input.md).
+modality rule are in [input and attachments](input.md); print task execution
+delivers this composition in a later delivery.
 
 ## Conflicts and rejection
 

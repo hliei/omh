@@ -20,7 +20,6 @@ from coding_agent.images import (
     ImageInputError,
     ImageLimits,
     create_read_image_processor,
-    detect_image_mime_type,
     process_image,
     read_image,
 )
@@ -95,12 +94,26 @@ def test_stricter_service_limits_are_honored() -> None:
 
 def test_encoded_output_stays_below_the_strict_base64_limit_or_is_explained() -> None:
     limits = ImageLimits(max_base64_bytes=2048)
+    assert limits.max_dimension == IMAGE_MAX_DIMENSION  # Only the byte limit can drive the shrink.
     processed = process_image(image_bytes((512, 512), noise=True), limits=limits)
     assert len(processed.data) < limits.max_base64_bytes
+    assert processed.width < 512 and processed.height < 512
     assert processed.was_resized is True
 
     with pytest.raises(ImageInputError, match="inline image size limit"):
         process_image(image_bytes((64, 64), noise=True), limits=ImageLimits(max_base64_bytes=1))
+
+
+def test_auto_resize_off_still_announces_gif_and_bmp_conversion() -> None:
+    bmp = process_image(image_bytes((8, 4), "BMP"), auto_resize=False)
+    assert bmp.mime_type == "image/png"
+    assert bmp.converted_from == "image/bmp"
+    assert any("image/bmp" in hint for hint in bmp.hints)
+
+    raw = image_bytes((8, 4), "JPEG")
+    passthrough = process_image(raw, auto_resize=False)
+    assert passthrough.mime_type == "image/jpeg"
+    assert passthrough.data == base64.b64encode(raw).decode("ascii")
 
 
 def test_corrupt_unsupported_and_unreadable_sources_are_explained(tmp_path: Path) -> None:
@@ -115,6 +128,12 @@ def test_corrupt_unsupported_and_unreadable_sources_are_explained(tmp_path: Path
 
     with pytest.raises(ImageInputError, match="supported"):
         process_image(b"")
+
+    apng = io.BytesIO()
+    first = Image.new("RGB", (4, 4), (1, 2, 3))
+    first.save(apng, format="PNG", save_all=True, append_images=[Image.new("RGB", (4, 4), (4, 5, 6))])
+    with pytest.raises(ImageInputError, match="animated PNG"):
+        process_image(apng.getvalue())
 
     missing = tmp_path / "missing.png"
     with pytest.raises(ImageInputError, match="missing.png"):
@@ -133,11 +152,6 @@ def test_read_image_keeps_the_source_file_byte_for_byte(tmp_path: Path) -> None:
     processed = read_image(source)
     assert source.read_bytes() == raw
     assert processed.mime_type == "image/png"
-
-
-def test_detection_reports_only_supported_signatures() -> None:
-    assert detect_image_mime_type(image_bytes()) == "image/png"
-    assert detect_image_mime_type(b"not an image") is None
 
 
 async def test_read_processor_reports_failure_text_and_success_hints() -> None:

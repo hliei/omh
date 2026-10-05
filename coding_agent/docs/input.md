@@ -21,8 +21,9 @@ already ends with a newline gains only the newlines needed for one separating
 blank line; nothing is trimmed.
 
 Text attachments keep the original file content inside a
-`<file name="...">...</file>` boundary. An empty file keeps its boundary with an
-empty body. Image attachments contribute a boundary and real image content; a
+`<file name="...">...</file>` boundary. A leading UTF-8 BOM is removed when
+decoding, and every other byte is preserved. An empty file keeps its boundary
+with an empty body. Image attachments contribute a boundary and real image content; a
 converted image lists its conversion and resize hints in the boundary text. A
 file that cannot be read, or whose bytes are neither a supported image nor valid
 UTF-8 text, raises `AttachmentError` so the caller can explain it before the
@@ -54,10 +55,15 @@ GIF and BMP:
   `was_resized`, `converted_from` and human-readable `hints`.
 
 A service with stricter limits passes an `ImageLimits(max_dimension=...,
-max_base64_bytes=...)` value. `CodingAgentOptions.image_limits` applies those
-limits to both session images and read-tool images; `process_image` and
-`read_image` accept the same value directly. `IMAGE_MAX_DIMENSION` and
-`IMAGE_MAX_BASE64_BYTES` are the product defaults.
+max_base64_bytes=...)` value. `process_image` and `read_image` accept it
+directly, and `CodingAgentOptions.image_limits` applies it to the read tool's
+processor. Session `prompt`/`steer`/`follow_up` send the `ImageContent` they are
+given, so user attachments are bounded where they are accepted:
+`read_file_attachment(..., limits=...)` passes the same value through.
+`IMAGE_MAX_DIMENSION` and `IMAGE_MAX_BASE64_BYTES` are the product defaults.
+With `auto_resize=False` the processor still converts GIF and BMP (announced in
+the hints) but skips resizing and does not enforce the byte limit, matching the
+SDK read option it comes from.
 
 `read_image(path)` reads a file and rejects it with a message that names the path
 when it cannot be read or accepted. The source file is never rewritten:

@@ -13,13 +13,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from omh.agent import detect_supported_image_mime_type
 from omh.llm.types import ImageContent
 
 from coding_agent.images import (
     ImageInputError,
     ImageLimits,
     ProcessedImage,
-    detect_image_mime_type,
     process_image,
 )
 
@@ -52,7 +52,7 @@ def read_file_attachment(
     except OSError as error:
         raise AttachmentError(f"cannot read file attachment {path}: {error}") from error
 
-    if detect_image_mime_type(data) is not None:
+    if detect_supported_image_mime_type(data) is not None:
         try:
             processed = process_image(data, limits=limits, auto_resize=auto_resize)
         except ImageInputError as error:
@@ -66,6 +66,7 @@ def read_file_attachment(
             f"{path} is not a supported image or UTF-8 text file: {error}"
         ) from error
     if text.startswith("\ufeff"):
+        # A leading UTF-8 BOM is a decode artifact, not file content.
         text = text[1:]
     return FileAttachment(path=path, text=text)
 
