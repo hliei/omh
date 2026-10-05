@@ -125,6 +125,41 @@ def test_list_models_succeeds_without_key(home: Path) -> None:
     assert_no_terminal_noise(result.stdout)
 
 
+def test_list_models_covers_the_eight_registered_combinations(home: Path) -> None:
+    result = run_cli("--list-models", home=home)
+    assert result.returncode == 0
+    rows = {
+        tuple(line.split()[:2]): line.split()[2:]
+        for line in result.stdout.splitlines()[1:]
+    }
+    assert set(rows) == {
+        ("deepseek", "deepseek-flash"),
+        ("deepseek", "deepseek-v4-pro"),
+        ("opencode-go", "deepseek-v4.1-flash"),
+        ("opencode-go", "deepseek-v4-pro"),
+        ("opencode-go", "glm-5.3"),
+        ("opencode-go", "glm-5.3-flash"),
+        ("opencode-go", "kimi-k3"),
+        ("opencode-go", "kimi-k2.7-code"),
+    }
+    for columns in rows.values():
+        api, _input, _thinking, _context, _output, _cost, source = columns
+        assert api == "openai-completions"
+        assert source == "builtin"
+
+    def thinking_and_shape(provider: str, model: str) -> tuple[str, str, str, str]:
+        api, _input, thinking, context, output, _cost, _source = rows[(provider, model)]
+        return (_input, thinking, context, output)
+
+    assert thinking_and_shape("opencode-go", "glm-5.3") == ("text", "low,high,max", "1000000", "131072")
+    assert thinking_and_shape("opencode-go", "glm-5.3-flash") == (
+        "text,image", "low,high,max", "1000000", "131072",
+    )
+    assert thinking_and_shape("opencode-go", "kimi-k3") == ("text,image", "max", "1048576", "131072")
+    # Fixed-on: no adjustable level and no fabricated ``off``.
+    assert thinking_and_shape("opencode-go", "kimi-k2.7-code") == ("text,image", "-", "262144", "262144")
+
+
 def test_list_models_search_filters_the_directory(home: Path) -> None:
     matched = run_cli("--list-models", "flash", home=home)
     assert matched.returncode == 0
@@ -251,6 +286,36 @@ def test_thinking_is_validated_against_the_selected_model(home: Path) -> None:
     unsupported = run_cli("--model", "deepseek/deepseek-v4-pro", "--thinking", "xhigh", home=home)
     assert unsupported.returncode == EXIT_USAGE
     assert "not supported" in unsupported.stderr
+
+
+@pytest.mark.parametrize(
+    ("model", "level"),
+    [
+        ("opencode-go/glm-5.3", "medium"),
+        ("opencode-go/glm-5.3-flash", "minimal"),
+        ("opencode-go/kimi-k3", "high"),
+        ("opencode-go/kimi-k2.7-code", "high"),
+        ("opencode-go/kimi-k2.7-code", "off"),
+    ],
+)
+def test_go_thinking_is_validated_against_each_models_real_levels(home: Path, model: str, level: str) -> None:
+    result = run_cli("--model", model, "--thinking", level, "prompt", home=home)
+    assert result.returncode == EXIT_USAGE
+    assert "not supported" in result.stderr or "fixed thinking mode" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("model", "level"),
+    [
+        ("opencode-go/glm-5.3", "low"),
+        ("opencode-go/glm-5.3-flash", "max"),
+        ("opencode-go/kimi-k3", "max"),
+    ],
+)
+def test_go_supported_thinking_passes_selection(home: Path, model: str, level: str) -> None:
+    result = run_cli("--model", model, "--thinking", level, "prompt", home=home)
+    assert result.returncode == EXIT_FAILURE
+    assert "text mode" in result.stderr
 
 
 @pytest.mark.parametrize("provider_args", [(), ("--provider", "deepseek")])

@@ -440,6 +440,10 @@ def _validate_selection(args: CliArgs, directory: ModelDirectory) -> None:
         model = matches[0]
         levels = directory.thinking_levels(model)
         if args.thinking not in levels:
+            if not levels and model.reasoning:
+                raise CliUsageError(
+                    f"{model.provider}/{model.id} has a fixed thinking mode with no adjustable level"
+                )
             raise CliUsageError(
                 f"thinking level {args.thinking!r} is not supported by {model.provider}/{model.id}; "
                 f"valid levels: {', '.join(levels)}"

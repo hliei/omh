@@ -16,6 +16,7 @@ from omh.llm import (
     create_models,
     deepseek_provider,
     get_supported_thinking_levels,
+    opencode_go_provider,
 )
 from omh.llm.models import Models, Provider
 from omh.llm.types import Model
@@ -27,7 +28,7 @@ ProviderFactory = Callable[[], Provider]
 
 #: Providers whose models this product can actually run. Registering one here
 #: makes its models appear in ``--list-models`` and valid for exact selection.
-_BUILTIN_PROVIDERS: tuple[ProviderFactory, ...] = (deepseek_provider,)
+_BUILTIN_PROVIDERS: tuple[ProviderFactory, ...] = (deepseek_provider, opencode_go_provider)
 
 
 def builtin_models() -> Models:
