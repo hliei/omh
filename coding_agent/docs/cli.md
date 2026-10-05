@@ -1,6 +1,6 @@
 # Command line entry
 
-[Application overview](../README.md) · [AgentSession](agent-session.md) · [SessionManager](session-manager.md) · [AgentSessionRuntime](agent-session-runtime.md)
+[Application overview](../README.md) · [Configuration](configuration.md) · [AgentSession](agent-session.md) · [SessionManager](session-manager.md) · [AgentSessionRuntime](agent-session-runtime.md)
 
 The `omh-coding-agent` distribution installs the `omh` command. Installing the
 `omh` SDK alone provides no command. The command is the product entry point
@@ -17,22 +17,25 @@ model metadata.
 ## Read-only commands
 
 Read-only commands never resolve credentials, call a provider, rewrite the
-model directory or change configuration.
+model directory or change configuration. The global agent directory is
+`~/.omh/agent` unless `OMH_CODING_AGENT_DIR` replaces it; see
+[configuration and credentials](configuration.md).
 
 | Command | Behavior |
 | --- | --- |
 | `--help`, `-h` | Print the command, option and mode reference and exit `0` |
 | `--version`, `-v` | Print the installed product version and exit `0` |
-| `--list-models [search]` | List registered models with protocol, input modality, thinking levels, context window, output limit, cost rates and source |
+| `--list-models [search]` | List registered models with protocol, input modality, thinking levels, context window, output limit, cost rates, source and catalog date |
 | `--list-sessions [search]` | Parameter and read-only intent are defined; discovery arrives with session discovery |
 
 `--list-models` takes an optional search that matches provider, model ID,
 display name or `provider/model`, case-insensitively, including a fuzzy
 subsequence match. An empty result prints nothing.
 
-Only providers whose runtime support is registered appear. The directory grows
-as provider deliveries land; the `source` column distinguishes built-in
-metadata from future user configuration.
+Only providers whose runtime support is registered appear. Built-in catalog
+entries report `source=builtin`; metadata supplied or overridden by the global
+`models.json` reports `source=user`. A missing required `models.json` field is
+diagnosed rather than inferred.
 
 ## Mode selection
 
@@ -92,6 +95,12 @@ All values are validated before any request; an explicit `--skill` or
 Literal text options never reinterpret file-looking values; the matching
 `-file` option reads a file. `--system-prompt` and `--system-prompt-file` are
 mutually exclusive; append options may mix text and files in any order.
+
+`--model` and `--thinking` must name an exact registered model and a level that
+model supports; `--api-key` applies to this process only and is never saved.
+The default model is `opencode-go/deepseek-v4.1-flash` with thinking `high`
+unless history or settings select otherwise. The full precedence and
+credentials rules are in [configuration and credentials](configuration.md).
 
 Before `--`, a `@path` argument is a file attachment and every other non-option
 argument is a prompt. After `--`, every remaining argument is a literal prompt,
