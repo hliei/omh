@@ -7,7 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import time
-from typing import Literal
 
 from omh.agent import (
     Agent,
@@ -38,10 +37,9 @@ from omh.llm.types import (
     UserMessage,
 )
 
+from coding_agent.config import ToolName as ToolName
 from coding_agent.resources import ApplicationResources, load_resources
 from coding_agent.session_manager import SaveState, SessionManager
-
-ToolName = Literal["read", "bash", "edit", "write"]
 
 
 @dataclass(slots=True)
@@ -61,6 +59,14 @@ class CodingAgentOptions:
     skill_sources: tuple[SkillSource, ...] = ()
     template_sources: tuple[PromptTemplateSource, ...] = ()
     custom_prompt: str | None = None
+    #: Optional ordered tiers for resource sources. ``None`` keeps the embedded
+    #: ``global -> project -> explicit`` default; the installed host supplies the
+    #: product's five-tier order in :data:`coding_agent.resources.RESOURCE_TIERS`.
+    resource_tiers: tuple[str, ...] | None = None
+    #: Whether project instruction files participate in named sections.
+    load_context_files: bool = True
+    #: Optional system-prompt addendum assembled by the host.
+    append_system_prompt: str | None = None
 
 
 def _create_tools(names: tuple[ToolName, ...], cwd: Path) -> list[AgentTool]:

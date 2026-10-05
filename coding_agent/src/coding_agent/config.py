@@ -36,7 +36,8 @@ from omh.llm.auth.types import (
 from omh.llm.models import EXTENDED_THINKING_LEVELS
 from omh.llm.types import ModelThinkingLevel
 
-from coding_agent.agent_session import ToolName
+#: The built-in model tool identifiers shared by settings and the host.
+ToolName = Literal["read", "bash", "edit", "write"]
 
 #: Product application name; drives the environment variable name and defaults.
 APP_NAME = "omh"
@@ -48,6 +49,17 @@ ENV_AGENT_DIR = "OMH_CODING_AGENT_DIR"
 SETTINGS_FILE = "settings.json"
 AUTH_FILE = "auth.json"
 MODELS_FILE = "models.json"
+#: Remembered project resource-trust decisions; global-only.
+TRUST_FILE = "trust.json"
+
+#: Project and global files replacing or extending the base system prompt.
+SYSTEM_FILE = "SYSTEM.md"
+APPEND_SYSTEM_FILE = "APPEND_SYSTEM.md"
+#: Directories holding automatically discovered skills and prompt templates.
+SKILLS_DIR = "skills"
+PROMPTS_DIR = "prompts"
+#: User-authored resource directory name, relative to a project or home directory.
+AGENTS_RESOURCES_DIR = ".agents"
 
 #: Private creation mode for the credential file.
 AUTH_FILE_MODE = 0o600
@@ -59,10 +71,12 @@ PROVIDER_API_KEY_ENV = {
 }
 
 SettingsScope = Literal["global", "project"]
-DiagnosticSource = Literal["global", "project", "cli", "settings", "history", "models", "credentials"]
+DiagnosticSource = Literal[
+    "global", "project", "cli", "settings", "history", "models", "credentials", "trust",
+]
 DiagnosticReason = Literal[
     "invalid-json", "invalid-schema", "unknown-key", "invalid-type", "invalid-value", "unavailable",
-    "adjusted",
+    "adjusted", "untrusted", "recoverable",
 ]
 
 #: The built-in tool selection shared by settings validation and the host.
@@ -87,7 +101,9 @@ class ConfigDiagnostic:
 
     @property
     def blocking(self) -> bool:
-        return self.reason not in {"unknown-key", "adjusted"}
+        # ``untrusted`` records a skipped controlled layer and ``recoverable``
+        # records a fallback resource read; both still leave a runnable session.
+        return self.reason not in {"unknown-key", "adjusted", "untrusted", "recoverable"}
 
 
 class ConfigError(Exception):

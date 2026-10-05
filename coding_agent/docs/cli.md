@@ -88,8 +88,9 @@ Values beginning with `-` use the equals form, for example
 `--system-prompt=-literal`. Empty values are accepted only for literal system
 text and optional listing searches. Help and version still reject conflicting
 or invalid options supplied alongside them.
-All values are validated before any request; an explicit `--skill` or
-`--prompt-template` path must exist.
+All values are validated before any request; an explicit `--skill`,
+`--prompt-template`, `--system-prompt-file` or `--append-system-prompt-file`
+path must exist.
 
 | Option | Value |
 | --- | --- |
@@ -122,7 +123,11 @@ All values are validated before any request; an explicit `--skill` or
 
 Literal text options never reinterpret file-looking values; the matching
 `-file` option reads a file. `--system-prompt` and `--system-prompt-file` are
-mutually exclusive; append options may mix text and files in any order.
+mutually exclusive; append options may mix text and files in any order. A
+project's controlled settings, resources and system files load only when the
+project is trusted; `--approve`/`--no-approve` decide one run without asking,
+and an already remembered decision or explicit path is used otherwise. See
+[project trust and resource discovery](configuration.md#project-trust).
 
 `--model` and `--thinking` must name an exact registered model and a level that
 model supports; `--api-key` applies to this process only and is never saved.
@@ -139,7 +144,8 @@ including values that start with `-` or `@`.
 The command exits `2` before any request for:
 
 - An unknown option, unknown tool, missing value or repeated single-value option.
-- An explicit `--skill` or `--prompt-template` path that does not exist.
+- An explicit `--skill`, `--prompt-template`, `--system-prompt-file` or
+  `--append-system-prompt-file` path that does not exist.
 - A provider mismatch between `--provider` and `--model provider/id`, an unknown
   provider or model, or a thinking level the selected model does not support,
   including any level on a fixed thinking model.

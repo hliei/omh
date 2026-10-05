@@ -55,12 +55,19 @@ All application resource paths, including relative `agent_dir` and
 
 `skill_sources` accepts a tuple of SDK `SkillSource` values and
 `template_sources` accepts SDK `PromptTemplateSource` values. Each source path
-can be a directory or a Markdown file. The application orders source labels
-`global`, `project`, then `explicit`, retaining supplied order within each tier;
-other source labels occupy the explicit tier. Skills preserve first-source
-winners and template invocation uses the first matching ordered template.
-The host supplies these paths explicitly; `agent_dir` does not implicitly add
+can be a directory or a Markdown file. Without `resource_tiers`, the embedded
+default orders source labels `global`, then `project`, then `explicit`, retaining
+supplied order within each tier; other source labels occupy the explicit tier.
+The installed host supplies `resource_tiers=RESOURCE_TIERS` and its own five
+tier labels (`explicit`, `project-config`, `project-auto`, `global-config`,
+`global-auto`), so the CLI priority never silently changes the embedded default.
+Skills preserve first-source winners and template invocation uses the first
+matching ordered template; collisions keep winner and loser metadata. The host
+supplies these paths explicitly; `agent_dir` does not implicitly add
 skill/template directories or select a product configuration directory.
+`load_context_files=False` disables `load_project_context_files` entirely, so
+ancestor and explicit context directories contribute nothing; `append_system_prompt`
+adds one host-assembled addendum.
 
 ```python
 from omh.agent import PromptTemplateSource, SkillSource
@@ -86,6 +93,8 @@ or `bash` tool, with XML-escaped metadata; `disable-model-invocation` hides a
 skill from that catalog while retaining explicit invocation.
 `custom_prompt`, including `""`, replaces default preamble/tool/rule text while
 retaining project context, cwd and an eligible skill catalog.
+`append_system_prompt` adds one addendum section; the installed host assembles
+it from its ordered `SYSTEM`/`APPEND_SYSTEM` inputs.
 `agent_options.initial_state.system_prompt` continues to seed raw SDK system
 content on new conversations; use `custom_prompt` for a replaceable application
 base. Raw system content accumulates in history across reloads and reopen.

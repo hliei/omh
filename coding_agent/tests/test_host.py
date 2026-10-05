@@ -334,7 +334,9 @@ def test_build_options_carries_configured_resource_paths(tmp_path: Path) -> None
     template.mkdir()
     agent_dir = tmp_path / "agent"
     write_settings(agent_dir, {"skills": [str(skill)], "prompts": [str(template)]})
-    host = CodingAgentHost(startup_dir=tmp_path, agent_dir=agent_dir)
+    host = CodingAgentHost(
+        startup_dir=tmp_path, agent_dir=agent_dir, no_skills=True, no_prompt_templates=True,
+    )
     options = host.build_options(host.select_new())
     assert [str(source.path) for source in options.skill_sources] == [str(skill)]
     assert [str(source.path) for source in options.template_sources] == [str(template)]

@@ -56,6 +56,8 @@ define this application's terms and composition boundary. The
 the accepted separation between planned CLI output and saved history.
 The [configuration decision](docs/adr/0003-configuration-and-credentials-boundary.md)
 records the configuration, credential and selection boundary.
+The [resource trust decision](docs/adr/0004-resource-trust-and-tiers.md)
+records the project-loading authorization and the five-tier composition.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen
@@ -93,7 +95,8 @@ await restored.prompt("Explain the change.")
 
 The installed command resolves the same selection through `CodingAgentHost`,
 which reads the global and trusted project settings, the model directory and
-the credential store, then reports whether the session is ready:
+the credential store, composes trusted resources and system inputs, then reports
+whether the session is ready:
 
 ```python
 from coding_agent import AgentSessionRuntime, CodingAgentHost

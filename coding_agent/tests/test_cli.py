@@ -238,6 +238,8 @@ def test_list_sessions_is_read_only_but_undelivered(home: Path) -> None:
         ("--thinking", "--model"),
         ("--skill", "/no/such/explicit-skill-path"),
         ("--prompt-template", "/no/such/explicit-template-path"),
+        ("--system-prompt-file", "/no/such/system-prompt-file"),
+        ("--append-system-prompt-file", "/no/such/append-prompt-file"),
         ("--help=yes",),
         ("--list-models=flash", "--list-models"),
         ("--mode",),
@@ -278,9 +280,11 @@ def test_repeatable_options_are_accepted(home: Path, tmp_path: Path) -> None:
         path = tmp_path / f"{name}.md"
         path.write_text(f"---\nname: {name}\n---\nbody\n")
         resources.append(path)
+    appended = tmp_path / "appended.md"
+    appended.write_text("literal append")
     result = run_cli(
         "--append-system-prompt", "a",
-        "--append-system-prompt-file", "b",
+        "--append-system-prompt-file", str(appended),
         "--skill", str(resources[0]),
         "--skill", str(resources[1]),
         "--prompt-template", str(resources[2]),

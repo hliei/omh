@@ -18,12 +18,14 @@ from coding_agent.host import CodingAgentHost, SessionSelection
 from coding_agent.model_directory import ModelDirectory, ModelListing
 from coding_agent.resources import ApplicationDiagnostic, ApplicationResources
 from coding_agent.session_manager import SaveState, SessionManager
+from coding_agent.trust import TrustDecision, TrustStore
 
 __all__ = [
     "AgentSession", "AgentSessionRuntime", "ApplicationDiagnostic", "ApplicationResources",
     "CodingAgentHost", "CodingAgentOptions", "ConfigDiagnostic", "ConfigError",
     "DecodedHistory", "FileCredentialStore", "ModelDirectory", "ModelListing", "SaveState",
-    "SessionManager", "SessionSelection", "SettingsSnapshot", "ToolName",
+    "SessionManager", "SessionSelection", "SettingsSnapshot", "ToolName", "TrustDecision",
+    "TrustStore",
     "decode_history", "encode_history", "load_settings", "merge_settings",
     "project_settings_path", "resolve_agent_dir", "update_settings",
 ]

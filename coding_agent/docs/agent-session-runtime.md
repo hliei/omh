@@ -8,10 +8,13 @@ separate SDK Agent, saving manager and prepared resources.
 
 ## Host assembly
 
-The installed product resolves cwd, model, thinking, tools and credentials
-through `CodingAgentHost` before assembling these options; see
-[configuration and credentials](configuration.md). The options below remain the
-generic embedding contract.
+The installed product resolves cwd, model, thinking, tools, credentials, project
+trust, resources and system inputs through `CodingAgentHost` before assembling
+these options; see [configuration and credentials](configuration.md). The
+options below remain the generic embedding contract: without `resource_tiers`
+the historical `global -> project -> explicit` resource ordering applies, and
+`load_context_files`/`append_system_prompt`/`custom_prompt` describe named
+sections without imposing a product directory layout.
 
 The default tools, in order, are read/bash/edit/write. `tools=("read", "write")`
 selects a subset; `tools=()` selects none. Factories and tool execution belong
