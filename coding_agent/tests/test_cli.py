@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pty
 import shutil
@@ -35,14 +36,19 @@ def clean_env(home: Path) -> dict[str, str]:
     return env
 
 
-def run_cli(*args: str, home: Path, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+def run_cli(
+    *args: str, home: Path, stdin: str | None = None, env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command_env = clean_env(home)
+    if env:
+        command_env.update(env)
     return subprocess.run(
         [*cli_command(), *args],
         input=stdin,
         stdin=subprocess.DEVNULL if stdin is None else None,
         capture_output=True,
         text=True,
-        env=clean_env(home),
+        env=command_env,
     )
 
 
@@ -118,11 +124,46 @@ def test_list_models_succeeds_without_key(home: Path) -> None:
     assert result.returncode == 0
     assert "deepseek-flash" in result.stdout
     assert "deepseek-v4-pro" in result.stdout
+    assert "deepseek-v4.1-flash" in result.stdout
     assert "openai-completions" in result.stdout
     assert "builtin" in result.stdout
+    assert "2026-10-05" in result.stdout
     assert result.stderr == ""
     assert list(home.iterdir()) == []
     assert_no_terminal_noise(result.stdout)
+
+
+def test_list_models_reads_global_models_json_without_writing(home: Path, tmp_path: Path) -> None:
+    agent_dir = tmp_path / "omh-agent"
+    agent_dir.mkdir()
+    (agent_dir / "models.json").write_text(json.dumps({
+        "providers": {
+            "deepseek": {
+                "modelOverrides": {"deepseek-flash": {"cost": {"input": 7.5, "output": 9.0}}},
+            },
+        },
+    }))
+    result = run_cli(
+        "--list-models", "deepseek-flash",
+        home=home, env={"OMH_CODING_AGENT_DIR": str(agent_dir)},
+    )
+    assert result.returncode == 0
+    assert "7.5/9" in result.stdout
+    assert "user" in result.stdout
+    assert_no_terminal_noise(result.stdout)
+
+
+def test_list_models_surfaces_models_json_diagnostics(home: Path, tmp_path: Path) -> None:
+    agent_dir = tmp_path / "omh-agent"
+    agent_dir.mkdir()
+    (agent_dir / "models.json").write_text(json.dumps({
+        "providers": {"deepseek": {"models": [{"id": "incomplete"}]}},
+    }))
+    result = run_cli("--list-models", home=home, env={"OMH_CODING_AGENT_DIR": str(agent_dir)})
+    assert result.returncode == 0
+    assert "incomplete" in result.stderr
+    assert "deepseek-flash" in result.stdout
+    assert_no_terminal_noise(result.stderr)
 
 
 def test_list_models_covers_the_eight_registered_combinations(home: Path) -> None:
@@ -143,12 +184,13 @@ def test_list_models_covers_the_eight_registered_combinations(home: Path) -> Non
         ("opencode-go", "kimi-k2.7-code"),
     }
     for columns in rows.values():
-        api, _input, _thinking, _context, _output, _cost, source = columns
+        api, _input, _thinking, _context, _output, _cost, source, date = columns
         assert api == "openai-completions"
         assert source == "builtin"
+        assert date == "2026-10-05"
 
     def thinking_and_shape(provider: str, model: str) -> tuple[str, str, str, str]:
-        api, _input, thinking, context, output, _cost, _source = rows[(provider, model)]
+        api, _input, thinking, context, output, _cost, _source, _date = rows[(provider, model)]
         return (_input, thinking, context, output)
 
     assert thinking_and_shape("opencode-go", "glm-5.3") == ("text", "low,high,max", "1000000", "131072")

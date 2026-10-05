@@ -19,6 +19,7 @@ from omh.llm.models import EXTENDED_THINKING_LEVELS
 from omh.llm.types import ModelThinkingLevel
 
 from coding_agent.agent_session import ToolName
+from coding_agent.config import resolve_agent_dir
 from coding_agent.model_directory import ModelDirectory, ModelListing
 
 Mode = Literal["interactive", "text", "json"]
@@ -50,7 +51,8 @@ Usage:
 Read-only commands (no API key, no model request, no configuration change):
   -h, --help                     Show this help and exit
   -v, --version                  Show the installed product version and exit
-  --list-models [search]         List registered models with protocol, input, thinking, capacity and cost
+  --list-models [search]         List registered models with protocol, input, thinking, capacity, cost,
+                                  source and catalog date; global models.json overrides are included
   --list-sessions [search]       List saved sessions (discovery is not available in this release)
 
 Execution modes (task execution is not available in this release):
@@ -68,7 +70,7 @@ Options:
   --provider <name>              Provider ID
   --model <provider/id|id>       Exact model ID; never fuzzy-replaced
   --thinking <level>             off, minimal, low, medium, high, xhigh, max; the model restricts the set
-  --api-key <key>                API key for this process only
+  --api-key <key>                API key for this process only; never saved
   --name <name>                  Session display name
   --tools <names>                Comma-separated subset of read,bash,edit,write
   --no-tools                     Disable model tools; a user shell stays separate
@@ -339,7 +341,7 @@ def run(
         _diagnostic(stderr, error)
         return EXIT_USAGE
 
-    directory = ModelDirectory()
+    directory = ModelDirectory(agent_dir=resolve_agent_dir())
     try:
         validate_args(args, directory)
     except CliUsageError as error:
@@ -354,6 +356,8 @@ def run(
         return EXIT_OK
 
     if args.list_models:
+        for diagnostic in directory.diagnostics:
+            _diagnostic(stderr, f"{diagnostic.source}: {diagnostic.message}")
         _write_listings(stdout, directory.listings(args.list_models_search))
         return EXIT_OK
     if args.list_sessions:
@@ -454,7 +458,8 @@ def _write_listings(stream: TextIO, listings: Sequence[ModelListing]) -> None:
     if not listings:
         return
     headers = (
-        "provider", "model", "api", "input", "thinking", "context", "max-output", "cost-in/out", "source",
+        "provider", "model", "api", "input", "thinking", "context", "max-output", "cost-in/out",
+        "source", "date",
     )
     rows = [
         (
@@ -467,6 +472,7 @@ def _write_listings(stream: TextIO, listings: Sequence[ModelListing]) -> None:
             str(entry.model.max_tokens),
             f"{entry.model.cost.input:g}/{entry.model.cost.output:g}",
             entry.source,
+            entry.source_date,
         )
         for entry in listings
     ]

@@ -36,6 +36,18 @@ _Avoid_: 可重开的会话文件、独立最终结果报告、SDK 原始事件�
 产品内置并可按用户配置增补的 provider／model 元数据来源，供只读列表与显式选择校验使用；目录出现某模型不表示其路由能力已经真实验证。
 _Avoid_: 线上模型列表、自动更新的支持声明
 
+**Agent directory（全局 agent 目录）**:
+`~/.omh/agent`（可由 `OMH_CODING_AGENT_DIR` 替换）下的全局 configuration、凭据、模型目录与会话根；项目的 `.omh` 只提供受 trust 控制的 settings 与资源。
+_Avoid_: 项目配置目录、会话文件所在目录
+
+**Settings merge（设置合并）**:
+显式 CLI → 可信 project settings → global settings 的配置合并规则；对象递归合并、数组整替，被替换来源不复活。
+_Avoid_: 当前选择、会话历史中的 model／thinking 记录
+
+**Credential source（凭据来源）**:
+一次请求实际采用的 API key 来源，依临时 override → 全局 auth.json → provider 环境变量的顺序确定；来源可解释不等于账户已验证。
+_Avoid_: 账户可用性、订阅余额
+
 **Fixed thinking（固定 thinking）**:
 模型只能始终思考、路由未公开任何可调档位时的有效 thinking 模式；目录不提供该模型的可调档位，也不以 `off` 伪装成可关闭。
 _Avoid_: 伪造的 off、虚假的可调档位

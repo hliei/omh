@@ -8,6 +8,11 @@ separate SDK Agent, saving manager and prepared resources.
 
 ## Host assembly
 
+The installed product resolves cwd, model, thinking, tools and credentials
+through `CodingAgentHost` before assembling these options; see
+[configuration and credentials](configuration.md). The options below remain the
+generic embedding contract.
+
 The default tools, in order, are read/bash/edit/write. `tools=("read", "write")`
 selects a subset; `tools=()` selects none. Factories and tool execution belong
 to the SDK. Tools execute against the selected cwd and are not a filesystem

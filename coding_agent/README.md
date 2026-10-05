@@ -43,6 +43,7 @@ repository. The root SDK checks run separately.
 | Contract | Responsibility |
 | --- | --- |
 | [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands and argument validation |
+| [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
 | [SessionManager](docs/session-manager.md) | File metadata, JSONL, saving state, export and repair |
 | [AgentSessionRuntime](docs/agent-session-runtime.md) | Host assembly, current-session switching, subscriptions and retained sessions |
@@ -53,13 +54,21 @@ lifecycle. [Product vocabulary](CONTEXT.md) and
 define this application's terms and composition boundary. The
 [JSON output decision](docs/adr/0002-json-output-and-history-formats.md) records
 the accepted separation between planned CLI output and saved history.
+The [configuration decision](docs/adr/0003-configuration-and-credentials-boundary.md)
+records the configuration, credential and selection boundary.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen
 
-The host supplies a real `Model` and `StreamFn`. This can be a custom offline
-provider or a provider from `omh.llm`. Provider credentials, clients, hooks and
-policies stay in the current host configuration.
+`CodingAgentHost` resolves configuration, credentials and the effective
+selection before a session is assembled. It reads the global agent directory
+and a trusted project's settings, merges explicit values, and reports a ready
+selection or explanatory diagnostics. See
+[configuration and credentials](docs/configuration.md).
+
+The host still supplies a real `Model` and `StreamFn`. This can be a custom
+offline provider or the host's provider-backed stream. Provider credentials,
+clients, hooks and policies stay in the current host configuration.
 
 ```python
 from coding_agent import AgentSessionRuntime, CodingAgentOptions
@@ -80,6 +89,20 @@ await runtime.save_session()
 exported_jsonl = await runtime.export_session("conversation-copy.jsonl")
 restored = await runtime.open_session("conversation.jsonl")
 await restored.prompt("Explain the change.")
+```
+
+The installed command resolves the same selection through `CodingAgentHost`,
+which reads the global and trusted project settings, the model directory and
+the credential store, then reports whether the session is ready:
+
+```python
+from coding_agent import AgentSessionRuntime, CodingAgentHost
+
+host = CodingAgentHost(startup_dir="/work/project", project_trusted=True)
+selection = host.select_new(model="opencode-go/deepseek-v4.1-flash")
+if not selection.ready:
+    raise SystemExit("\n".join(diagnostic.message for diagnostic in selection.diagnostics))
+runtime = AgentSessionRuntime(host.build_options(selection))
 ```
 
 For model, thinking level, tools, cwd and restoration precedence, see
