@@ -41,7 +41,9 @@ The [SDK Agent contract](../docs/agent.md) defines history, execution policies a
 lifecycle. [Product vocabulary](CONTEXT.md) and
 [the product architecture decision](docs/adr/0001-sdk-composition-boundary.md)
 define this application's terms and composition boundary. The
-[SDK ADR index](../docs/adr/README.md) records SDK decisions.
+[JSON output decision](docs/adr/0002-json-output-and-history-formats.md) records
+the accepted separation between planned CLI output and saved history.
+The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen
 
