@@ -37,7 +37,6 @@ _VALUE_FLAGS = frozenset({
     "--append-system-prompt", "--append-system-prompt-file", "--skill", "--prompt-template",
     "--list-models", "--list-sessions",
 })
-_KNOWN_FLAGS = _BOOLEAN_FLAGS | _VALUE_FLAGS | {"--"}
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -148,11 +147,13 @@ def parse_args(argv: Sequence[str]) -> CliArgs:
         nonlocal index, inline
         if inline is not None:
             value, inline = inline, None
-            return value
-        if index >= len(argv) or argv[index] in _KNOWN_FLAGS:
+        else:
+            if index >= len(argv) or argv[index].startswith("-"):
+                raise CliUsageError(f"option {flag} requires a value")
+            value = argv[index]
+            index += 1
+        if not value and flag not in ("--system-prompt", "--append-system-prompt"):
             raise CliUsageError(f"option {flag} requires a value")
-        value = argv[index]
-        index += 1
         return value
 
     def optional_value() -> str | None:
@@ -338,19 +339,19 @@ def run(
         _diagnostic(stderr, error)
         return EXIT_USAGE
 
-    if args.help:
-        stdout.write(HELP_TEXT)
-        return EXIT_OK
-    if args.version:
-        stdout.write(f"{_product_version()}\n")
-        return EXIT_OK
-
     directory = ModelDirectory()
     try:
         validate_args(args, directory)
     except CliUsageError as error:
         _diagnostic(stderr, error)
         return EXIT_USAGE
+
+    if args.help:
+        stdout.write(HELP_TEXT)
+        return EXIT_OK
+    if args.version:
+        stdout.write(f"{_product_version()}\n")
+        return EXIT_OK
 
     if args.list_models:
         _write_listings(stdout, directory.listings(args.list_models_search))
@@ -426,6 +427,8 @@ def _validate_selection(args: CliArgs, directory: ModelDirectory) -> None:
         if provider is not None and provider != prefix:
             raise CliUsageError(f"--provider {provider} does not match model provider {prefix}")
         provider = prefix
+    else:
+        model_id = reference
 
     matches = directory.find_models(provider, model_id)
     if not matches:

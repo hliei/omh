@@ -153,6 +153,9 @@ def test_list_sessions_is_read_only_but_undelivered(home: Path) -> None:
         ("--model",),
         ("--model", "--provider"),
         ("--session", "--cwd"),
+        ("--session", "--cwd=/tmp"),
+        ("--name", "--unknown-option"),
+        ("--session=", "prompt"),
         ("--provider",),
         ("--thinking",),
         ("--thinking", "--model"),
@@ -180,6 +183,8 @@ def test_list_sessions_is_read_only_but_undelivered(home: Path) -> None:
         ("--no-session", "--session-dir", "somewhere"),
         ("--print", "--mode", "interactive"),
         ("--system-prompt", "text", "--system-prompt-file", "file"),
+        ("--help", "--tools", "read", "--no-tools"),
+        ("--version", "-p", "--mode", "interactive"),
     ],
 )
 def test_pre_request_rejections_exit_two_without_stdout(home: Path, arguments: tuple[str, ...]) -> None:
@@ -246,6 +251,13 @@ def test_thinking_is_validated_against_the_selected_model(home: Path) -> None:
     unsupported = run_cli("--model", "deepseek/deepseek-v4-pro", "--thinking", "xhigh", home=home)
     assert unsupported.returncode == EXIT_USAGE
     assert "not supported" in unsupported.stderr
+
+
+@pytest.mark.parametrize("provider_args", [(), ("--provider", "deepseek")])
+def test_bare_model_id_is_accepted(home: Path, provider_args: tuple[str, ...]) -> None:
+    result = run_cli(*provider_args, "--model", "deepseek-flash", "prompt", home=home)
+    assert result.returncode == EXIT_FAILURE
+    assert "text mode" in result.stderr
 
 
 def test_default_mode_needs_both_streams_to_be_ttys(home: Path) -> None:

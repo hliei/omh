@@ -53,6 +53,10 @@ a usable terminal fails before any request with exit `2`. `-p` combined with
 
 Single-value options cannot be repeated. Repeatable options keep command-line
 order. Every value is accepted either as `--option value` or `--option=value`.
+Values beginning with `-` use the equals form, for example
+`--system-prompt=-literal`. Empty values are accepted only for literal system
+text and optional listing searches. Help and version still reject conflicting
+or invalid options supplied alongside them.
 All values are validated before any request; an explicit `--skill` or
 `--prompt-template` path must exist.
 
