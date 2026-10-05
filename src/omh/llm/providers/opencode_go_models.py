@@ -8,15 +8,14 @@ on 2026-10-05:
   https://opencode.ai/v2/docs/console/go#usage-limits
 - DeepSeek's official thinking guide, which requires full reasoning replay on a
   tool continuation: https://api-docs.deepseek.com/guides/thinking_mode/
-- DeepSeek's model list for context/output limits and text-only Pro modality:
-  https://api-docs.deepseek.com/api/list-models/
 
-DeepSeek Go pricing has peak and off-peak rates; the higher (peak) rate is used
-so an estimate is not lower than a peak-hour request. Go does not publish cache
-pricing in the consulted source, so cache rates stay at zero rather than being
-copied from the direct DeepSeek catalog. The catalog is limited to the two
-DeepSeek models this route delivers; the remaining Go models are added by their
-own ticket.
+The context and output limits are the current omh/pi metadata (1,000,000 and
+384,000); DeepSeek's own model list is not used for them. DeepSeek Go pricing
+has peak and off-peak rates; the higher (peak) rate is used so an estimate is
+not lower than a peak-hour request. Go does not publish cache pricing in the
+consulted source, so cache rates stay at zero rather than being copied from the
+direct DeepSeek catalog. The catalog covers the two DeepSeek models through
+this route; it is not an exhaustive Go catalog.
 """
 
 from __future__ import annotations

@@ -7,13 +7,24 @@ send a real request and do not touch private provider seams.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from omh.agent import Agent, AgentInitialState, AgentOptions, create_read_tool
+from omh.agent import (
+    Agent,
+    AgentInitialState,
+    AgentOptions,
+    CompactionHistoryEntry,
+    CompactionSettings,
+    create_bash_tool,
+    create_edit_tool,
+    create_read_tool,
+    create_write_tool,
+)
 from omh.llm.models import create_models, get_supported_thinking_levels
 from omh.llm.providers.opencode_go import opencode_go_provider
 from omh.llm.types import (
@@ -22,11 +33,14 @@ from omh.llm.types import (
     Context,
     ImageContent,
     Model,
+    OpenAICompletionsOptions,
     SimpleStreamOptions,
     TextContent,
     ThinkingContent,
     ToolCall,
     ToolResultMessage,
+    Usage,
+    UsageCost,
     UserMessage,
     empty_usage,
 )
@@ -443,6 +457,56 @@ async def test_explicit_output_cap_is_sent_as_max_tokens() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unsupported_explicit_effort_is_omitted_not_fabricated() -> None:
+    models = _models()
+    model = _model(models, "deepseek-v4.1-flash")
+    context = Context(messages=[UserMessage(content="Hi", timestamp=1)])
+
+    unsupported_fetch = RecordingFetch(
+        sse_response({"choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}]})
+    )
+    await models.complete(
+        model,
+        context,
+        OpenAICompletionsOptions(api_key="test-key", fetch=unsupported_fetch, reasoning_effort="medium"),
+    )
+    assert "reasoning_effort" not in unsupported_fetch.body
+
+    supported_fetch = RecordingFetch(
+        sse_response({"choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}]})
+    )
+    await models.complete(
+        model,
+        context,
+        OpenAICompletionsOptions(api_key="test-key", fetch=supported_fetch, reasoning_effort="max"),
+    )
+    assert supported_fetch.body["reasoning_effort"] == "max"
+
+
+@pytest.mark.asyncio
+async def test_opencode_api_key_env_is_the_auth_entry() -> None:
+    class EnvAuthContext:
+        async def env(self, name: str) -> str | None:
+            return "from-env" if name == "OPENCODE_API_KEY" else None
+
+        async def file_exists(self, path: str) -> bool:
+            return False
+
+    from omh.llm.models import CreateModelsOptions
+
+    models = create_models(CreateModelsOptions(auth_context=EnvAuthContext()))
+    models.set_provider(opencode_go_provider())
+    model = _model(models, "deepseek-v4-pro")
+    fetch = RecordingFetch(
+        sse_response({"choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}]})
+    )
+
+    await models.complete_simple(model, Context(messages=[UserMessage(content="Hi", timestamp=1)]), SimpleStreamOptions(fetch=fetch))
+
+    assert fetch.requests[0].headers["authorization"] == "Bearer from-env"
+
+
+@pytest.mark.asyncio
 async def test_agent_tool_roundtrip_replays_go_reasoning_and_tool_results(tmp_path: Path) -> None:
     models = _models()
     model = _model(models, "deepseek-v4.1-flash")
@@ -522,3 +586,145 @@ async def test_agent_tool_roundtrip_replays_go_reasoning_and_tool_results(tmp_pa
     final = agent.state.messages[-1]
     assert final.role == "assistant"
     assert final.content[0].text == "done"
+
+
+def _tool_call_response(tool_call_id: str, name: str, arguments: dict[str, object]) -> Any:
+    return sse_response(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": tool_call_id,
+                                "type": "function",
+                                "function": {"name": name, "arguments": ""},
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": json.dumps(arguments)}}
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_drives_write_read_edit_bash_flow_through_go(tmp_path: Path) -> None:
+    models = _models()
+    model = _model(models, "deepseek-v4.1-flash")
+    fetch = SequencedFetch(
+        _tool_call_response("w1", "write", {"path": "note.txt", "content": "alpha\n"}),
+        _tool_call_response("r1", "read", {"path": "note.txt"}),
+        _tool_call_response("e1", "edit", {"path": "note.txt", "edits": [{"oldText": "alpha", "newText": "beta"}]}),
+        _tool_call_response("b1", "bash", {"command": "cat note.txt"}),
+        sse_response({"choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}]}),
+    )
+
+    def stream_fn(request_model: Model, context: Any, options: SimpleStreamOptions | None) -> Any:
+        assert options is not None
+        return models.stream_simple(request_model, Context(messages=list(context.messages)), replace(options, fetch=fetch))
+
+    agent = Agent(
+        AgentOptions(
+            initial_state=AgentInitialState(
+                model=model,
+                tools=[
+                    create_write_tool(tmp_path),
+                    create_read_tool(tmp_path),
+                    create_edit_tool(tmp_path),
+                    create_bash_tool(tmp_path),
+                ],
+                system_prompt="Base",
+            ),
+            stream_fn=stream_fn,
+            session_id="conversation-tools",
+            api_key="test-key",
+        )
+    )
+
+    await agent.prompt("Write, read, edit, then cat the note")
+
+    assert len(fetch.requests) == 5
+    results = [message for message in agent.state.messages if message.role == "toolResult"]
+    assert [message.tool_name for message in results] == ["write", "read", "edit", "bash"]
+    assert [message.is_error for message in results] == [False, False, False, False]
+    assert results[1].content[0].text == "alpha\n"
+    assert "beta" in results[3].content[0].text
+
+    continuation = fetch.bodies[4]["messages"]
+    assert [message["tool_call_id"] for message in continuation if message["role"] == "tool"] == [
+        "w1",
+        "r1",
+        "e1",
+        "b1",
+    ]
+
+    final = agent.state.messages[-1]
+    assert final.role == "assistant"
+    assert final.content[0].text == "done"
+
+
+@pytest.mark.asyncio
+async def test_compaction_summary_request_carries_the_go_session_header() -> None:
+    models = _models()
+    model = replace(_model(models, "deepseek-v4.1-flash"), context_window=1000)
+    usage = Usage(input=900, output=0, cache_read=0, cache_write=0, total_tokens=900, cost=UsageCost())
+    fetch = SequencedFetch(
+        sse_response({"choices": [{"index": 0, "delta": {"content": "summary"}, "finish_reason": "stop"}]}),
+        sse_response({"choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}]}),
+    )
+
+    def stream_fn(request_model: Model, context: Any, options: SimpleStreamOptions | None) -> Any:
+        assert options is not None
+        return models.stream_simple(request_model, Context(messages=list(context.messages)), replace(options, fetch=fetch))
+
+    agent = Agent(
+        AgentOptions(
+            initial_state=AgentInitialState(
+                model=model,
+                messages=[
+                    UserMessage(content="old question", timestamp=1),
+                    replace(
+                        AssistantMessage(
+                            api=model.api,
+                            provider=model.provider,
+                            model=model.id,
+                            usage=usage,
+                            stop_reason="stop",
+                            timestamp=2,
+                            content=[TextContent(text="old answer")],
+                        )
+                    ),
+                    UserMessage(content="tail", timestamp=3),
+                ],
+            ),
+            stream_fn=stream_fn,
+            session_id="conversation-summary",
+            api_key="test-key",
+            compaction=CompactionSettings(reserve_tokens=100, keep_recent_tokens=0),
+        )
+    )
+
+    await agent.prompt("new question")
+
+    assert len(fetch.requests) == 2
+    assert [request.headers["x-opencode-session"] for request in fetch.requests] == [
+        "conversation-summary",
+        "conversation-summary",
+    ]
+    assert any(isinstance(entry, CompactionHistoryEntry) for entry in agent.history.entries)

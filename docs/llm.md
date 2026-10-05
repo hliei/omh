@@ -40,8 +40,8 @@ mid-conversation system messages, the projection folds later system messages
 into the leading one; otherwise it keeps them in place. A custom provider that
 read `context.system_prompt` or `context.tools` must migrate to
 `get_current_system_message`/`get_current_tools` (or `resolve_transcript`) and
-project from the system messages. The built-in DeepSeek path exercises this
-contract; other built-in provider catalogs are not supplied.
+project from the system messages. The built-in DeepSeek and OpenCode Go paths
+exercise this contract; other built-in provider catalogs are not supplied.
 
 ### Request options
 
@@ -61,7 +61,7 @@ Options are split between core forwarding and adapter consumption:
 Adapters that do not parse a provider stream do not invoke
 `on_provider_stream_event`; the callback is never exposed as a no-op interface.
 
-The built-in provider implements DeepSeek's official Chat Completions path, including thinking configuration, `max_tokens`, and reasoning-content replay. Shared Chat Completions field detection does not imply support for other providers. OAuth, deferred requests, image generation, and other built-in providers are not exposed.
+The built-in provider implements DeepSeek's official Chat Completions path, including thinking configuration, `max_tokens`, and reasoning-content replay. Shared Chat Completions field detection does not imply support for other providers. OAuth, deferred requests, image generation, and providers outside the built-in DeepSeek and OpenCode Go catalogs are not exposed.
 
 The built-in OpenCode Go provider uses the same Chat Completions adapter, HTTP transport, SSE parsing, and unified stream against the fixed `https://opencode.ai/zen/go/v1` route. It resolves `OPENCODE_API_KEY` and declares each model's supported thinking levels in the catalog: a request selects a level with `reasoning_effort`, and a level the model does not accept is omitted rather than sent as a fabricated disabled mode. A streamed or stored `reasoning` field is normalized to `reasoning_content` so a tool continuation replays the reasoning the upstream model requires. When a request carries `session_id`, the adapter adds the per-conversation `x-opencode-session` header; an explicit header on the model catalog or request options wins. Image content is projected from each model's declared `input` modalities, so a text-only model receives a placeholder instead of an image part. The catalog's capability and price entries are offline targets for the route, not evidence that a live request, image support, or account entitlement has been verified.
 

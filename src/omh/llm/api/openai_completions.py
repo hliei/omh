@@ -112,6 +112,18 @@ def _user_agent() -> str:
     return f"omh ({platform.system()} {platform.release()}; {platform.machine()})"
 
 
+def _is_opencode_route(model: Model) -> bool:
+    """Whether the model is served through an OpenCode gateway.
+
+    OpenCode's Go/Zen gateways are OpenAI-compatible proxies that reject the
+    standard OpenAI-only request fields and require their own routing header.
+    Provider id and base URL are both checked so a host-supplied catalog entry
+    on the same route behaves like the built-in one.
+    """
+
+    return model.provider == "opencode-go" or "opencode.ai" in model.base_url.lower()
+
+
 def _normalize_reasoning_signature(model: Model, field: str) -> str:
     """Fold OpenCode Go's generic ``reasoning`` field into DeepSeek's field.
 
@@ -121,7 +133,7 @@ def _normalize_reasoning_signature(model: Model, field: str) -> str:
     the replayed request consistent.
     """
 
-    if model.provider == "opencode-go" and field == "reasoning":
+    if _is_opencode_route(model) and field == "reasoning":
         return "reasoning_content"
     return field
 
@@ -152,9 +164,7 @@ def detect_compat(model: Model) -> ResolvedOpenAICompletionsCompat:
     provider = model.provider
     base_url = model.base_url
     is_deepseek = provider == "deepseek" or "deepseek.com" in base_url.lower()
-    # OpenCode's Go/Zen gateways are OpenAI-compatible proxies but reject the
-    # standard OpenAI-only request fields.
-    is_opencode = provider == "opencode-go" or "opencode.ai" in base_url.lower()
+    is_opencode = _is_opencode_route(model)
     is_non_standard = is_deepseek or is_opencode
     return ResolvedOpenAICompletionsCompat(
         supports_store=not is_non_standard,
@@ -416,8 +426,15 @@ def build_params(
             mapped = None if model.thinking_level_map is None else model.thinking_level_map.get(options.reasoning_effort)
             params["reasoning_effort"] = mapped if isinstance(mapped, str) else options.reasoning_effort
     elif options and options.reasoning_effort and model.reasoning and compat.supports_reasoning_effort:
-        mapped = None if model.thinking_level_map is None else model.thinking_level_map.get(options.reasoning_effort)
-        params["reasoning_effort"] = mapped if isinstance(mapped, str) else options.reasoning_effort
+        level = options.reasoning_effort
+        level_map = model.thinking_level_map
+        if level_map is not None and level in level_map and level_map[level] is None:
+            # The catalog marks this level unsupported; omit the field instead of
+            # sending an effort the route does not accept.
+            pass
+        else:
+            mapped = None if level_map is None else level_map.get(level)
+            params["reasoning_effort"] = mapped if isinstance(mapped, str) else level
     if options and options.sampling_params:
         params.update(options.sampling_params)
     return params
@@ -438,7 +455,7 @@ def _request_headers(model: Model, api_key: str, options: OpenAICompletionsOptio
     if (
         options
         and options.session_id
-        and (model.provider == "opencode-go" or "opencode.ai" in model.base_url.lower())
+        and _is_opencode_route(model)
         and not _has_header(headers, "x-opencode-session")
     ):
         headers["x-opencode-session"] = options.session_id
