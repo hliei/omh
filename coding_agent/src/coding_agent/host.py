@@ -76,6 +76,7 @@ from coding_agent.config import (
     validate_tools,
 )
 from coding_agent.history import DecodedHistory, decode_history
+from coding_agent.images import count_history_images, degradation_notice
 from coding_agent.model_directory import ModelDirectory
 
 #: The product's default model when neither history nor configuration selects one.
@@ -271,6 +272,7 @@ class CodingAgentHost:
             thinking, history=settings, model=resolved_model, diagnostics=diagnostics,
         )
         effective_tools = self._resolve_tools(tools, diagnostics)
+        _diagnose_saved_images(destination, decoded, resolved_model, diagnostics)
         return SessionSelection(
             cwd=effective_cwd, model=resolved_model, thinking_level=effective_thinking,
             tools=effective_tools, history=decoded, diagnostics=(*self.diagnostics, *diagnostics),
@@ -528,3 +530,19 @@ class CodingAgentHost:
             PromptTemplateSource(value, source) for value in settings_strings(self.settings, "prompts")
         )
         return tuple(sources)
+
+
+def _diagnose_saved_images(
+    destination: Path, decoded: DecodedHistory, model: Model | None,
+    diagnostics: list[ConfigDiagnostic],
+) -> None:
+    """Explain saved images that a text-only model will project as placeholders."""
+    if model is None or "image" in model.input:
+        return
+    count = count_history_images(decoded.history)
+    if not count:
+        return
+    diagnostics.append(ConfigDiagnostic(
+        str(destination), "history", "adjusted",
+        degradation_notice(model.provider, model.id, count),
+    ))

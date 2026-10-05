@@ -45,6 +45,7 @@ repository. The root SDK checks run separately.
 | [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands and argument validation |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
+| [Input and attachments](docs/input.md) | File argument boundaries, image conversion and limits, model modality and read images |
 | [SessionManager](docs/session-manager.md) | File metadata, JSONL, saving state, export and repair |
 | [AgentSessionRuntime](docs/agent-session-runtime.md) | Host assembly, current-session switching, subscriptions and retained sessions |
 
@@ -56,6 +57,8 @@ define this application's terms and composition boundary. The
 the accepted separation between planned CLI output and saved history.
 The [configuration decision](docs/adr/0003-configuration-and-credentials-boundary.md)
 records the configuration, credential and selection boundary.
+The [image processing decision](docs/adr/0004-product-image-processing.md)
+records the product-owned conversion and its Pillow dependency.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen

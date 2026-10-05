@@ -19,6 +19,7 @@ from omh.agent import (
     CompactionResult,
     HistoryCommitEvent,
     PromptTemplateSource,
+    ReadToolOptions,
     SkillDiagnostic,
     SkillSource,
     StreamFn,
@@ -38,10 +39,15 @@ from omh.llm.types import (
     UserMessage,
 )
 
+from coding_agent.images import ImageLimits, create_read_image_processor
 from coding_agent.resources import ApplicationResources, load_resources
 from coding_agent.session_manager import SaveState, SessionManager
 
 ToolName = Literal["read", "bash", "edit", "write"]
+
+
+class UnsupportedImageModelError(RuntimeError):
+    """A new image attachment was rejected because the selected model is text-only."""
 
 
 @dataclass(slots=True)
@@ -54,6 +60,7 @@ class CodingAgentOptions:
     fallback_model: Model | None = None
     tools: tuple[ToolName, ...] = ("read", "bash", "edit", "write")
     session_file: str | Path | None = None
+    image_limits: ImageLimits | None = None
     # Credentials, hooks, policies and provider options remain current host code.
     agent_options: AgentOptions = field(default_factory=AgentOptions)
     agent_dir: str | Path | None = None
@@ -63,14 +70,18 @@ class CodingAgentOptions:
     custom_prompt: str | None = None
 
 
-def _create_tools(names: tuple[ToolName, ...], cwd: Path) -> list[AgentTool]:
+def _create_tools(names: tuple[ToolName, ...], cwd: Path, *, image_limits: ImageLimits | None = None) -> list[AgentTool]:
     factories: dict[str, Callable[[str | Path], AgentTool]] = {
         "read": create_read_tool, "bash": create_bash_tool,
         "edit": create_edit_tool, "write": create_write_tool,
     }
     if len(set(names)) != len(names) or any(name not in factories for name in names):
         raise ValueError("tools must be a distinct subset of read/bash/edit/write")
-    return [factories[name](cwd) for name in names]
+    return [
+        create_read_tool(cwd, ReadToolOptions(image_processor=create_read_image_processor(image_limits)))
+        if name == "read" else factories[name](cwd)
+        for name in names
+    ]
 
 
 class AgentSession:
@@ -134,11 +145,43 @@ class AgentSession:
         if self.save_state == "unsaved":
             raise RuntimeError("Session has unsaved history; save the complete history before continuing") from self.save_error
 
+    @property
+    def supports_images(self) -> bool:
+        """Whether the current model declares image input."""
+        return "image" in self.agent.state.model.input
+
+    def _ensure_images_supported(self, images: list[ImageContent] | None) -> None:
+        """Reject new image attachments for a text-only model before accepting work.
+
+        The product never switches provider to make an image fit. Saved history
+        images are not rejected here; the SDK projects those as placeholders.
+        """
+        if not images or self.supports_images:
+            return
+        model = self.agent.state.model
+        caption = f"{model.provider}/{model.id}"
+        suggestions = self._vision_model_suggestions()
+        guidance = f" For example: {', '.join(suggestions)}." if suggestions else ""
+        raise UnsupportedImageModelError(
+            f"{caption} does not accept image input; select a vision-capable model manually "
+            f"with --model, /model or set_model.{guidance} omh does not switch provider automatically."
+        )
+
+    def _vision_model_suggestions(self) -> list[str]:
+        if self._resource_options is None:
+            return []
+        return [
+            f"{candidate.provider}/{candidate.id}"
+            for candidate in self._resource_options.available_models
+            if "image" in candidate.input
+        ]
+
     async def prompt(
         self, message: str | AgentMessage | list[AgentMessage],
         images: list[ImageContent] | None = None,
     ) -> None:
         self._ensure_can_accept_work()
+        self._ensure_images_supported(images)
         if isinstance(message, str):
             message = self._expand_input(message)
         await self.agent.prompt(message, images)
@@ -164,17 +207,19 @@ class AgentSession:
 
     def steer(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
         self._ensure_can_accept_work()
+        self._ensure_images_supported(images)
         self.agent.steer(self._queued_input(message, images))
 
     def follow_up(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
         self._ensure_can_accept_work()
+        self._ensure_images_supported(images)
         self.agent.follow_up(self._queued_input(message, images))
 
     async def reload_resources(self) -> ApplicationResources:
         """Load current options before publishing next-prompt sections and live tools."""
         if self._resource_options is None:
             raise ValueError("Resource reload requires application options")
-        tools = _create_tools(self._resource_options.tools, self.cwd)
+        tools = _create_tools(self._resource_options.tools, self.cwd, image_limits=self._resource_options.image_limits)
         resources, sections = load_resources(self._resource_options, self.cwd, tools)
         await self.agent.set_system_sections(sections)
         await self.agent.set_tools(tools)

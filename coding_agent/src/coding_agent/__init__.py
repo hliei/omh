@@ -1,7 +1,20 @@
 """Embeddable coding application consuming the omh SDK."""
 
-from coding_agent.agent_session import AgentSession, CodingAgentOptions, ToolName
+from coding_agent.agent_session import (
+    AgentSession,
+    CodingAgentOptions,
+    ToolName,
+    UnsupportedImageModelError,
+)
 from coding_agent.agent_session_runtime import AgentSessionRuntime
+from coding_agent.attachments import (
+    AttachmentError,
+    FileAttachment,
+    attachment_images,
+    compose_first_task,
+    read_file_attachment,
+    render_attachment,
+)
 from coding_agent.config import (
     ConfigDiagnostic,
     ConfigError,
@@ -15,15 +28,32 @@ from coding_agent.config import (
 )
 from coding_agent.history import DecodedHistory, decode_history, encode_history
 from coding_agent.host import CodingAgentHost, SessionSelection
+from coding_agent.images import (
+    IMAGE_MAX_BASE64_BYTES,
+    IMAGE_MAX_DIMENSION,
+    ImageInputError,
+    ImageLimits,
+    ProcessedImage,
+    count_history_images,
+    create_read_image_processor,
+    degradation_notice,
+    detect_image_mime_type,
+    process_image,
+    read_image,
+)
 from coding_agent.model_directory import ModelDirectory, ModelListing
 from coding_agent.resources import ApplicationDiagnostic, ApplicationResources
 from coding_agent.session_manager import SaveState, SessionManager
 
 __all__ = [
     "AgentSession", "AgentSessionRuntime", "ApplicationDiagnostic", "ApplicationResources",
-    "CodingAgentHost", "CodingAgentOptions", "ConfigDiagnostic", "ConfigError",
-    "DecodedHistory", "FileCredentialStore", "ModelDirectory", "ModelListing", "SaveState",
-    "SessionManager", "SessionSelection", "SettingsSnapshot", "ToolName",
-    "decode_history", "encode_history", "load_settings", "merge_settings",
-    "project_settings_path", "resolve_agent_dir", "update_settings",
+    "AttachmentError", "CodingAgentHost", "CodingAgentOptions", "ConfigDiagnostic", "ConfigError",
+    "DecodedHistory", "FileAttachment", "FileCredentialStore", "IMAGE_MAX_BASE64_BYTES",
+    "IMAGE_MAX_DIMENSION", "ImageInputError", "ImageLimits", "ModelDirectory", "ModelListing",
+    "ProcessedImage", "SaveState", "SessionManager", "SessionSelection", "SettingsSnapshot",
+    "ToolName", "UnsupportedImageModelError", "attachment_images", "compose_first_task",
+    "count_history_images", "create_read_image_processor", "decode_history", "degradation_notice",
+    "detect_image_mime_type", "encode_history", "load_settings", "merge_settings", "process_image",
+    "project_settings_path", "read_file_attachment", "read_image", "render_attachment",
+    "resolve_agent_dir", "update_settings",
 ]
