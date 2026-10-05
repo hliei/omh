@@ -23,6 +23,7 @@ from coding_agent.agent_session import AgentSession, CodingAgentOptions, _create
 from coding_agent.history import DecodedHistory
 from coding_agent.resources import ApplicationResources, load_resources
 from coding_agent.session_manager import SessionManager, _path
+from coding_agent.session_paths import session_file_path
 
 RuntimeListener = Callable[[AgentEvent, AbortSignal], Awaitable[None] | None]
 
@@ -168,12 +169,28 @@ class AgentSessionRuntime:
         # The model request identity is independently overridable by the host.
         if options.session_id is None:
             agent.session_id = agent.history.conversation_id
-        path = _path(self.options.session_file, cwd) if self.options.session_file is not None else None
         session = AgentSession(
-            agent, session_manager=SessionManager(cwd=cwd, path=path, display_name=display_name),
+            agent, session_manager=SessionManager(
+                cwd=cwd, path=self._new_session_path(agent.history, cwd), display_name=display_name,
+            ),
             resources=resources, resource_options=self.options,
         )
         return session
+
+    def _new_session_path(self, history: AgentHistory, cwd: Path) -> Path | None:
+        """Resolve an explicit file, then a storage directory, else memory.
+
+        The directory holds this conversation's file directly; under the default
+        root the host supplies a per-cwd directory. Nothing is written here; the
+        saving manager creates the file on the first real user activity.
+        """
+        if self.options.session_file is not None:
+            return _path(self.options.session_file, cwd)
+        if self.options.session_dir is not None:
+            return session_file_path(
+                _path(self.options.session_dir, cwd), history.conversation_id, history.created_at,
+            )
+        return None
 
     async def open_session(self, path: str | Path) -> AgentSession:
         """Prepare a saved identity before closing and replacing the old Agent."""

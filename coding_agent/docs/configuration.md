@@ -18,7 +18,7 @@ actual user task surfaces authentication failure.
 | `~/.omh/agent/settings.json` | Global settings |
 | `~/.omh/agent/auth.json` | Global API keys, mode `0600` |
 | `~/.omh/agent/models.json` | Global model metadata overrides |
-| `~/.omh/agent/sessions` | Default session storage root |
+| `~/.omh/agent/sessions` | Default session storage root, grouped by effective cwd |
 | `<cwd>/.omh/settings.json` | Project settings, loaded only for a trusted project |
 
 `auth.json` and `models.json` are global-only. A project `settings.json` cannot

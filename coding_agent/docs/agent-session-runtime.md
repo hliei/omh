@@ -29,6 +29,16 @@ or probe a provider for authentication. A missing historical model produces
 `model_fallback_message` naming the unavailable selection and chosen fallback.
 No configured executable model raises `ValueError`.
 
+A new session is file-backed when `session_file` names one exact file or
+`session_dir` names the directory that holds its file; with neither, it stays in
+memory (`save_mode == "memory"`) and never writes automatically. `session_file`
+takes precedence when both are set. With `session_dir`, the runtime names each
+new conversation's file from the SDK conversation ID and its creation time, and
+records nothing until the first real user activity; the common host passes the
+per-cwd directory for the default root or an explicit `--session-dir` as given.
+See [storage modes and layout](session-manager.md#storage-modes-and-layout).
+Reopening always uses the explicit `path`.
+
 `thinking_level=None` preserves the historical selection on restore; explicit
 `"off"` overrides it. The SDK clamps thinking to model capabilities. Restoring
 keeps all record IDs, the conversation ID and creation time without running a
@@ -96,9 +106,11 @@ Migration: callers that previously closed the current Agent before new/open can
 let the runtime coordinate the handoff. Register UI/event observers on the
 runtime when they should follow replacements. Handle a switch exception together
 with the final current reference, and retain/export unsaved old sessions before
-disposing of the runtime. When creating a new file-backed session, select a new
-`options.session_file` destination; exclusive first saving still protects existing
-files. There is no fork, navigation, queue persistence or process recovery here.
+disposing of the runtime. When creating a new file-backed session, the runtime
+uses `options.session_file` when set, otherwise the `options.session_dir`
+directory, otherwise memory; exclusive first saving still protects existing
+files. There is
+no fork, navigation, queue persistence or process recovery here.
 
 Run the offline [session switching example](../examples/session_switch.py) with
 `python coding_agent/examples/session_switch.py` from the repository root.

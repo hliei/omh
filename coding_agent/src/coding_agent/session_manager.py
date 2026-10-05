@@ -6,7 +6,12 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
-from omh.agent import AgentHistory, AgentHistoryEntry, MessageHistoryEntry
+from omh.agent import (
+    AgentHistory,
+    AgentHistoryEntry,
+    CustomMessageHistoryEntry,
+    MessageHistoryEntry,
+)
 
 from coding_agent.history import (
     DecodedHistory,
@@ -16,6 +21,21 @@ from coding_agent.history import (
 )
 
 SaveState = Literal["pending", "saved", "unsaved"]
+SaveMode = Literal["auto", "memory"]
+
+
+def _has_user_activity(entries: tuple[AgentHistoryEntry, ...]) -> bool:
+    """Report whether history holds real user activity worth creating a file for.
+
+    A user or assistant message counts, and so does any custom submission (the
+    public API the product uses for ``!``/``!!`` shell records) even without an
+    assistant reply. Setup-only records and empty conversations stay pending.
+    """
+    return any(
+        isinstance(entry, CustomMessageHistoryEntry)
+        or (isinstance(entry, MessageHistoryEntry) and entry.message.role in ("user", "assistant"))
+        for entry in entries
+    )
 
 
 def _path(path: str | Path, cwd: Path) -> Path:
@@ -63,6 +83,11 @@ class SessionManager:
         return self._save_state
 
     @property
+    def save_mode(self) -> SaveMode:
+        """Report ``auto`` for a file-backed session and ``memory`` without a destination."""
+        return "memory" if self.path is None else "auto"
+
+    @property
     def save_error(self) -> Exception | None:
         return self._save_error
 
@@ -73,10 +98,7 @@ class SessionManager:
         async with self._file_lock:
             if self._save_error is not None:
                 raise self._save_error
-            if self._save_state == "pending" and not any(
-                isinstance(entry, MessageHistoryEntry) and entry.message.role in ("user", "assistant")
-                for entry in history.entries
-            ):
+            if self._save_state == "pending" and not _has_user_activity(history.entries):
                 return
             try:
                 if self._save_state == "pending":
@@ -99,7 +121,7 @@ class SessionManager:
         async with self._file_lock:
             destination = _path(path, self.cwd) if path is not None else self.path
             if destination is None:
-                raise ValueError("save requires a session path")
+                raise ValueError("Saving an in-memory session requires an explicit path")
             try:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with destination.open("w", encoding="utf-8", newline="\n") as file:

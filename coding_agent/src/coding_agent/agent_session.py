@@ -39,7 +39,7 @@ from omh.llm.types import (
 )
 
 from coding_agent.resources import ApplicationResources, load_resources
-from coding_agent.session_manager import SaveState, SessionManager
+from coding_agent.session_manager import SaveMode, SaveState, SessionManager
 
 ToolName = Literal["read", "bash", "edit", "write"]
 
@@ -54,6 +54,8 @@ class CodingAgentOptions:
     fallback_model: Model | None = None
     tools: tuple[ToolName, ...] = ("read", "bash", "edit", "write")
     session_file: str | Path | None = None
+    #: Directory holding automatic per-conversation files; ``None`` keeps the session in memory.
+    session_dir: str | Path | None = None
     # Credentials, hooks, policies and provider options remain current host code.
     agent_options: AgentOptions = field(default_factory=AgentOptions)
     agent_dir: str | Path | None = None
@@ -125,6 +127,10 @@ class AgentSession:
     @property
     def save_state(self) -> SaveState:
         return self.session_manager.save_state
+
+    @property
+    def save_mode(self) -> SaveMode:
+        return self.session_manager.save_mode
 
     @property
     def save_error(self) -> Exception | None:

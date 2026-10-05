@@ -56,6 +56,8 @@ define this application's terms and composition boundary. The
 the accepted separation between planned CLI output and saved history.
 The [configuration decision](docs/adr/0003-configuration-and-credentials-boundary.md)
 records the configuration, credential and selection boundary.
+The [session storage decision](docs/adr/0004-session-storage-layout.md) records
+the default auto-save root, cwd grouping and in-memory mode.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen

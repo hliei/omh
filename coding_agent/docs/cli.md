@@ -96,8 +96,8 @@ All values are validated before any request; an explicit `--skill` or
 | `-c`, `--continue` | Continue the most recent session for the working directory |
 | `-r`, `--resume` | Select a saved session to reopen; print never opens a selector |
 | `--session <path\|id>` | Reopen a session file or a unique ID prefix |
-| `--session-dir <dir>` | Replace the session storage root |
-| `--no-session` | In-memory session without automatic reopen or save |
+| `--session-dir <dir>` | Replace the session storage root; the directory holds files directly (default `<agent_dir>/sessions`, grouped by cwd) |
+| `--no-session` | In-memory session without automatic reopen or save; explicit save/export still work |
 | `--cwd <dir>` | Working directory for a new session or explicit reopen override |
 | `--provider <name>` | Provider ID |
 | `--model <provider/id\|id>` | Exact model ID, never fuzzy-replaced |

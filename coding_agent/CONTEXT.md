@@ -40,6 +40,14 @@ _Avoid_: 线上模型列表、自动更新的支持声明
 `~/.omh/agent`（可由 `OMH_CODING_AGENT_DIR` 替换）下的全局 configuration、凭据、模型目录与会话根；项目的 `.omh` 只提供受 trust 控制的 settings 与资源。
 _Avoid_: 项目配置目录、会话文件所在目录
 
+**Session storage root（会话存储根）**:
+新会话自动保存的根；默认为全局 agent 目录下的 `sessions`，按有效 cwd 分组，可由 `--session-dir` 替换为直接存放文件的目录。
+_Avoid_: 单个会话文件路径、项目配置目录
+
+**Save mode（保存模式）**:
+会话是否绑定自动保存目标；`auto` 表示有文件目标并可在首次真实用户活动后自动写入，`memory` 表示进程内会话，保持 `pending`、不自动写入也不自动救援。
+_Avoid_: 保存状态（pending／saved／unsaved）、执行持久化
+
 **Settings merge（设置合并）**:
 显式 CLI → 可信 project settings → global settings 的配置合并规则；对象递归合并、数组整替，被替换来源不复活。
 _Avoid_: 当前选择、会话历史中的 model／thinking 记录

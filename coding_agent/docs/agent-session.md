@@ -10,10 +10,12 @@ sessions; the session connects awaited SDK history commits to its manager.
 ## Session entry
 
 `new_session`, `open_session` and `switch_session` return `AgentSession`, which exposes
-`agent`, `session_manager`, `path`, `cwd`, `display_name`, `save_state`, `save_error` and
-`model_fallback_message`. Session methods `prompt`, `continue_`, `compact`,
+`agent`, `session_manager`, `path`, `cwd`, `display_name`, `save_state`, `save_error`,
+`save_mode` and `model_fallback_message`. Session methods `prompt`, `continue_`, `compact`,
 `save` and `export` have matching runtime wrappers. `steer`, `follow_up` and
-`reload_resources` also work through either the session or runtime. `continue_` follows the
+`reload_resources` also work through either the session or runtime. `save_mode` is
+`"auto"` for a file-backed conversation and `"memory"` when no destination exists;
+see [storage modes](session-manager.md#storage-modes-and-layout). `continue_` follows the
 SDK's continuation rules; an assistant tail needs queued input. The runnable
 offline example creates and edits a real temporary file and verifies the
 reopened history.

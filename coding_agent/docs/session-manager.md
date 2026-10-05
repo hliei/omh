@@ -27,6 +27,35 @@ appending. The runtime coordinates this sequence automatically. The old
 constructor's `saved=True` case is covered by this load path; hosts do not
 mark arbitrary new managers saved.
 
+## Storage modes and layout
+
+A session is either file-backed (`save_mode == "auto"`) or in-memory
+(`save_mode == "memory"`). A new session is file-backed when a destination is
+configured: `CodingAgentOptions.session_dir` selects the directory that holds
+new conversation files and `session_file` selects one exact file, while neither
+means memory. `CodingAgentHost.session_root` returns the top-level root or
+`None` for `--no-session`. The default root is `<agent_dir>/sessions`; an
+explicit `--session-dir` replaces it and holds files directly.
+
+Under the default root, conversations are grouped by effective cwd in a
+`--<sanitized-cwd>--<digest>--` directory and named
+`<timestamp>_<conversation-id>.jsonl`. The digest keeps different working
+directories in different groups even when their readable names collide. The SDK
+Agent owns the conversation ID and creation time; the product only turns them
+into a path. Nothing is created at selection time: the first real user activity
+creates the directory and file together, and an empty conversation stays
+`pending` with no file. Real user activity is a user or assistant message or a
+custom submission (the public API the product uses for `!`/`!!` shell records)
+even before any assistant reply; setup-only model and thinking records do not
+count.
+
+An in-memory session never writes automatically, performs no automatic rescue,
+and is not reopened after exit; it stays `pending` because no write is expected,
+and `save_mode` distinguishes it from a file-backed session. `save(path)` and
+`export(path)` still work explicitly before exit, and `save(path)` binds the
+chosen file for later automatic appends. Assembly for `--no-session` rejects an
+explicit session file; a memory run must not reopen a saved path.
+
 ## Complete JSONL history
 
 `encode_history(history, cwd=..., display_name=...)` exports the public
@@ -57,17 +86,18 @@ latest compaction summary. Unsupported versions, record/message/block kinds,
 missing discriminators, non-finite numbers and invalid decoded SDK history
 raise `ValueError`. There is no format migration or other-product importer.
 
-Constructing a new session does not create a file. Until a commit has a user or
-assistant record, automatic saving remains `pending`. The first such commit
-writes the header and complete initialization/existing history with exclusive
-file creation. Later history commits append in order; the application's
-awaited listener finishes serialization and ordinary I/O before later
-subscribers observe the event. Explicit `save` writes complete history even
-before the first prompt. An existing file is protected from the initial
+Constructing a new session does not create a file. Until a commit has a user,
+assistant or custom record, automatic saving remains `pending`. The first such
+commit writes the header and complete initialization/existing history with
+exclusive file creation. Later history commits append in order; the
+application's awaited listener finishes serialization and ordinary I/O before
+later subscribers observe the event. Explicit `save` writes complete history
+even before the first prompt. An existing file is protected from the initial
 automatic write; explicit `save` can overwrite the chosen destination.
 
 `save(path)` binds that file for later appends. Without a session path,
-automatic saving stays pending; `save` requires a destination. `export()`
+automatic saving stays pending; `save()` requires a destination and raises
+`ValueError` for an in-memory session. `export()`
 returns a full snapshot and optionally writes a separate file without rebinding
 or marking the session saved. Exporting to the current session path performs
 an explicit save.
