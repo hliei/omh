@@ -14,6 +14,7 @@ from omh.llm.models import (
     models_are_equal,
 )
 from omh.llm.providers.deepseek import deepseek_provider
+from omh.llm.providers.opencode_go import opencode_go_provider
 from omh.llm.types import (
     AssistantMessage,
     AssistantMessageEvent,
@@ -126,6 +127,7 @@ __all__ = [
     "has_api",
     "models_are_equal",
     "normalize_context",
+    "opencode_go_provider",
     "reduce_assistant_message_frames",
     "resolve_transcript",
 ]

@@ -4,7 +4,7 @@ import asyncio
 import json
 import platform
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, fields
 from inspect import isawaitable
@@ -112,7 +112,21 @@ def _user_agent() -> str:
     return f"omh ({platform.system()} {platform.release()}; {platform.machine()})"
 
 
-def _has_header(headers: ProviderHeaders | None, name: str) -> bool:
+def _normalize_reasoning_signature(model: Model, field: str) -> str:
+    """Fold OpenCode Go's generic ``reasoning`` field into DeepSeek's field.
+
+    The Go route can surface DeepSeek thinking as ``reasoning`` while the
+    upstream model requires the same content back as ``reasoning_content`` on a
+    tool continuation. Normalizing the stored signature keeps the stream and
+    the replayed request consistent.
+    """
+
+    if model.provider == "opencode-go" and field == "reasoning":
+        return "reasoning_content"
+    return field
+
+
+def _has_header(headers: Mapping[str, str | None] | None, name: str) -> bool:
     if not headers:
         return False
     expected = name.lower()
@@ -138,20 +152,23 @@ def detect_compat(model: Model) -> ResolvedOpenAICompletionsCompat:
     provider = model.provider
     base_url = model.base_url
     is_deepseek = provider == "deepseek" or "deepseek.com" in base_url.lower()
-    is_non_standard = is_deepseek
+    # OpenCode's Go/Zen gateways are OpenAI-compatible proxies but reject the
+    # standard OpenAI-only request fields.
+    is_opencode = provider == "opencode-go" or "opencode.ai" in base_url.lower()
+    is_non_standard = is_deepseek or is_opencode
     return ResolvedOpenAICompletionsCompat(
         supports_store=not is_non_standard,
         supports_developer_role=not is_non_standard,
         supports_reasoning_effort=True,
         supports_usage_in_streaming=True,
         supports_finish_reason=True,
-        max_tokens_field="max_tokens" if is_deepseek else "max_completion_tokens",
+        max_tokens_field="max_tokens" if (is_deepseek or is_opencode) else "max_completion_tokens",
         requires_tool_result_name=False,
         requires_assistant_after_tool_result=False,
         requires_thinking_as_text=False,
         requires_reasoning_content_on_assistant_messages=is_deepseek,
         thinking_format="deepseek" if is_deepseek else "openai",
-        supports_strict_mode=True,
+        supports_strict_mode=not is_opencode,
         supports_mid_convo_system_messages=False,
     )
 
@@ -294,7 +311,9 @@ def convert_messages(
                         assistant["content"] = assistant_text
                     signature = thinking_blocks[0].thinking_signature
                     if signature in _REASONING_FIELDS:
-                        assistant[signature] = "\n".join(block.thinking for block in thinking_blocks)
+                        assistant[_normalize_reasoning_signature(model, signature)] = "\n".join(
+                            block.thinking for block in thinking_blocks
+                        )
             elif assistant_text:
                 assistant["content"] = assistant_text
             if tool_calls:
@@ -413,6 +432,16 @@ def _request_headers(model: Model, api_key: str, options: OpenAICompletionsOptio
     }
     if model.headers:
         headers.update(model.headers)
+    # OpenCode Go requires a client-supplied per-conversation routing header. The
+    # public ``session_id`` carries the conversation identity; an explicit header
+    # from the model catalog or request options still wins.
+    if (
+        options
+        and options.session_id
+        and (model.provider == "opencode-go" or "opencode.ai" in model.base_url.lower())
+        and not _has_header(headers, "x-opencode-session")
+    ):
+        headers["x-opencode-session"] = options.session_id
     if options and options.headers:
         for name, value in options.headers.items():
             if value is None:
@@ -670,7 +699,7 @@ def stream(
                     if found_reasoning:
                         value = delta[found_reasoning]
                         if isinstance(value, str) and value:
-                            thinking = ensure_thinking(found_reasoning)
+                            thinking = ensure_thinking(_normalize_reasoning_signature(model, found_reasoning))
                             thinking.thinking += value
                             events.push(
                                 ThinkingDeltaEvent(content_index=content_index(thinking), delta=value, partial=output)
