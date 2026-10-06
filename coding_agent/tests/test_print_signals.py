@@ -411,3 +411,38 @@ Path(os.environ['JSON_GATE'], 'ready_stderr').write_text('ready')
             process.stdout.close()
         if stderr_open:
             os.close(read_fd)
+
+
+def test_closed_stdout_with_full_stderr_exits_one_without_waiting(
+    home: Path, tmp_path: Path,
+) -> None:
+    import os
+
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    try:
+        while True:
+            os.write(write_fd, b"x" * 4096)
+    except BlockingIOError:
+        pass
+    os.set_blocking(write_fd, True)
+    out_read, out_write = os.pipe()
+    os.close(out_read)
+    gate = tmp_path / "gate"
+    gate.mkdir()
+    process = subprocess.Popen(
+        [*cli_command(), "--mode=json", "--no-approve", "--api-key", "offline",
+         "--session-dir", str(home / "sessions"), "hello"],
+        stdin=subprocess.DEVNULL, stdout=out_write, stderr=write_fd,
+        env=environment(home, "rich", gate), cwd=tmp_path,
+    )
+    os.close(write_fd)
+    os.close(out_write)
+    try:
+        assert process.wait(timeout=8) == 1
+        assert not (home / "sends").exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        os.close(read_fd)

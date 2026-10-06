@@ -8,6 +8,7 @@ characters are shown as escapes and a newline never splits a terminal field.
 
 from __future__ import annotations
 
+import os
 from typing import TextIO
 
 #: A command completed normally.
@@ -29,3 +30,24 @@ def plain_text(value: str) -> str:
 def write_diagnostic(stream: TextIO, error: Exception | str) -> None:
     """Write one diagnostic line to a diagnostic stream."""
     stream.write(f"omh: {plain_text(str(error))}\n")
+
+
+def write_best_effort_diagnostic(stream: TextIO, error: Exception | str) -> None:
+    """Report an immediate exit without blocking or reentering buffered stderr."""
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        try:
+            write_diagnostic(stream, error)
+        except Exception:
+            pass
+        return
+    try:
+        blocking = os.get_blocking(fd)
+        os.set_blocking(fd, False)
+        try:
+            os.write(fd, f"omh: {plain_text(str(error))}\n".encode("utf-8"))
+        finally:
+            os.set_blocking(fd, blocking)
+    except Exception:
+        pass

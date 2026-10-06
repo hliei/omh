@@ -22,7 +22,7 @@ from collections.abc import Callable
 from types import FrameType
 from typing import TextIO
 
-from coding_agent.terminal import plain_text, write_diagnostic
+from coding_agent.terminal import write_best_effort_diagnostic
 
 #: The three termination signals the print command handles cooperatively.
 _SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -88,14 +88,14 @@ class PrintCancellation:
                     # Close still awaits the Agent-owned cleanup it started.
                     pass
             finally:
-                _signal_diagnostic(
+                write_best_effort_diagnostic(
                     self._stderr,
                     f"received {_signal_name(signal_number)}; stopping remaining tasks "
                     "and waiting for cleanup and saving",
                 )
             return
         try:
-            _signal_diagnostic(
+            write_best_effort_diagnostic(
                 self._stderr,
                 f"received a second {_signal_name(signal_number)}; saving may be incomplete",
             )
@@ -109,26 +109,6 @@ def _signal_name(signal_number: int) -> str:
     except ValueError:
         return str(signal_number)
 
-
-def _signal_diagnostic(stream: TextIO, message: str) -> None:
-    """Use a best-effort unbuffered write; stderr cannot hold signal exit hostage."""
-    try:
-        fd = stream.fileno()
-    except (AttributeError, OSError, ValueError):
-        try:
-            write_diagnostic(stream, message)
-        except Exception:
-            pass
-        return
-    try:
-        blocking = os.get_blocking(fd)
-        os.set_blocking(fd, False)
-        try:
-            os.write(fd, f"omh: {plain_text(message)}\n".encode("utf-8"))
-        finally:
-            os.set_blocking(fd, blocking)
-    except Exception:
-        pass
 
 
 class PrintPreparationCancelled(BaseException):

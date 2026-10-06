@@ -18,6 +18,7 @@ ends print with exit 1 without waiting for cooperative cleanup or saving.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 from collections.abc import Sequence
@@ -39,7 +40,13 @@ from coding_agent.cancellation import PrintCancellation
 from coding_agent.host import CodingAgentHost, SessionSelection
 from coding_agent.json_wire import project_event
 from coding_agent.stdout_writer import StdoutWriteError, StdoutWriter
-from coding_agent.terminal import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, write_diagnostic
+from coding_agent.terminal import (
+    EXIT_FAILURE,
+    EXIT_OK,
+    EXIT_USAGE,
+    write_best_effort_diagnostic,
+    write_diagnostic,
+)
 
 
 class PrintInputError(ValueError):
@@ -190,7 +197,7 @@ async def _execute_print(
 
                 runtime.subscribe(on_event)
         except Exception as error:
-            write_diagnostic(stderr, error)
+            (write_best_effort_diagnostic if writer.failed else write_diagnostic)(stderr, error)
             start_failed = True
         if not start_failed:
             try:
@@ -201,7 +208,7 @@ async def _execute_print(
                 write_diagnostic(stderr, error)
                 input_rejected = True
             except Exception as error:
-                write_diagnostic(stderr, error)
+                (write_best_effort_diagnostic if writer.failed else write_diagnostic)(stderr, error)
                 outcome = _RunOutcome()
     finally:
         # Permanent stdout errors take precedence over cooperative cancellation.
@@ -209,10 +216,11 @@ async def _execute_print(
             try:
                 await runtime.close()
             except Exception as error:
-                write_diagnostic(stderr, error)
+                (write_best_effort_diagnostic if writer.failed else write_diagnostic)(stderr, error)
                 outcome = _RunOutcome()
                 close_failed = True
-            await _rescue_unsaved(runtime, stderr)
+            if not writer.failed:
+                await _rescue_unsaved(runtime, stderr)
 
     if writer.failed:
         return EXIT_FAILURE
@@ -229,7 +237,7 @@ async def _execute_print(
                 writer.write(outcome.text)
             writer.flush()
         except StdoutWriteError as error:
-            write_diagnostic(stderr, error)
+            write_best_effort_diagnostic(stderr, error)
             return EXIT_FAILURE
         return cancellation.exit_code if _cancel_requested(cancellation) and cancellation is not None else EXIT_OK
     return EXIT_FAILURE
