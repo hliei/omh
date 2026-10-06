@@ -18,6 +18,7 @@ ends print with exit 1 without waiting for cooperative cleanup or saving.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -145,17 +146,17 @@ async def _run_print(
                 session = runtime.current_session
                 assert session is not None
                 history = session.agent.history
-                writer.write(_json_line({"type": "session", "version": 3,
+                await asyncio.to_thread(writer.write, _json_line({"type": "session", "version": 3,
                                          "id": history.conversation_id,
                                          "timestamp": history.created_at.isoformat(),
                                          "cwd": str(session.cwd)}))
                 if session.save_mode == "memory":
                     write_diagnostic(stderr, "in-memory session; history will not be saved")
 
-                def on_event(event: AgentEvent, signal: AbortSignal) -> None:
+                async def on_event(event: AgentEvent, signal: AbortSignal) -> None:
                     projected = project_event(event)
                     if projected is not None:
-                        writer.write(_json_line(projected))
+                        await asyncio.to_thread(writer.write, _json_line(projected))
 
                 runtime.subscribe(on_event)
         except Exception as error:
@@ -187,8 +188,8 @@ async def _run_print(
     if outcome.text is not None:
         try:
             if not json_mode:
-                writer.write(outcome.text)
-            writer.flush()
+                await asyncio.to_thread(writer.write, outcome.text)
+            await asyncio.to_thread(writer.flush)
         except StdoutWriteError as error:
             write_diagnostic(stderr, error)
             return EXIT_FAILURE
