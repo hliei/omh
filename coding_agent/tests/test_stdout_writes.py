@@ -60,18 +60,16 @@ _SLOW_CLOSE = float(os.environ.get("OMH_SLOW_CLOSE", "0"))
 _SEND_LOG = os.environ.get("OMH_SEND_LOG")
 _real_write = os.write
 _injections_left = _INJECT
-_injections = 0
 _accepted = 0
 
 
 def _write(fd, data):
-    global _injections_left, _injections, _accepted
+    global _injections_left, _accepted
     if fd == 1:
         if _FAIL_AFTER >= 0 and _accepted >= _FAIL_AFTER:
             raise BrokenPipeError(errno.EPIPE, "controlled permanent stdout failure")
         if _injections_left > 0:
             _injections_left -= 1
-            _injections += 1
             if _INJECT_LOG:
                 with open(_INJECT_LOG, "a") as handle:
                     handle.write("injected\\n")
@@ -175,18 +173,22 @@ def test_json_retries_temporary_stdout_rejections(
     write_log = tmp_path / "writes.bin"
     injection_log = tmp_path / "injections.txt"
     send_log = tmp_path / "sends.txt"
+    started = time.monotonic()
     result = run_installed(
         home, tmp_path, "--mode=json", "hello",
         extra_env={
-            "OMH_STDOUT_INJECT": "3", "OMH_STDOUT_ERRNO": errno_name,
+            "OMH_STDOUT_INJECT": "20", "OMH_STDOUT_ERRNO": errno_name,
             "OMH_STDOUT_LOG": str(write_log),
             "OMH_STDOUT_INJECT_LOG": str(injection_log), "OMH_PROVIDER_DELTAS": "5",
             "OMH_SEND_LOG": str(send_log),
         },
     )
+    elapsed = time.monotonic() - started
     assert result.returncode == 0, result.stderr
     assert b"Traceback" not in result.stderr
-    assert injection_log.read_text().splitlines() == ["injected"] * 3
+    assert injection_log.read_text().splitlines() == ["injected"] * 20
+    # 20 rejections at the fixed 10 ms delay take at least 0.15 s to retry.
+    assert elapsed >= 0.15
     # Temporary stdout retries stay inside one model response.
     assert send_log.read_text().splitlines() == ["dialogue"]
     # Every accepted write is one piece of the final stream: retries neither
@@ -245,7 +247,7 @@ def test_json_closed_stdout_pipe_exits_one_without_slow_cleanup(
     release = tmp_path / "release"
     command, env = installed_command(home, tmp_path, "--mode=json", "hello")
     env.update({
-        "OMH_RELEASE": str(release), "OMH_PROVIDER_DELTAS": "50", "OMH_SLOW_CLOSE": "30",
+        "OMH_RELEASE": str(release), "OMH_PROVIDER_DELTAS": "50", "OMH_SLOW_CLOSE": "60",
     })
     process = subprocess.Popen(
         command, cwd=tmp_path, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -257,7 +259,7 @@ def test_json_closed_stdout_pipe_exits_one_without_slow_cleanup(
     process.stdout.close()
     release.write_text("go")
     started = time.monotonic()
-    code = process.wait(timeout=40)
+    code = process.wait(timeout=90)
     elapsed = time.monotonic() - started
     assert code == 1, process.stderr.read() if process.stderr else b""
     assert elapsed < 30, "permanent stdout failure waited for cooperative close"
@@ -271,11 +273,11 @@ def test_json_write_failure_after_send_does_not_retry_the_model(
     command, env = installed_command(home, tmp_path, "--mode=json", "hello")
     env.update({
         "OMH_STDOUT_FAIL_AFTER": "12", "OMH_PROVIDER_DELTAS": "50",
-        "OMH_SLOW_CLOSE": "30", "OMH_SEND_LOG": str(send_log),
+        "OMH_SLOW_CLOSE": "60", "OMH_SEND_LOG": str(send_log),
     })
     started = time.monotonic()
     process = subprocess.run(
-        command, cwd=tmp_path, input=b"", capture_output=True, env=env, timeout=40,
+        command, cwd=tmp_path, input=b"", capture_output=True, env=env, timeout=90,
     )
     elapsed = time.monotonic() - started
     assert process.returncode == 1, process.stderr
