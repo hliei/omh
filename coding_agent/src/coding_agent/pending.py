@@ -13,16 +13,20 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from omh.llm.types import ImageContent
 
 from coding_agent.attachments import resolve_attachment_path
 from coding_agent.images import ImageLimits, ProcessedImage, read_image
 
+#: Where a pending attachment's bytes came from.
+AttachmentOrigin = Literal["file", "clipboard"]
+
 #: Origin value for an entry read from an explicit image path.
-FILE_ORIGIN = "file"
+FILE_ORIGIN: AttachmentOrigin = "file"
 #: Origin value for an entry read from the desktop clipboard.
-CLIPBOARD_ORIGIN = "clipboard"
+CLIPBOARD_ORIGIN: AttachmentOrigin = "clipboard"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +35,7 @@ class PendingAttachment:
 
     identity: str
     name: str
-    origin: str
+    origin: AttachmentOrigin
     source: str | None
     image: ProcessedImage
 
@@ -85,7 +89,7 @@ class PendingAttachments:
         return tuple(self._items)
 
     def add(
-        self, *, name: str, origin: str, source: str | None, image: ProcessedImage,
+        self, *, name: str, origin: AttachmentOrigin, source: str | None, image: ProcessedImage,
     ) -> PendingAttachment:
         """Append a processed image and give it the next stable identity."""
         self._counter += 1
@@ -122,10 +126,6 @@ class PendingAttachments:
     def restore(self, attachments: tuple[PendingAttachment, ...]) -> None:
         """Put submitted attachments back at the front after a rejected send."""
         self._items[0:0] = list(attachments)
-
-    def images(self) -> list[ImageContent]:
-        """The image content of the complete draft, in list order."""
-        return [attachment.content for attachment in self._items]
 
     def describe_lines(self) -> list[str]:
         """Management lines for ``/attach`` without arguments."""

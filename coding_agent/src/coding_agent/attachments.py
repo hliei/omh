@@ -46,7 +46,7 @@ def read_file_attachment(
     explanatory boundary text. A missing path or content that is neither a
     supported image nor UTF-8 text raises :class:`AttachmentError`.
     """
-    path = _resolve(argument, cwd)
+    path = resolve_attachment_path(argument, cwd)
     try:
         data = path.read_bytes()
     except OSError as error:
@@ -117,7 +117,3 @@ def resolve_attachment_path(argument: str, cwd: str | Path) -> Path:
     if not candidate.is_absolute():
         candidate = Path(cwd).expanduser() / candidate
     return candidate.resolve()
-
-
-def _resolve(argument: str, cwd: str | Path) -> Path:
-    return resolve_attachment_path(argument, cwd)

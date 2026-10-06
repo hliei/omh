@@ -9,14 +9,13 @@ acceptance.
 from __future__ import annotations
 
 import base64
-import io
 import os
 import sys
 import time
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from support import png_bytes
 from test_interactive import InteractiveSession, provider_env, sends
 
 from coding_agent import decode_history
@@ -29,11 +28,10 @@ def home(tmp_path: Path) -> Path:
     return directory
 
 
-def write_image(path: Path, size: tuple[int, int] = (6, 4), fmt: str = "PNG") -> bytes:
-    buffer = io.BytesIO()
-    Image.new("RGB", size, (10, 20, 30)).save(buffer, format=fmt)
-    path.write_bytes(buffer.getvalue())
-    return path.read_bytes()
+def write_image(path: Path, size: tuple[int, int] = (6, 4)) -> bytes:
+    data = png_bytes(size)
+    path.write_bytes(data)
+    return data
 
 
 def images_env(home: Path, scenario: str, **extra: str) -> dict[str, str]:
@@ -177,6 +175,47 @@ def test_attach_reports_dimension_resize_status(home: Path, tmp_path: Path) -> N
         session.send(b"\x04")
         assert session.finish() == 0
         assert session.restored()
+    finally:
+        session.close()
+
+
+def test_ctrl_d_keeps_a_pending_image_until_it_is_removed(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    write_image(project / "picture.png")
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--cwd", str(project), home=home, cwd=project, env=images_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"/attach picture.png\r")
+        session.wait_for("attached #1 picture.png 6x4 image/png ready")
+        session.send(b"\x04")
+        session.wait_for("pending attachments remain")
+        assert session.process.poll() is None
+        session.send(b"/attach clear\r")
+        session.wait_for("attachments cleared")
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_attach_remove_without_a_number_is_diagnosed(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--cwd", str(project), home=home, cwd=project, env=images_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"/attach remove\r")
+        session.wait_for("/attach remove needs a pending number")
+        session.send(b"\x04")
+        assert session.finish() == 0
     finally:
         session.close()
 

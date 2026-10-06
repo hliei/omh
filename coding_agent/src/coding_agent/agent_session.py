@@ -211,7 +211,9 @@ class AgentSession:
         )
         if not has_images:
             return
-        raise UnsupportedImageModelError(self.unsupported_image_message() or "")
+        guidance = self.unsupported_image_message()
+        if guidance is not None:
+            raise UnsupportedImageModelError(guidance)
 
     def _vision_model_suggestions(self) -> list[str]:
         if self._resource_options is None:

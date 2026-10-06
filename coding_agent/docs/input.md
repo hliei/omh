@@ -12,8 +12,10 @@ sends a request, and both keep the source file byte-for-byte.
 
 `read_file_attachment(argument, cwd=...)` resolves one file argument against the
 supplied working directory, `~` included, and returns a `FileAttachment` with
-the resolved path, the boundary text and an optional processed image. The
-installed command passes its startup directory (an explicit `--cwd` when given,
+the resolved path, the boundary text and an optional processed image.
+`resolve_attachment_path(argument, cwd)` exposes that same resolution rule for
+callers that read the file themselves, including the interactive `/attach`
+draft. The installed command passes its startup directory (an explicit `--cwd` when given,
 otherwise the invocation directory), so a relative `@file` follows the CLI path
 rule rather than a reopened session's saved cwd.
 `compose_first_task(stdin_text=..., attachments=..., first_prompt=...)` orders
@@ -91,9 +93,10 @@ its processing status (`ready`, plus `converted-from` and `resized-from` when
 they apply). `PendingAttachments` is process-memory draft state: it never enters
 saved history or a session file before the prompt submits it, so removing,
 rejecting or cancelling a draft keeps the original editor text and the complete
-image identity. Submitting sends the real `ImageContent` through
-`prompt(..., images=...)`, exactly like a print attachment, and the source file
-is not rewritten.
+image identity. Submitting sends the pending `ImageContent` together with the
+editor text through `prompt(..., images=...)`, exactly like a print attachment,
+and the source file is not rewritten. An empty editor does not submit a pending
+image on its own.
 
 A path typed or pasted as ordinary text stays text; nothing is guessed as an
 attachment. A missing, unsupported, corrupt or over-limit image is explained

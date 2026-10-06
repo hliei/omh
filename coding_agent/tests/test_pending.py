@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from support import png_bytes
 
 from coding_agent.images import ImageInputError, ProcessedImage, process_image
 from coding_agent.pending import (
@@ -21,17 +22,14 @@ from coding_agent.pending import (
 )
 
 
-def write_image(path: Path, size: tuple[int, int] = (6, 4), fmt: str = "PNG") -> bytes:
-    buffer = io.BytesIO()
-    Image.new("RGB", size, (10, 20, 30)).save(buffer, format=fmt)
-    path.write_bytes(buffer.getvalue())
-    return path.read_bytes()
+def write_image(path: Path, size: tuple[int, int] = (6, 4)) -> bytes:
+    data = png_bytes(size)
+    path.write_bytes(data)
+    return data
 
 
 def processed(size: tuple[int, int] = (6, 4)) -> ProcessedImage:
-    buffer = io.BytesIO()
-    Image.new("RGB", size, (1, 2, 3)).save(buffer, format="PNG")
-    return process_image(buffer.getvalue())
+    return process_image(png_bytes(size, (1, 2, 3)))
 
 
 def test_add_keeps_stable_identity_across_removals() -> None:
@@ -84,9 +82,10 @@ def test_images_follow_list_order_and_keep_real_content() -> None:
     pending.add(name="a.png", origin=FILE_ORIGIN, source="/a.png", image=first)
     pending.add(name="b.png", origin=CLIPBOARD_ORIGIN, source=None, image=second)
 
-    images = pending.images()
-    assert [image.data for image in images] == [first.content.data, second.content.data]
-    assert images == [first.content, second.content]
+    items = pending.items
+    assert [item.name for item in items] == ["a.png", "b.png"]
+    assert [item.content.data for item in items] == [first.content.data, second.content.data]
+    assert [item.content for item in items] == [first.content, second.content]
 
 
 def test_status_reports_conversion_and_resize() -> None:
@@ -94,7 +93,7 @@ def test_status_reports_conversion_and_resize() -> None:
     pending.add(name="a.png", origin=FILE_ORIGIN, source="/a.png", image=processed((6, 4)))
     converted = process_image(_bmp_bytes((8, 5)))
     pending.add(name="b.bmp", origin=FILE_ORIGIN, source="/b.bmp", image=converted)
-    resized = process_image(_big_png_bytes((2001, 10)))
+    resized = process_image(png_bytes((2001, 10), (7, 7, 7)))
     pending.add(name="c.png", origin=CLIPBOARD_ORIGIN, source=None, image=resized)
 
     lines = pending.describe_lines()
@@ -140,10 +139,4 @@ def test_read_pending_image_rejects_a_text_file(tmp_path: Path) -> None:
 def _bmp_bytes(size: tuple[int, int]) -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", size, (9, 9, 9)).save(buffer, format="BMP")
-    return buffer.getvalue()
-
-
-def _big_png_bytes(size: tuple[int, int]) -> bytes:
-    buffer = io.BytesIO()
-    Image.new("RGB", size, (7, 7, 7)).save(buffer, format="PNG")
     return buffer.getvalue()

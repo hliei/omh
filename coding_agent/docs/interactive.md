@@ -73,8 +73,10 @@ processing status, origin and source, plus the detected clipboard backend.
 `/attach remove <n>` removes one entry and `/attach clear` empties the list.
 The status line ends with `pending N`, the count still waiting for submission.
 Ctrl+V reads a desktop screenshot into the same draft. A pending image is not a
-request: nothing is submitted until Enter, and typing or pasting a path stays
-ordinary text.
+request: nothing is submitted until Enter with editor text, and typing or
+pasting a path stays ordinary text. An empty editor does not send a pending
+image on its own, and Enter while an attachment is still being prepared asks for
+another press once it is ready.
 
 ```text
 > /attach picture.png

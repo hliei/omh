@@ -13,6 +13,16 @@ from omh.llm.types import (
     empty_usage,
 )
 from omh.llm.utils.event_stream import create_assistant_message_event_stream
+from PIL import Image
+
+
+def png_bytes(size: tuple[int, int] = (6, 4), color: tuple[int, int, int] = (10, 20, 30)) -> bytes:
+    """A real PNG payload for image acceptance tests."""
+    import io
+
+    buffer = io.BytesIO()
+    Image.new("RGB", size, color).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def model(id="offline", provider="test"):

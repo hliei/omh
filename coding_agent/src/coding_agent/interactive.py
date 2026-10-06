@@ -68,6 +68,7 @@ from coding_agent.images import (
 from coding_agent.pending import (
     CLIPBOARD_ORIGIN,
     FILE_ORIGIN,
+    AttachmentOrigin,
     PendingAttachment,
     PendingAttachments,
     read_pending_image,
@@ -95,7 +96,9 @@ class _Note:
 @dataclass(slots=True)
 class _You:
     text: str
-    images: tuple[str, ...] = ()
+    #: Display labels for attached images: live labels include the name and size,
+    #: restored history has only the MIME type.
+    image_labels: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -158,7 +161,7 @@ class _Session:
         self._pending_you: _You | None = None
         self._submitted_entries = 0
         self._clipboard: ClipboardSupport = detect_clipboard()
-        self._clipboard_task: asyncio.Task[None] | None = None
+        self._attachment_task: asyncio.Task[None] | None = None
         self._phase = "input"
         self._chooser = "prompt"
         self._request_block: str | None = None
@@ -352,9 +355,9 @@ class _Session:
         for message in session.agent.state.messages:
             if isinstance(message, UserMessage):
                 text = _user_text(message)
-                images = _user_images(message)
-                if text or images:
-                    self._items.append(_You(text, images=images))
+                labels = _user_image_labels(message)
+                if text or labels:
+                    self._items.append(_You(text, image_labels=labels))
             elif isinstance(message, AssistantMessage):
                 self._items.append(_assistant_from(message))
                 for block in message.content:
@@ -510,7 +513,12 @@ class _Session:
             else:
                 self._redraw()
             return
-        if not text.strip() and len(self._draft) == 0:
+        if self._attachment_task is not None and not self._attachment_task.done():
+            self._buffer = text
+            self._cursor = len(text)
+            self._add("notice an attachment is still being prepared; press Enter again")
+            return
+        if not text.strip():
             self._redraw()
             return
         session = self._current_session()
@@ -528,13 +536,12 @@ class _Session:
             self._keep_refused_submission(text, f"image not sent: {warning}")
             return
         pending = self._draft.pop_all()
-        images = [attachment.content for attachment in pending]
-        self._pending_you = _You(text, images=tuple(item.label for item in pending))
+        self._pending_you = _You(text, image_labels=tuple(item.label for item in pending))
         self._items.append(self._pending_you)
         self._submitted_entries = len(session.agent.history.entries)
         self._busy = True
         self._set_phase("model")
-        self._prompt_task = asyncio.create_task(self._prompt(text, images, pending))
+        self._prompt_task = asyncio.create_task(self._prompt(text, pending))
 
     def _keep_refused_submission(self, text: str, reason: str | None) -> None:
         """Keep a refused prompt without losing the editor text or a draft image.
@@ -558,10 +565,10 @@ class _Session:
 
     def _paste_clipboard(self) -> None:
         """Start reading a clipboard screenshot without submitting anything."""
-        if self._clipboard_task is not None and not self._clipboard_task.done():
+        if self._attachment_task is not None and not self._attachment_task.done():
             return
         self._ctrl_c_at = 0.0
-        self._clipboard_task = asyncio.create_task(self._read_clipboard())
+        self._attachment_task = asyncio.create_task(self._read_clipboard())
 
     async def _read_clipboard(self) -> None:
         try:
@@ -570,14 +577,22 @@ class _Session:
             self._add(f"notice {error}")
             self._redraw()
             return
+        except Exception as error:
+            self._add(f"notice clipboard image could not be read: {error}")
+            self._redraw()
+            return
         if data is None:
             self._add("notice clipboard has no image; add one with /attach <image-path> instead")
             self._redraw()
             return
         try:
-            processed = process_image(data, limits=self._image_limits())
+            processed = await asyncio.to_thread(process_image, data, limits=self._image_limits())
         except ImageInputError as error:
             self._add(f"notice clipboard image: {error}")
+            self._redraw()
+            return
+        except Exception as error:
+            self._add(f"notice clipboard image could not be processed: {error}")
             self._redraw()
             return
         self._add_pending(CLIPBOARD_ORIGIN, "clipboard.png", None, processed)
@@ -592,7 +607,7 @@ class _Session:
         return Path(self.args.cwd or Path.cwd()).expanduser().resolve()
 
     def _add_pending(
-        self, origin: str, name: str, source: str | None, image: ProcessedImage,
+        self, origin: AttachmentOrigin, name: str, source: str | None, image: ProcessedImage,
     ) -> PendingAttachment:
         attachment = self._draft.add(name=name, origin=origin, source=source, image=image)
         self._add(f"attached #{len(self._draft)} {attachment.name} {attachment.status}")
@@ -616,16 +631,18 @@ class _Session:
             if len(self._draft):
                 self._add("use /attach remove <n> to remove a pending image")
             return
-        parts = argument.split(maxsplit=1)
-        keyword = parts[0].lower()
-        if keyword in {"remove", "rm", "delete"} and len(parts) == 2:
-            self._remove_pending(parts[1].strip())
+        keyword, _separator, rest = argument.partition(" ")
+        if keyword == "remove":
+            if rest.strip():
+                self._remove_pending(rest.strip())
+            else:
+                self._add("notice /attach remove needs a pending number")
             return
         if keyword == "clear":
             self._draft.clear()
             self._add("attachments cleared")
             return
-        self._attach_path(_strip_quotes(argument))
+        self._attachment_task = asyncio.create_task(self._attach_path(_strip_quotes(argument)))
 
     def _remove_pending(self, value: str) -> None:
         try:
@@ -639,13 +656,17 @@ class _Session:
             return
         self._add(f"removed #{index} {removed.name}")
 
-    def _attach_path(self, argument: str) -> None:
+    async def _attach_path(self, argument: str) -> None:
         try:
-            name, source, image = read_pending_image(
-                argument, cwd=self._cwd(), limits=self._image_limits(),
+            name, source, image = await asyncio.to_thread(
+                read_pending_image, argument, cwd=self._cwd(), limits=self._image_limits(),
             )
         except ImageInputError as error:
             self._add(f"notice {error}")
+            self._redraw()
+            return
+        except Exception as error:
+            self._add(f"notice image attachment could not be prepared: {error}")
             self._redraw()
             return
         self._add_pending(FILE_ORIGIN, name, source, image)
@@ -668,11 +689,10 @@ class _Session:
             self._busy = False
             self._redraw()
 
-    async def _prompt(
-        self, text: str, images: list[ImageContent], pending: tuple[PendingAttachment, ...],
-    ) -> None:
+    async def _prompt(self, text: str, pending: tuple[PendingAttachment, ...]) -> None:
         assert self.runtime is not None
         session = self._current_session()
+        images = [attachment.content for attachment in pending]
         try:
             await self.runtime.prompt(text, images=images or None)
         except Exception as error:
@@ -832,6 +852,12 @@ class _Session:
                     await self._startup_task
                 except asyncio.CancelledError:
                     pass
+            if self._attachment_task is not None and not self._attachment_task.done():
+                self._attachment_task.cancel()
+                try:
+                    await self._attachment_task
+                except asyncio.CancelledError:
+                    pass
             if self._prompt_task is not None and not self._prompt_task.done():
                 session = self.runtime.current_session if self.runtime is not None else None
                 if session is not None and session.agent.state.is_busy:
@@ -986,8 +1012,8 @@ def _render(
             lines.extend(_wrap(item.text, width))
         elif isinstance(item, _You):
             header = f"you {item.text}"
-            lines.extend(_wrap(header.rstrip() if item.images else header, width))
-            for label in item.images:
+            lines.extend(_wrap(header.rstrip() if item.image_labels else header, width))
+            for label in item.image_labels:
                 lines.extend(_wrap(f"image {label}", width))
         elif isinstance(item, _Assistant):
             lines.extend(_render_assistant(item, width, thinking_open=thinking_open))
@@ -1097,7 +1123,7 @@ def _user_text(message: UserMessage) -> str:
     return "".join(block.text for block in message.content if isinstance(block, TextContent))
 
 
-def _user_images(message: UserMessage) -> tuple[str, ...]:
+def _user_image_labels(message: UserMessage) -> tuple[str, ...]:
     """Visible labels for the real images saved in a user message."""
     if not isinstance(message.content, list):
         return ()

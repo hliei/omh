@@ -7,25 +7,18 @@ two-platform acceptance, not here.
 
 from __future__ import annotations
 
-import io
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from support import png_bytes
 
 from coding_agent.clipboard import (
     ClipboardUnavailable,
     detect_clipboard,
     read_clipboard_image,
 )
-
-
-def png_bytes(size: tuple[int, int] = (4, 3)) -> bytes:
-    buffer = io.BytesIO()
-    Image.new("RGB", size, (10, 20, 30)).save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 class FakeRunner:
