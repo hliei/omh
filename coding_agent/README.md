@@ -54,7 +54,7 @@ repository. The root SDK checks run separately.
 | [Print JSON](docs/print-json.md) | Incremental wire schema, messages, retry/compact projection and process outcomes |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
-| [Input and attachments](docs/input.md) | File argument boundaries, image conversion and limits, model modality and read images |
+| [Input and attachments](docs/input.md) | File argument boundaries, image conversion and limits, model modality, pending interactive attachments, clipboard backends and read images |
 | [SessionManager](docs/session-manager.md) | File metadata, JSONL, saving state, export and repair |
 | [Session discovery](docs/session-discovery.md) | Current/all projects, search, ordering, paths/IDs and recent-session selection |
 | [AgentSessionRuntime](docs/agent-session-runtime.md) | Host assembly, current-session switching, subscriptions and retained sessions |
@@ -75,6 +75,8 @@ The [session storage decision](docs/adr/0006-session-storage-layout.md) records
 the default auto-save root, cwd grouping and in-memory mode.
 The [print signals and rescue decision](docs/adr/0008-print-signals-and-rescue.md)
 records cooperative termination signals and complete-history rescue.
+The [interactive attachments and clipboard decision](docs/adr/0009-interactive-attachments-and-clipboard.md)
+records the pending image draft and the desktop backend fallback.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen

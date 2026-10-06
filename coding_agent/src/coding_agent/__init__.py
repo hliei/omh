@@ -14,6 +14,14 @@ from coding_agent.attachments import (
     compose_first_task,
     read_file_attachment,
     render_attachment,
+    resolve_attachment_path,
+)
+from coding_agent.clipboard import (
+    ClipboardBackend,
+    ClipboardSupport,
+    ClipboardUnavailable,
+    detect_clipboard,
+    read_clipboard_image,
 )
 from coding_agent.config import (
     ConfigDiagnostic,
@@ -42,6 +50,11 @@ from coding_agent.images import (
     read_image,
 )
 from coding_agent.model_directory import ModelDirectory, ModelListing
+from coding_agent.pending import (
+    PendingAttachment,
+    PendingAttachments,
+    read_pending_image,
+)
 from coding_agent.print_runner import (
     PrintInputError,
     PrintTask,
@@ -66,15 +79,19 @@ from coding_agent.writer_lock import SessionWriterError
 
 __all__ = [
     "AgentSession", "AgentSessionRuntime", "ApplicationDiagnostic", "ApplicationResources",
-    "AttachmentError", "CodingAgentHost", "CodingAgentOptions", "ConfigDiagnostic", "ConfigError",
+    "AttachmentError", "ClipboardBackend", "ClipboardSupport", "ClipboardUnavailable",
+    "CodingAgentHost", "CodingAgentOptions", "ConfigDiagnostic", "ConfigError",
     "DecodedHistory", "ExportFormat", "FileAttachment", "FileCredentialStore", "IMAGE_MAX_BASE64_BYTES",
     "IMAGE_MAX_DIMENSION", "ImageInputError", "ImageLimits", "ModelDirectory", "ModelListing",
+    "PendingAttachment", "PendingAttachments",
     "ProcessedImage", "PrintInputError", "PrintTask", "SaveMode", "SaveState", "SessionDirectory", "SessionInfo", "SessionLookupError", "SessionSort",
     "SessionManager", "SessionWriterError", "SessionSelection", "SettingsSnapshot",
     "ToolName", "TrustDecision", "TrustStore", "UnsupportedImageModelError", "attachment_images", "compose_first_task",
     "compose_tasks",
     "count_history_images", "create_read_image_processor", "decode_history", "degradation_notice",
+    "detect_clipboard",
     "encode_history", "encode_history_html", "load_settings", "merge_settings", "process_image",
-    "project_settings_path", "read_file_attachment", "read_image", "render_attachment",
+    "project_settings_path", "read_clipboard_image", "read_file_attachment", "read_image", "read_pending_image",
+    "render_attachment", "resolve_attachment_path",
     "resolve_agent_dir", "run_print_text", "update_settings",
 ]

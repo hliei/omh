@@ -92,14 +92,16 @@ a second signal exits immediately with a saving warning. A failed automatic save
 exits 1 and reports a rescue path or the lack of a complete save on stderr.
 
 Interactive mode scrolls the conversation and keeps an editor and status line
-at the bottom. Enter submits the editor. Ctrl+T expands or collapses thinking.
-Ctrl+O expands or collapses recorded tool output. The first Ctrl+C clears the
-editor; a second Ctrl+C within 500ms exits. Ctrl+D exits when the editor is
-empty. OS SIGINT, SIGTERM and SIGHUP cancel through the Agent and exit 130,
-143 and 129. A missing key, invalid configuration or a missing saved working
-directory keeps this screen and explains the repair; no verification request
-is sent. --use-theme selects dark or light. NO_COLOR or TERM=dumb uses the
-plain theme.
+at the bottom. Enter submits the editor. /attach <image-path> adds a local
+image to the pending draft; /attach alone lists, remove <n> removes and clear
+empties it; Ctrl+V adds a screenshot from a detected desktop clipboard backend.
+Ctrl+T expands or collapses thinking. Ctrl+O expands or collapses recorded tool
+output. The first Ctrl+C clears the editor; a second Ctrl+C within 500ms exits.
+Ctrl+D exits when the editor and the pending images are empty. OS SIGINT,
+SIGTERM and SIGHUP cancel through the Agent and exit 130, 143 and 129. A missing
+key, invalid configuration or a missing saved working directory keeps this
+screen and explains the repair; no verification request is sent. --use-theme
+selects dark or light. NO_COLOR or TERM=dumb uses the plain theme.
 
 Options:
   -c, --continue                 Continue the most recent session for the working directory

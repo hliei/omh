@@ -61,6 +61,28 @@ def last_user(context) -> str:
     return found
 
 
+def last_user_images(context) -> list:
+    """Image blocks on the most recent user message, in content order."""
+    found: list = []
+    for item in context.messages:
+        if getattr(item, "role", None) == "user":
+            content = item.content
+            found = (
+                [block for block in content if getattr(block, "type", None) == "image"]
+                if isinstance(content, list) else []
+            )
+    return found
+
+
+def record_images(images) -> None:
+    path = os.environ.get("INTERACTIVE_IMAGES")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        for image in images:
+            handle.write(f"{image.mime_type} {image.data}\n")
+
+
 def latest_tool(context) -> str | None:
     name = None
     for item in context.messages:
@@ -197,6 +219,11 @@ def stream_fn(model, context, options):
             emit_tool(stream, output, "bash", {"command": "printf coded"}, "call-bash")
         else:
             emit_text(stream, output, FINAL, thinking=THINKING)
+        return stream
+    if SCENARIO == "vision":
+        images = last_user_images(context)
+        record_images(images)
+        emit_text(stream, output, f"seen-image:{len(images)}")
         return stream
     if user == "mark":
         if tool == "write":

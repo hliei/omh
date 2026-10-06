@@ -111,8 +111,13 @@ def _separator(previous: str) -> str:
     return "\n\n"
 
 
-def _resolve(argument: str, cwd: str | Path) -> Path:
+def resolve_attachment_path(argument: str, cwd: str | Path) -> Path:
+    """Resolve one attachment argument against the session directory."""
     candidate = Path(argument).expanduser()
     if not candidate.is_absolute():
         candidate = Path(cwd).expanduser() / candidate
     return candidate.resolve()
+
+
+def _resolve(argument: str, cwd: str | Path) -> Path:
+    return resolve_attachment_path(argument, cwd)

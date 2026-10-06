@@ -1,6 +1,6 @@
 # Interactive session
 
-[Application overview](../README.md) · [Command line entry](cli.md) · [Configuration](configuration.md) · [AgentSessionRuntime](agent-session-runtime.md)
+[Application overview](../README.md) · [Command line entry](cli.md) · [Configuration](configuration.md) · [Input and attachments](input.md) · [AgentSessionRuntime](agent-session-runtime.md)
 
 Interactive mode is the regular terminal session. The conversation scrolls, and
 the editor and status line stay at the bottom. It uses the same host and SDK
@@ -65,6 +65,43 @@ and closed with `code end`.
 are separate labels. After a model or tool error, the text already on screen
 stays, the status returns to `phase input`, and Enter can submit another prompt.
 
+## Images and clipboard
+
+`/attach <image-path>` adds a real image to the pending draft. `/attach`
+without arguments lists the pending images with their name, dimensions,
+processing status, origin and source, plus the detected clipboard backend.
+`/attach remove <n>` removes one entry and `/attach clear` empties the list.
+The status line ends with `pending N`, the count still waiting for submission.
+Ctrl+V reads a desktop screenshot into the same draft. A pending image is not a
+request: nothing is submitted until Enter, and typing or pasting a path stays
+ordinary text.
+
+```text
+> /attach picture.png
+attached #1 picture.png 6x4 image/png ready
+> describe it
+phase model
+assistant
+Seen the image.
+```
+
+A missing, unsupported, corrupt or over-limit image is explained and not added.
+A new image with a text-only model warns on add and is refused before any
+request; the text and the draft stay editable so you can select a vision-capable
+model. The pending draft and its text are not saved to the session file, and
+removing or failing an attachment never clears the editor text.
+
+A screenshot paste needs a desktop clipboard backend. macOS uses the system
+`osascript`; Linux prefers `wl-paste` from `wl-clipboard` and falls back to
+`xclip` on X11 when the Wayland command fails. The product never installs a
+system tool. When no backend is
+available, Ctrl+V explains the missing dependency and points at
+`/attach <image-path>`, and the screen keeps working. A real desktop screenshot
+is verified by the manual two-platform acceptance, not by a headless terminal.
+
+Ctrl+D exits only when the editor and the pending list are both empty. With a
+pending image it explains how to remove or submit it instead of discarding it.
+
 ## Missing setup
 
 A missing API key, invalid configuration, or a saved working directory that no
@@ -96,7 +133,7 @@ theme falls back to dark and says so.
 | Action | Result |
 | --- | --- |
 | Ctrl+C | Clears the editor. A second Ctrl+C within 500ms exits 0 |
-| Ctrl+D | Exits 0 when the editor is empty |
+| Ctrl+D | Exits 0 when the editor and the pending attachment list are both empty; otherwise it explains the pending images |
 | SIGINT, SIGTERM, SIGHUP | Abort a busy Agent through its public cancel and close path, then exit 130, 143 or 129 |
 
 Keyboard Ctrl+C is not the operating-system signal. Exit restores the terminal

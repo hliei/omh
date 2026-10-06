@@ -174,6 +174,24 @@ class AgentSession:
         """Whether the current model declares image input."""
         return "image" in self.agent.state.model.input
 
+    def unsupported_image_message(self) -> str | None:
+        """Explain the manual model choice when the current model is text-only.
+
+        The interactive draft warns with this message when an attachment is
+        added; submission still rejects the image through
+        :meth:`_ensure_images_supported`. ``None`` means the model accepts images.
+        """
+        if self.supports_images:
+            return None
+        model = self.agent.state.model
+        caption = f"{model.provider}/{model.id}"
+        suggestions = self._vision_model_suggestions()
+        guidance = f" For example: {', '.join(suggestions)}." if suggestions else ""
+        return (
+            f"{caption} does not accept image input; select a vision-capable model manually "
+            f"with --model, /model or set_model.{guidance} omh does not switch provider automatically."
+        )
+
     def _ensure_images_supported(
         self, message: str | AgentMessage | list[AgentMessage], images: list[ImageContent] | None,
     ) -> None:
@@ -193,14 +211,7 @@ class AgentSession:
         )
         if not has_images:
             return
-        model = self.agent.state.model
-        caption = f"{model.provider}/{model.id}"
-        suggestions = self._vision_model_suggestions()
-        guidance = f" For example: {', '.join(suggestions)}." if suggestions else ""
-        raise UnsupportedImageModelError(
-            f"{caption} does not accept image input; select a vision-capable model manually "
-            f"with --model, /model or set_model.{guidance} omh does not switch provider automatically."
-        )
+        raise UnsupportedImageModelError(self.unsupported_image_message() or "")
 
     def _vision_model_suggestions(self) -> list[str]:
         if self._resource_options is None:

@@ -26,5 +26,7 @@ GIF 取首帧、BMP 转 PNG、按比例缩放到不超过 2000×2000，并把单
 
 代价与边界：产品发行新增 Pillow 依赖并需要其各平台 wheel；图片处理在
 `asyncio.to_thread` 中执行以免阻塞事件循环；GIF 只保证首帧，不做逐帧动画
-保留；本 ADR 只覆盖静态图片与 read 工具图片，剪贴板截图、终端图像渲染、
+保留；本 ADR 只覆盖静态图片与 read 工具图片。交互待发图片、Ctrl+V 截图
+与剪贴板后端回退由
+[ADR 0009](0009-interactive-attachments-and-clipboard.md) 记录；终端图像渲染、
 视频/PDF 与图片生成仍在本 phase 范围外。

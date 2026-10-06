@@ -139,7 +139,9 @@ The `images` argument of `prompt`, `steer` and `follow_up` carries real image
 content. A text-only selected model rejects a new attachment with
 `UnsupportedImageModelError` before anything is accepted, and nothing switches
 provider. `supports_images` reports the current model's image capability, and
-`CodingAgentOptions.image_limits` passes stricter send limits. Saved history
+`unsupported_image_message()` returns the same manual-model guidance without
+raising so a draft can warn before submission. `CodingAgentOptions.image_limits`
+passes stricter send limits. Saved history
 images are not rejected; resolving them with a text-only model adds a
 non-blocking diagnostic that explains the SDK placeholder projection. File
 argument boundaries, conversion and the read-tool image processor are described
