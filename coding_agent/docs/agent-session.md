@@ -185,8 +185,9 @@ application prompts can configure the SDK policies instead. Observe
 `agent_settled` for dialogue completion; automatic `compaction_end` is an
 intermediate stage. Continue to use application `prompt`/`continue_`/`compact`
 wrappers for saving protection, and retain unsaved sessions during replacement.
-CLI print/interactive/RPC modes, dynamic extensions and execution recovery
-across processes remain outside this application contract.
+The installed print entry and its [JSON projection](print-json.md) have separate
+application contracts. Interactive/RPC modes, dynamic extensions and execution
+recovery across processes remain outside this session contract.
 
 Saving committed summaries follows the manager's
 [compaction saving contract](session-manager.md#saving-compaction-commits).

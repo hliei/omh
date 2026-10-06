@@ -1,0 +1,1215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "omh print JSON line",
+  "description": "One actual print wire record. Apply separately to every JSONL line; startup may emit no lines or a valid prefix.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/session"
+    },
+    {
+      "$ref": "#/$defs/agent_start"
+    },
+    {
+      "$ref": "#/$defs/turn_start"
+    },
+    {
+      "$ref": "#/$defs/agent_settled"
+    },
+    {
+      "$ref": "#/$defs/agent_end"
+    },
+    {
+      "$ref": "#/$defs/message_start"
+    },
+    {
+      "$ref": "#/$defs/message_end"
+    },
+    {
+      "$ref": "#/$defs/message_update"
+    },
+    {
+      "$ref": "#/$defs/turn_end"
+    },
+    {
+      "$ref": "#/$defs/tool_execution_start"
+    },
+    {
+      "$ref": "#/$defs/tool_execution_update"
+    },
+    {
+      "$ref": "#/$defs/tool_execution_end"
+    },
+    {
+      "$ref": "#/$defs/auto_retry_start"
+    },
+    {
+      "$ref": "#/$defs/auto_retry_end"
+    },
+    {
+      "$ref": "#/$defs/summarization_retry_scheduled"
+    },
+    {
+      "$ref": "#/$defs/summarization_retry_finished"
+    },
+    {
+      "$ref": "#/$defs/compaction_start"
+    },
+    {
+      "$ref": "#/$defs/compaction_end"
+    }
+  ],
+  "$defs": {
+    "text": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        },
+        "textSignature": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "thinking": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "thinking"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "thinkingSignature": {
+          "type": "string"
+        },
+        "redacted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "thinking"
+      ],
+      "additionalProperties": false
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "image"
+        },
+        "data": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "data",
+        "mimeType"
+      ],
+      "additionalProperties": false
+    },
+    "toolCall": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "toolCall"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "object"
+        },
+        "thoughtSignature": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name",
+        "arguments"
+      ],
+      "additionalProperties": false
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number",
+          "minimum": 0
+        },
+        "output": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheRead": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheWrite": {
+          "type": "number",
+          "minimum": 0
+        },
+        "total": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "total"
+      ],
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheRead": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheWrite": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "totalTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        },
+        "cacheWrite1h": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reasoning": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "totalTokens",
+        "cost"
+      ],
+      "additionalProperties": false
+    },
+    "tool": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "parameters"
+      ],
+      "additionalProperties": false
+    },
+    "toolReference": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "system": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "const": "system"
+        },
+        "content": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/text"
+              }
+            }
+          ]
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sections": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "toolsAdded": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tool"
+          }
+        },
+        "toolsRemoved": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolReference"
+          }
+        }
+      },
+      "required": [
+        "role",
+        "content",
+        "timestamp"
+      ],
+      "additionalProperties": false
+    },
+    "user": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "const": "user"
+        },
+        "content": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/text"
+                  },
+                  {
+                    "$ref": "#/$defs/image"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "role",
+        "content",
+        "timestamp"
+      ],
+      "additionalProperties": false
+    },
+    "assistant": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "const": "assistant"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/text"
+              },
+              {
+                "$ref": "#/$defs/thinking"
+              },
+              {
+                "$ref": "#/$defs/toolCall"
+              }
+            ]
+          }
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "api": {
+          "const": "openai-completions"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "stopReason": {
+          "enum": [
+            "pending",
+            "stop",
+            "length",
+            "toolUse",
+            "error",
+            "aborted"
+          ]
+        },
+        "responseModel": {
+          "type": "string"
+        },
+        "responseId": {
+          "type": "string"
+        },
+        "providerThinkingLevel": {
+          "type": "string"
+        },
+        "thinkingLevel": {
+          "type": "string"
+        },
+        "errorMessage": {
+          "type": "string"
+        },
+        "rawStopReason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "content",
+        "timestamp",
+        "api",
+        "provider",
+        "model",
+        "usage",
+        "stopReason"
+      ],
+      "additionalProperties": false
+    },
+    "toolResult": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "const": "toolResult"
+        },
+        "toolCallId": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/text"
+              },
+              {
+                "$ref": "#/$defs/image"
+              }
+            ]
+          }
+        },
+        "isError": {
+          "type": "boolean"
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "details": true,
+        "usage": {
+          "$ref": "#/$defs/usage"
+        }
+      },
+      "required": [
+        "role",
+        "toolCallId",
+        "toolName",
+        "content",
+        "isError",
+        "timestamp"
+      ],
+      "additionalProperties": false
+    },
+    "custom": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "const": "custom"
+        },
+        "customType": {
+          "type": "string"
+        },
+        "content": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/text"
+                  },
+                  {
+                    "$ref": "#/$defs/image"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "display": {
+          "type": "boolean"
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "details": true
+      },
+      "required": [
+        "role",
+        "customType",
+        "content",
+        "display",
+        "timestamp"
+      ],
+      "additionalProperties": false
+    },
+    "message": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/system"
+        },
+        {
+          "$ref": "#/$defs/user"
+        },
+        {
+          "$ref": "#/$defs/assistant"
+        },
+        {
+          "$ref": "#/$defs/toolResult"
+        },
+        {
+          "$ref": "#/$defs/custom"
+        }
+      ]
+    },
+    "text_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "text_start"
+        },
+        "contentIndex": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "contentIndex"
+      ],
+      "additionalProperties": false
+    },
+    "text_delta": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "text_delta"
+        },
+        "contentIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delta": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "contentIndex",
+        "delta"
+      ],
+      "additionalProperties": false
+    },
+    "text_end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "text_end"
+        },
+        "contentIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "contentIndex",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "thinking_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "thinking_start"
+        },
+        "contentIndex": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "contentIndex"
+      ],
+      "additionalProperties": false
+    },
+    "thinking_delta": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "thinking_delta"
+        },
+        "contentIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delta": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "contentIndex",
+        "delta"
+      ],
+      "additionalProperties": false
+    },
+    "thinking_end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "thinking_end"
+        },
+        "contentIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "contentIndex",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "toolcall_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "toolcall_start"
+        },
+        "contentIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "contentIndex",
+        "id",
+        "toolName"
+      ],
+      "additionalProperties": false
+    },
+    "toolcall_delta": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "toolcall_delta"
+        },
+        "contentIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delta": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "contentIndex",
+        "delta"
+      ],
+      "additionalProperties": false
+    },
+    "toolcall_end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "toolcall_end"
+        },
+        "contentIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toolCall": {
+          "$ref": "#/$defs/toolCall"
+        }
+      },
+      "required": [
+        "type",
+        "contentIndex",
+        "toolCall"
+      ],
+      "additionalProperties": false
+    },
+    "assistantMessageEvent": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/text_start"
+        },
+        {
+          "$ref": "#/$defs/text_delta"
+        },
+        {
+          "$ref": "#/$defs/text_end"
+        },
+        {
+          "$ref": "#/$defs/thinking_start"
+        },
+        {
+          "$ref": "#/$defs/thinking_delta"
+        },
+        {
+          "$ref": "#/$defs/thinking_end"
+        },
+        {
+          "$ref": "#/$defs/toolcall_start"
+        },
+        {
+          "$ref": "#/$defs/toolcall_delta"
+        },
+        {
+          "$ref": "#/$defs/toolcall_end"
+        }
+      ]
+    },
+    "executionResult": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/text"
+              },
+              {
+                "$ref": "#/$defs/image"
+              }
+            ]
+          }
+        },
+        "details": true,
+        "usage": {
+          "$ref": "#/$defs/usage"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "compactionResult": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "firstKeptEntryId": {
+          "type": "string"
+        },
+        "tokensBefore": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "estimatedTokensAfter": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "details": true
+      },
+      "required": [
+        "summary",
+        "firstKeptEntryId",
+        "tokensBefore"
+      ],
+      "additionalProperties": false
+    },
+    "session": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "session"
+        },
+        "version": {
+          "const": 3
+        },
+        "id": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "parentSession": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "version",
+        "id",
+        "timestamp",
+        "cwd"
+      ],
+      "additionalProperties": false
+    },
+    "agent_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "agent_start"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "turn_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "turn_start"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "agent_settled": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "agent_settled"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "agent_end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "agent_end"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/message"
+          }
+        },
+        "willRetry": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "messages",
+        "willRetry"
+      ],
+      "additionalProperties": false
+    },
+    "message_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "message_start"
+        },
+        "message": {
+          "$ref": "#/$defs/message"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "message_end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "message_end"
+        },
+        "message": {
+          "$ref": "#/$defs/message"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "message_update": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "message_update"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "assistantMessageEvent": {
+          "$ref": "#/$defs/assistantMessageEvent"
+        }
+      },
+      "required": [
+        "type",
+        "usage",
+        "assistantMessageEvent"
+      ],
+      "additionalProperties": false
+    },
+    "turn_end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "turn_end"
+        },
+        "message": {
+          "$ref": "#/$defs/message"
+        },
+        "toolResults": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolResult"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "message",
+        "toolResults"
+      ],
+      "additionalProperties": false
+    },
+    "tool_execution_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "tool_execution_start"
+        },
+        "toolCallId": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "toolCallId",
+        "toolName",
+        "args"
+      ],
+      "additionalProperties": false
+    },
+    "tool_execution_update": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "tool_execution_update"
+        },
+        "toolCallId": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object"
+        },
+        "partialResult": {
+          "$ref": "#/$defs/executionResult"
+        }
+      },
+      "required": [
+        "type",
+        "toolCallId",
+        "toolName",
+        "args",
+        "partialResult"
+      ],
+      "additionalProperties": false
+    },
+    "tool_execution_end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "tool_execution_end"
+        },
+        "toolCallId": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/executionResult"
+        },
+        "isError": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "toolCallId",
+        "toolName",
+        "result",
+        "isError"
+      ],
+      "additionalProperties": false
+    },
+    "auto_retry_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "auto_retry_start"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delayMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "errorMessage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "attempt",
+        "maxAttempts",
+        "delayMs",
+        "errorMessage"
+      ],
+      "additionalProperties": false
+    },
+    "auto_retry_end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "auto_retry_end"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "finalError": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "success",
+        "attempt"
+      ],
+      "additionalProperties": false
+    },
+    "summarization_retry_scheduled": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "summarization_retry_scheduled"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delayMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "errorMessage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "attempt",
+        "maxAttempts",
+        "delayMs",
+        "errorMessage"
+      ],
+      "additionalProperties": false
+    },
+    "summarization_retry_finished": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "summarization_retry_finished"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "compaction_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "compaction_start"
+        },
+        "reason": {
+          "enum": [
+            "manual",
+            "threshold",
+            "overflow"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "compaction_end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "compaction_end"
+        },
+        "reason": {
+          "enum": [
+            "manual",
+            "threshold",
+            "overflow"
+          ]
+        },
+        "aborted": {
+          "type": "boolean"
+        },
+        "willRetry": {
+          "type": "boolean"
+        },
+        "result": {
+          "$ref": "#/$defs/compactionResult"
+        },
+        "errorMessage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "reason",
+        "aborted",
+        "willRetry"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

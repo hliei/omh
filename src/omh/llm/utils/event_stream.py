@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from collections.abc import AsyncIterator, Callable
 
 from omh.llm.types import AssistantMessage, AssistantMessageEvent, DoneEvent, ErrorEvent
@@ -59,6 +60,12 @@ def _extract_result(event: AssistantMessageEvent) -> AssistantMessage:
 
 
 class AssistantMessageEventStream(EventStream[AssistantMessageEvent, AssistantMessage]):
+    def push(self, event: AssistantMessageEvent) -> None:
+        # The producer can advance before a queued event is consumed. Freeze
+        # each emission so initial content and cumulative usage retain their
+        # meaning even when a transport delivers several chunks at once.
+        super().push(copy.deepcopy(event))
+
     def __init__(self) -> None:
         super().__init__(
             lambda event: event.type in {"done", "error"},
