@@ -44,10 +44,13 @@ application admission checks; the SDK has no permanent save-failure state.
 
 Hosts call `session.ensure_can_accept_work()` (or the runtime wrapper) before
 starting a new user shell or other host write. It raises with the same save-error
-cause while unsaved, and rejects a closing or closed session. A custom shell
-record can use `await session.submit_custom_message(message)`; once accepted,
-it follows the SDK safe commit boundary and is not revoked by a later saving
-failure. Already accepted Agent work settles through the SDK cleanup rules.
+cause while unsaved, and rejects a closing or closed session. `await session.submit_custom_message(message)` admits a new custom submission;
+once accepted, it follows the SDK safe commit boundary. For a shell already
+admitted before a later save failure, commit its final output through
+`await session.agent.submit_custom_message(message)` without another admission
+check: the SDK retains that record even when the saving listener propagates the
+existing error. Hosts finish admitted shell records before application close.
+Already accepted Agent work settles through the SDK cleanup rules.
 The public SDK `agent` remains available for reading and cooperative abort.
 
 `await session.close()` owns Agent close and writer release. Cancelled waiters

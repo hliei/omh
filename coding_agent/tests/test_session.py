@@ -108,7 +108,7 @@ async def test_save_failure_retains_observable_state_and_memory(tmp_path):
     assert not stream.requests
 
 
-async def test_failed_save_is_not_reported_saved_by_a_later_append(tmp_path):
+async def test_already_admitted_host_record_survives_later_save_failure(tmp_path):
     import pytest
     from omh.agent import CustomAgentMessage
 
@@ -117,12 +117,16 @@ async def test_failed_save_is_not_reported_saved_by_a_later_append(tmp_path):
     session = await AgentSessionRuntime(CodingAgentOptions(
         cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=(), session_file=path,
     )).new_session()
+    session.ensure_can_accept_work()
     with pytest.raises(FileExistsError):
         await session.prompt("retained input")
-    try:
-        await session.agent.submit_custom_message(CustomAgentMessage(custom_type="note", content="also retained"))
-    except FileExistsError:
-        pass
+    # A shell admitted before the concurrent prompt failed must still commit
+    # its final output through the SDK boundary, without new-work admission.
+    with pytest.raises(FileExistsError) as failed:
+        await session.agent.submit_custom_message(CustomAgentMessage(custom_type="bashExecution", content="shell completed"))
+    assert failed.value is session.save_error
+    assert session.agent.state.messages[-1].content == "shell completed"
+    assert "shell completed" in await session.export()
     assert session.save_state == "unsaved"
     assert path.read_text() == "original file"
 
