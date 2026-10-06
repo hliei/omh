@@ -23,7 +23,7 @@ from omh.llm.types import AbortSignal, ImageContent
 from coding_agent.agent_session import AgentSession, CodingAgentOptions, _create_tools
 from coding_agent.history import DecodedHistory
 from coding_agent.resources import ApplicationResources, load_resources
-from coding_agent.session_manager import SessionManager, _path
+from coding_agent.session_manager import ExportFormat, SessionManager, _path
 from coding_agent.session_paths import session_file_path
 
 RuntimeListener = Callable[[AgentEvent, AbortSignal], Awaitable[None] | None]
@@ -282,8 +282,11 @@ class AgentSessionRuntime:
     async def save_session(self, path: str | Path | None = None) -> Path:
         return await self._current().save(path)
 
-    async def export_session(self, path: str | Path | None = None) -> str:
-        return await self._current().export(path)
+    async def set_session_name(self, name: str | None) -> None:
+        await self._current().set_name(name)
+
+    async def export_session(self, path: str | Path | None = None, *, format: ExportFormat = "jsonl") -> str:
+        return await self._current().export(path, format=format)
 
     async def close(self) -> None:
         """Finish any owned handoff, then close the actual current session."""

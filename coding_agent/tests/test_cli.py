@@ -12,6 +12,7 @@ from importlib.metadata import distribution, entry_points
 from pathlib import Path
 
 import pytest
+from test_session_directory import write_history
 
 EXIT_FAILURE = 1
 EXIT_USAGE = 2
@@ -133,6 +134,66 @@ def test_list_models_succeeds_without_key(home: Path) -> None:
     assert_no_terminal_noise(result.stdout)
 
 
+def test_session_listing_and_print_resume_are_read_only(home, tmp_path):
+    root = home / ".omh" / "agent" / "sessions"
+    project, other = tmp_path / "project", tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+    a, b = root / "group" / "a.jsonl", root / "b.jsonl"
+    write_history(a, project, "id-one", "Zulu", "find this needle")
+    write_history(b, other, "id-two", "Alpha", "another conversation")
+    # Invalid configuration must not prevent a history-only query.
+    config = root.parent / "settings.json"
+    config.write_text("invalid settings")
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+              for path in home.rglob("*") if path.is_file()}
+    result = run_cli("--list-sessions", "--cwd", str(project), home=home)
+    assert result.returncode == 0 and result.stderr == ""
+    assert "id-one" in result.stdout and "id-two" not in result.stdout
+    result = run_cli("--list-sessions", "--all-projects", "--sort", "name", home=home)
+    assert result.returncode == 0 and result.stderr == ""
+    assert result.stdout.index("id-two") < result.stdout.index("id-one")
+    result = run_cli("--list-sessions", "needle", "--all-projects", home=home)
+    assert "id-one" in result.stdout and "id-two" not in result.stdout
+    result = run_cli("-p", "-r", "--cwd", str(project), home=home)
+    assert result.returncode == 0 and "id-one" in result.stdout
+    assert "selector" not in result.stdout.lower() and result.stderr == ""
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns)
+            for path in home.rglob("*") if path.is_file()} == before
+
+
+def test_continue_and_ambiguous_session_diagnostics_without_writes(home, tmp_path):
+    root = tmp_path / "history"
+    project = tmp_path / "project"
+    project.mkdir()
+    result = run_cli("-c", "--cwd", str(project), "--session-dir", str(root), home=home)
+    assert "No saved session" in result.stderr and "new session" in result.stderr
+    assert not root.exists() and list(home.iterdir()) == []
+    a, b = root / "a.jsonl", root / "b.jsonl"
+    write_history(a, project, "abc-one", "one", "older")
+    write_history(b, project, "abc-two", "two", "newer")
+    os.utime(a, (10, 10))
+    os.utime(b, (20, 20))
+    result = run_cli("-c", "--cwd", str(project), "--session-dir", str(root), home=home)
+    assert str(b) in result.stderr and str(a) not in result.stderr
+    result = run_cli("--session", "abc", "--session-dir", str(root), home=home)
+    assert result.returncode == EXIT_USAGE
+    assert "Ambiguous" in result.stderr and str(a) in result.stderr and str(b) in result.stderr
+
+
+@pytest.mark.parametrize("args", [
+    ("--sort", "mtime"), ("--all-projects",), ("--reverse",),
+    ("--list-sessions", "--sort", "unknown"),
+    ("--list-sessions", "--cwd", "/does-not-exist/omh"),
+    ("--list-sessions", "--sort", "name", "--sort", "id"),
+])
+def test_session_listing_rejects_invalid_options_before_writes(home, args):
+    result = run_cli(*args, home=home)
+    assert result.returncode == EXIT_USAGE
+    assert result.stdout == "" and "omh:" in result.stderr
+    assert list(home.iterdir()) == []
+
+
 def test_list_models_reads_global_models_json_without_writing(home: Path, tmp_path: Path) -> None:
     agent_dir = tmp_path / "omh-agent"
     agent_dir.mkdir()
@@ -213,11 +274,11 @@ def test_list_models_search_filters_the_directory(home: Path) -> None:
     assert unmatched.stdout == ""
 
 
-def test_list_sessions_is_read_only_but_undelivered(home: Path) -> None:
+def test_empty_session_listing_is_read_only(home: Path) -> None:
     result = run_cli("--list-sessions", home=home)
-    assert result.returncode == EXIT_FAILURE
+    assert result.returncode == 0
     assert result.stdout == ""
-    assert "session listing" in result.stderr
+    assert result.stderr == ""
     assert list(home.iterdir()) == []
     assert_no_terminal_noise(result.stderr)
 
@@ -309,8 +370,8 @@ def test_equals_form_and_existing_resource_paths_are_accepted(home: Path, tmp_pa
     assert "json mode" in result.stderr
 
     listed = run_cli("--list-sessions=work", home=home)
-    assert listed.returncode == EXIT_FAILURE
-    assert "session listing" in listed.stderr
+    assert listed.returncode == 0
+    assert listed.stdout == listed.stderr == ""
 
 
 def test_missing_value_before_another_option_is_rejected(home: Path) -> None:

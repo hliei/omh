@@ -21,10 +21,12 @@ from coding_agent.history import (
     encode_entries,
     encode_history,
 )
+from coding_agent.history_html import encode_history_html
 from coding_agent.writer_lock import WriterLock
 
 SaveState = Literal["pending", "saved", "unsaved"]
 SaveMode = Literal["auto", "memory"]
+ExportFormat = Literal["jsonl", "html"]
 
 
 def _has_user_activity(entries: tuple[AgentHistoryEntry, ...]) -> bool:
@@ -202,12 +204,25 @@ class SessionManager:
                 if writer is not None:
                     writer.close()
 
-    async def export(self, history: AgentHistory, path: str | Path | None = None) -> str:
+    async def set_name(self, history: AgentHistory, name: str | None) -> None:
+        """Update or clear the display name, saving the complete bound header."""
+        self.display_name = name
+        if self.path is not None:
+            await self.save(history)
+
+    async def export(
+        self, history: AgentHistory, path: str | Path | None = None, *, format: ExportFormat = "jsonl",
+    ) -> str:
         """Export a full backup; only the bound destination performs repair."""
+        if format not in ("jsonl", "html"):
+            raise ValueError(f"Unknown export format: {format}")
         destination = _path(path, self.cwd) if path is not None else None
         if destination is not None and destination == self.path:
             await self.save(history)
-        text = encode_history(history, cwd=str(self.cwd), display_name=self.display_name)
+            # A bound history destination always stays reopenable JSONL.
+            format = "jsonl"
+        encode = encode_history if format == "jsonl" else encode_history_html
+        text = encode(history, cwd=str(self.cwd), display_name=self.display_name)
         if destination is not None and destination != self.path:
             writer = WriterLock(destination)
             try:

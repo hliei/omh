@@ -2,6 +2,9 @@
 
 [Application overview](../README.md) · [AgentSession](agent-session.md) · [AgentSessionRuntime](agent-session-runtime.md)
 
+Read-only current/all-project queries and deterministic selection are documented
+in [Session discovery](session-discovery.md).
+
 `SessionManager` owns one conversation's file metadata, saving state, saved
 record positions and file write lock. It reads JSONL, performs the delayed
 exclusive first write and incremental append, and supports complete save,
@@ -110,6 +113,47 @@ After successful validation and host assembly, opening a file whose final
 bytes lack a newline appends one newline. The original bytes, including a
 malformed tail, remain intact, so new records cannot stick to the fragment.
 Files are not truncated during open or ordinary append.
+
+## Persistent names and offline export
+
+Read the current name through `session.display_name` or `manager.display_name`.
+Use `await session.set_name(name)` / `await runtime.set_session_name(name)` to
+change it, and pass `None` to clear it. The manager's equivalent takes the
+authoritative snapshot: `await manager.set_name(history, name)`. For a bound
+file, these operations save the complete header/history under the writer lock
+and publish it with an atomic replacement. Reopen and discovery observe the
+saved name. Failure keeps the requested name in memory, preserves the old
+file, marks the session unsaved and exposes `save_error`; full save repairs it.
+An in-memory session updates its name without choosing a file, and explicit
+save/export includes that name. Direct `display_name` assignment changes only
+memory; callers must explicitly save it to persist it.
+
+`export(path, format="jsonl")` remains the default complete, reopenable backup,
+including inactive branches and the selected leaf. `format="html"` produces
+a self-contained HTML document containing only the selected root→leaf path,
+including original messages and structural records. It does not substitute the
+compacted model-context projection for the conversation. Text and metadata are
+escaped; thinking, tool calls/results, custom records and compaction/context
+edits remain readable. Styling and supported raster images are inline; no
+scripts, remote stylesheets or image requests are required. HTML is for reading,
+and `decode_history` cannot import it. `encode_history_html(history, cwd=...,
+display_name=...)` is the pure renderer.
+
+Both formats are available on Manager, Session and Runtime; Manager additionally
+accepts the SDK snapshot as its first argument. Separate files use the same
+temporary-file replacement and temporary writer lock as JSONL backups. Success
+or failure leaves the original binding and original saving status/error intact.
+The **currently bound path always performs a complete JSONL save**, even if
+`format="html"` was requested, so it remains reopenable and can repair a save
+error. The return value is JSONL in that case; choose a separate `.html` path
+for a readable HTML export.
+
+```python
+await runtime.set_session_name("Parser investigation")
+await runtime.export_session("backup.jsonl")
+await runtime.export_session("conversation.html", format="html")
+await runtime.set_session_name(None)
+```
 
 ## Save failures and repair
 

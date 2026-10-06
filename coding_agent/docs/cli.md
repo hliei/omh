@@ -7,9 +7,9 @@ The `omh-coding-agent` distribution installs the `omh` command. Installing the
 shared by print and interactive use; both modes consume the same host once task
 execution is delivered.
 
-This delivery provides the installed command, the read-only commands and the
-complete argument and mode contract. Print and interactive task execution, and
-session discovery, arrive in later deliveries; until then those paths report a
+This delivery provides the installed command, read-only model/session commands
+and the complete argument and mode contract. Print and interactive task
+execution arrive in later deliveries; until then those paths report a
 plain diagnostic and exit `1` instead of pretending to run. `cli.py` owns
 parsing, validation and dispatch; `model_directory.py` owns the registered
 model metadata.
@@ -26,7 +26,15 @@ model directory or change configuration. The global agent directory is
 | `--help`, `-h` | Print the command, option and mode reference and exit `0` |
 | `--version`, `-v` | Print the installed product version and exit `0` |
 | `--list-models [search]` | List registered models with protocol, input modality, thinking levels, context window, output limit, cost rates, source and catalog date |
-| `--list-sessions [search]` | Parameter and read-only intent are defined; discovery arrives with session discovery |
+| `--list-sessions [search]` | List current-project sessions by mtime, searching name, ID, cwd, ISO time and message text |
+
+`--list-sessions` accepts `--all-projects`, `--sort mtime|created|name|id|cwd` and
+`--reverse`. Time sorts are newest first; text sorts are ascending by default.
+`--cwd` chooses the current project and `--session-dir` replaces the root. Print
+`-r`/`--resume` emits the same read-only list and exits `0`; it never opens a
+selector. Empty lists print nothing. Invalid history files are diagnosed and
+skipped. See [Session discovery](session-discovery.md) for shared host APIs and
+path/ID ambiguity, recent selection and cross-project cwd rules.
 
 `--list-models` takes an optional search that matches provider, model ID,
 display name or `provider/model`, case-insensitively, including a fuzzy
@@ -104,7 +112,7 @@ path must exist.
 | `--model <provider/id\|id>` | Exact model ID, never fuzzy-replaced |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; the selected model restricts the valid set, and a fixed thinking model accepts none |
 | `--api-key <key>` | API key for this process only |
-| `--name <name>` | Session display name |
+| `--name <name>` | Session display name for task execution (later print/UI delivery); persistent name APIs are available now |
 | `--tools <names>` | Comma-separated distinct subset of `read`, `bash`, `edit`, `write` |
 | `--no-tools` | Disable model tools; a user shell stays separate |
 | `--system-prompt <text>` | Replace the base system prompt with literal text |
