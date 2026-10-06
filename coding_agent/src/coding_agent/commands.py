@@ -24,9 +24,6 @@ RESERVED_COMMANDS = frozenset({
     "save", "export", "compact", "reload", "copy", "quit",
 })
 
-#: Backwards-compatible alias used by resource loading for conflict diagnosis.
-BUILTIN_COMMANDS = RESERVED_COMMANDS
-
 
 @dataclass(frozen=True, slots=True)
 class CommandSpec:
@@ -37,6 +34,8 @@ class CommandSpec:
     usage: str
     #: Greatest number of whitespace-separated arguments accepted.
     max_arguments: int = 0
+    #: How the accepted arguments are described in one command's help.
+    argument_help: str = "none"
     #: Named dynamic argument source understood by :meth:`argument_items`.
     argument_source: str | None = None
 
@@ -55,7 +54,8 @@ class CommandSpec:
 AVAILABLE_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "help", "Show the available commands, arguments and key guidance",
-        "/help [command]", max_arguments=1, argument_source="commands",
+        "/help [command]", max_arguments=1, argument_help="optional command name",
+        argument_source="commands",
     ),
     CommandSpec("hotkeys", "Show the default keyboard shortcuts", "/hotkeys"),
     CommandSpec("copy", "Copy the last assistant answer", "/copy"),
@@ -113,7 +113,7 @@ def command_detail(name: str) -> list[str] | None:
     spec = COMMANDS_BY_NAME.get(name.lstrip("/"))
     if spec is None:
         return None
-    arguments = "none" if spec.max_arguments == 0 else "optional command name"
+    arguments = spec.argument_help
     return [f"/{spec.name}: {spec.summary}", f"  Usage: {spec.usage}", f"  Arguments: {arguments}"]
 
 
@@ -123,14 +123,16 @@ HOTKEYS: tuple[tuple[str, str], ...] = (
     ("Shift+Enter, Ctrl+J", "Insert a newline"),
     ("\\ then Enter", "Insert a newline when Shift+Enter is unavailable"),
     ("Up / Down", "Browse this session's editor history and restore the draft"),
+    ("Left / Right", "Move the cursor"),
+    ("Backspace", "Delete the character before the cursor"),
     ("Tab", "Complete a command, skill, template, argument or path"),
     ("Escape", "Close completion and keep the edited text"),
     ("Ctrl+G", "Edit the current input in an external editor"),
     ("Ctrl+X, /copy", "Copy the last assistant answer"),
-    ("Ctrl+C", "Clear the editor; a second Ctrl+C within 500ms exits"),
-    ("Ctrl+D", "Exit when the editor is empty"),
     ("Ctrl+T", "Show or hide recorded thinking"),
     ("Ctrl+O", "Expand or collapse recorded tool output"),
+    ("Ctrl+C", "Clear the editor; a second Ctrl+C within 500ms exits"),
+    ("Ctrl+D", "Exit when the editor is empty"),
     ("SIGINT, SIGTERM, SIGHUP", "Cancel the turn and exit 130, 143 or 129"),
 )
 
@@ -143,6 +145,6 @@ def hotkey_lines() -> list[str]:
 
 
 __all__ = [
-    "AVAILABLE_COMMANDS", "BUILTIN_COMMANDS", "COMMANDS_BY_NAME", "CommandSpec", "HOTKEYS",
+    "AVAILABLE_COMMANDS", "COMMANDS_BY_NAME", "CommandSpec", "HOTKEYS",
     "RESERVED_COMMANDS", "SlashIntent", "classify", "command_detail", "help_lines", "hotkey_lines",
 ]

@@ -86,12 +86,10 @@ and never submits the draft by itself.
 | Ctrl+X, `/copy` | Copy the last assistant answer |
 | Ctrl+T | Show or hide recorded thinking |
 | Ctrl+O | Expand or collapse recorded tool output |
-| Ctrl+C | Clear the editor; a second Ctrl+C within 500ms exits 0 |
-| Ctrl+D | Exit 0 when the editor is empty |
-| SIGINT, SIGTERM, SIGHUP | Abort a busy Agent through its public cancel and close path, then exit 130, 143 or 129 |
 
-Keys that a later delivery owns are not bound here, and the product does not
-read a custom keymap file.
+Ctrl+C, Ctrl+D and the process signals are listed under [Exit](#exit). Keys that
+a later delivery owns are not bound here, and the product does not read a custom
+keymap file.
 
 ## Editor history and drafts
 

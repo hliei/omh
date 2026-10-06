@@ -10,7 +10,6 @@ second Agent loop, and print execution does not import it.
 from __future__ import annotations
 
 import asyncio
-import codecs
 import fcntl
 import os
 import select
@@ -48,6 +47,7 @@ from omh.llm.types import (
     UserMessage,
 )
 
+from coding_agent.agent_session import AgentSession
 from coding_agent.agent_session_runtime import AgentSessionRuntime
 from coding_agent.cli import CliArgs
 from coding_agent.clipboard import ClipboardError, copy_text
@@ -63,9 +63,10 @@ from coding_agent.commands import (
 )
 from coding_agent.completion import Completion, CompletionSources, complete
 from coding_agent.config import settings_theme
-from coding_agent.editor import Editor, normalize_paste
+from coding_agent.editor import Editor
 from coding_agent.external_editor import editor_command, run_external_editor
 from coding_agent.host import CodingAgentHost, SessionSelection
+from coding_agent.keys import Key, KeyDecoder
 from coding_agent.resources import ApplicationResources
 from coding_agent.terminal import EXIT_OK
 from coding_agent.theme import resolve_theme
@@ -80,33 +81,9 @@ _COLORS = {
     "light": "\x1b[38;5;25m",
     "plain": "",
 }
-_PASTE_START = b"\x1b[200~"
-_PASTE_END = b"\x1b[201~"
 #: Candidates shown at once; the completion list itself is bounded separately.
 _COMPLETION_VISIBLE = 8
 _CONTINUATION = "  "
-_CONTROL_KEYS = {
-    0x0D: "enter",
-    0x0A: "newline",
-    0x09: "tab",
-    0x7F: "backspace",
-    0x08: "backspace",
-    0x03: "ctrl_c",
-    0x04: "ctrl_d",
-    0x07: "ctrl_g",
-    0x0F: "ctrl_o",
-    0x14: "ctrl_t",
-    0x18: "ctrl_x",
-}
-_ARROWS = {"A": "up", "B": "down", "C": "right", "D": "left"}
-
-
-@dataclass(frozen=True, slots=True)
-class _Key:
-    """One decoded terminal key: a named action or literal inserted text."""
-
-    name: str | None = None
-    value: str = ""
 
 
 @dataclass(slots=True)
@@ -195,10 +172,7 @@ class _Session:
         self._previous: tuple[str, ...] = ()
         self._scrollback: tuple[str, ...] = ()
         self._previous_chrome = ""
-        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        self._pending = b""
-        self._paste_mode = False
-        self._paste_buffer = b""
+        self._keys = KeyDecoder()
         self._escape_handle: asyncio.TimerHandle | None = None
         self._read_future: asyncio.Future[bytes] | None = None
         self._done: asyncio.Event | None = None
@@ -397,8 +371,11 @@ class _Session:
         if selection.session_path is not None and self.args.name is not None:
             await runtime.set_session_name(self.args.name)
 
+    def _current_session(self) -> AgentSession | None:
+        return self.runtime.current_session if self.runtime is not None else None
+
     def _load_history(self) -> None:
-        session = self.runtime.current_session if self.runtime is not None else None
+        session = self._current_session()
         if session is None:
             return
         calls: dict[str, tuple[str, dict[str, object]]] = {}
@@ -480,13 +457,13 @@ class _Session:
 
     def _handle(self, data: bytes) -> None:
         self._cancel_escape_timer()
-        for key in self._keys(data):
+        for key in self._keys.feed(data):
             self._handle_key(key)
-        if self._pending == b"\x1b":
+        if self._keys.pending == b"\x1b":
             self._arm_escape_timer()
         self._redraw()
 
-    def _handle_key(self, key: _Key) -> None:
+    def _handle_key(self, key: Key) -> None:
         name = key.name
         if name == "escape":
             self._completion = None
@@ -573,89 +550,16 @@ class _Session:
         self.editor.replace_token(completion.start, completion.end, completion.current.value)
         self._completion = None
 
-    def _keys(self, data: bytes) -> list[_Key]:
-        blob = self._pending + data
-        self._pending = b""
-        keys: list[_Key] = []
-        index = 0
-        while index < len(blob):
-            if self._paste_mode:
-                end = blob.find(_PASTE_END, index)
-                if end == -1:
-                    self._paste_buffer += blob[index:]
-                    break
-                self._paste_buffer += blob[index:end]
-                keys.append(_Key(value=normalize_paste(self._paste_buffer.decode("utf-8", "replace"))))
-                self._paste_mode = False
-                self._paste_buffer = b""
-                index = end + len(_PASTE_END)
-                continue
-            byte = blob[index]
-            if byte == 0x1B:
-                if blob.startswith(_PASTE_START, index):
-                    self._paste_mode = True
-                    index += len(_PASTE_START)
-                    continue
-                matched = self._escape_sequence(blob, index)
-                if matched is None:
-                    self._pending = blob[index:]
-                    break
-                name, consumed = matched
-                if name is not None:
-                    keys.append(_Key(name=name))
-                index += consumed
-                continue
-            if byte < 0x20 or byte == 0x7F:
-                name = _CONTROL_KEYS.get(byte)
-                if name is not None:
-                    keys.append(_Key(name=name))
-                index += 1
-                continue
-            character = self._decoder.decode(blob[index:index + 1])
-            index += 1
-            if character:
-                keys.append(_Key(value=character))
-        return keys
-
-    @staticmethod
-    def _escape_sequence(blob: bytes, index: int) -> tuple[str | None, int] | None:
-        """Decode one escape sequence, or ``None`` while it may be incomplete."""
-        if index + 1 >= len(blob):
-            return None
-        second = blob[index + 1]
-        if second == 0x0D:
-            return ("newline", 2)
-        if second != 0x5B:
-            return (None, 2)
-        final = index + 2
-        while final < len(blob) and not 0x40 <= blob[final] <= 0x7E:
-            final += 1
-        if final >= len(blob):
-            return None
-        consumed = final + 1 - index
-        body = blob[index + 2:final].decode("ascii", "replace")
-        final_byte = chr(blob[final])
-        if not body and final_byte in _ARROWS:
-            return (_ARROWS[final_byte], consumed)
-        if final_byte == "Z":
-            return (None, consumed)
-        parts = body.split(";")
-        if parts[0] == "13" and "2" in parts[1:]:
-            return ("newline", consumed)
-        if final_byte == "~" and len(parts) >= 3 and parts[2] == "13" and "2" in parts[1:]:
-            return ("newline", consumed)
-        return (None, consumed)
-
     def _arm_escape_timer(self) -> None:
         loop = asyncio.get_running_loop()
         self._escape_handle = loop.call_later(0.05, self._flush_escape)
 
     def _flush_escape(self) -> None:
         self._escape_handle = None
-        if self._pending != b"\x1b":
+        key = self._keys.flush_escape()
+        if key is None:
             return
-        self._pending = b""
-        self._handle_key(_Key(name="escape"))
+        self._handle_key(key)
         self._redraw()
 
     def _cancel_escape_timer(self) -> None:
@@ -684,7 +588,7 @@ class _Session:
             self._open_completion()
 
     def _completion_sources(self) -> CompletionSources:
-        session = self.runtime.current_session if self.runtime is not None else None
+        session = self._current_session()
         resources = session.resources if session is not None else ApplicationResources()
         cwd = (
             session.cwd if session is not None
@@ -744,13 +648,13 @@ class _Session:
         self._prompt_task = asyncio.create_task(self._prompt(text))
 
     def _skill_names(self) -> tuple[str, ...]:
-        session = self.runtime.current_session if self.runtime is not None else None
+        session = self._current_session()
         if session is None:
             return ()
         return tuple(skill.name for skill in session.resources.skills)
 
     def _template_names(self) -> tuple[str, ...]:
-        session = self.runtime.current_session if self.runtime is not None else None
+        session = self._current_session()
         if session is None:
             return ()
         return tuple(template.name for template in session.resources.templates)
@@ -839,20 +743,20 @@ class _Session:
             self._redraw()
 
     def _show_input_diagnostics(self, before: int) -> None:
-        session = self.runtime.current_session if self.runtime is not None else None
+        session = self._current_session()
         if session is None:
             return
         for diagnostic in session.input_diagnostics[before:]:
             self._add(f"notice {diagnostic.message}")
 
     def _remember_save(self) -> None:
-        session = self.runtime.current_session if self.runtime is not None else None
+        session = self._current_session()
         if session is not None and session.save_state == "unsaved":
             self._show_unsaved()
 
     def _show_unsaved(self) -> None:
         self._add(f"notice {_UNSAVED_GUIDANCE}")
-        session = self.runtime.current_session if self.runtime is not None else None
+        session = self._current_session()
         if session is not None and session.save_error is not None:
             self._add(f"notice {session.save_error}")
 
@@ -958,15 +862,7 @@ class _Session:
             item = _Assistant(live=not final)
             self._items.append(item)
             self._live = item
-        texts: list[str] = []
-        thoughts: list[str] = []
-        for block in message.content:
-            if isinstance(block, TextContent):
-                texts.append(block.text)
-            elif isinstance(block, ThinkingContent):
-                thoughts.append(block.thinking)
-        item.text = "".join(texts)
-        item.thinking = "".join(thoughts)
+        item.text, item.thinking = _assistant_parts(message)
         item.error = message.error_message
         if final:
             item.live = False
@@ -1039,7 +935,7 @@ class _Session:
                 except asyncio.CancelledError:
                     pass
             if self._prompt_task is not None and not self._prompt_task.done():
-                session = self.runtime.current_session if self.runtime is not None else None
+                session = self._current_session()
                 if session is not None and session.agent.state.is_busy:
                     self._phase = "cancel"
                     self._add("phase cancel")
@@ -1168,7 +1064,7 @@ class _Session:
         return f"{color}{text}\x1b[0m"
 
     def _status(self) -> str:
-        session = self.runtime.current_session if self.runtime is not None else None
+        session = self._current_session()
         if session is None:
             identity = save = mode = model = thinking = cwd = path = "none"
         else:
@@ -1260,7 +1156,7 @@ def _last_assistant_text(runtime: AgentSessionRuntime | None) -> str:
         return ""
     for message in reversed(session.agent.state.messages):
         if isinstance(message, AssistantMessage):
-            text = "".join(block.text for block in message.content if isinstance(block, TextContent)).strip()
+            text = _assistant_parts(message)[0].strip()
             if text:
                 return text
     return ""
@@ -1363,8 +1259,8 @@ def _brief_args(name: str, args: dict[str, object]) -> str:
     return " ".join(parts)
 
 
-def _assistant_from(message: AssistantMessage) -> _Assistant:
-    item = _Assistant(error=message.error_message, live=False)
+def _assistant_parts(message: AssistantMessage) -> tuple[str, str]:
+    """Return one assistant message's text and thinking content."""
     texts: list[str] = []
     thoughts: list[str] = []
     for block in message.content:
@@ -1372,9 +1268,12 @@ def _assistant_from(message: AssistantMessage) -> _Assistant:
             texts.append(block.text)
         elif isinstance(block, ThinkingContent):
             thoughts.append(block.thinking)
-    item.text = "".join(texts)
-    item.thinking = "".join(thoughts)
-    return item
+    return "".join(texts), "".join(thoughts)
+
+
+def _assistant_from(message: AssistantMessage) -> _Assistant:
+    text, thinking = _assistant_parts(message)
+    return _Assistant(text=text, thinking=thinking, error=message.error_message, live=False)
 
 
 def _user_text(message: UserMessage) -> str:
