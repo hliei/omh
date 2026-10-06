@@ -4,7 +4,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from omh.agent import Agent, AgentInitialState, AgentOptions, RetryPolicy
+from omh.agent import (
+    Agent,
+    AgentInitialState,
+    AgentOptions,
+    CustomAgentMessage,
+    RetryPolicy,
+)
 from omh.llm.types import ToolCall
 from support import OfflineStream, model
 
@@ -24,7 +30,10 @@ def fail_writes(monkeypatch):
             nonlocal attempts
             requested_mode = kwargs.pop("mode", requested_mode)
             with original(destination, requested_mode, *args, **kwargs) as file:
-                if destination == path and requested_mode == mode:
+                if requested_mode == mode and (
+                    destination == path or (mode == "w" and destination.parent == path.parent
+                                            and destination.name.startswith(f".{path.name}."))
+                ):
                     write = file.write
 
                     def partial_write(text):
@@ -47,7 +56,7 @@ def fail_writes(monkeypatch):
 
 
 @pytest.mark.parametrize("entry", ["session", "runtime"])
-@pytest.mark.parametrize("operation", ["prompt", "continue_", "compact", "steer", "follow_up"])
+@pytest.mark.parametrize("operation", ["prompt", "continue_", "compact", "steer", "follow_up", "submit_custom_message", "ensure_can_accept_work"])
 async def test_unsaved_rejects_application_work_without_changing_history(tmp_path, entry, operation):
     path = tmp_path / "occupied.jsonl"
     path.write_text("existing file")
@@ -72,6 +81,10 @@ async def test_unsaved_rejects_application_work_without_changing_history(tmp_pat
             await target.continue_()
         elif operation == "compact":
             await target.compact()
+        elif operation == "submit_custom_message":
+            await target.submit_custom_message(CustomAgentMessage(custom_type="bashExecution", content="! echo hello"))
+        elif operation == "ensure_can_accept_work":
+            target.ensure_can_accept_work()
         else:
             getattr(target, operation)("rejected queued input")
     assert rejected.value.__cause__ is error
@@ -126,11 +139,11 @@ async def test_partial_write_requires_full_save_before_resuming(tmp_path, fail_w
         assert decode_history(await runtime.export_session(path)).history == history
     assert session.save_state == "saved"
     assert session.save_error is None
-    reopened = await AgentSessionRuntime(options).open_session(path)
-    assert reopened.agent.history == history
-    assert reopened.agent.state.messages == messages
+    session = await runtime.open_session(path)
+    assert session.agent.history == history
+    assert session.agent.state.messages == messages
     await session.prompt("after repair")
-    reopened = await AgentSessionRuntime(options).open_session(path)
+    reopened = await runtime.open_session(path)
     assert reopened.agent.history == session.agent.history
     assert len({entry.id for entry in reopened.agent.history.entries}) == len(reopened.agent.history.entries)
 
@@ -158,6 +171,7 @@ async def test_persistent_failure_can_export_and_rebind_complete_history(tmp_pat
     assert session.save_error is None
     assert path.read_bytes() == damaged
     await session.prompt("continue on replacement")
+    await session.close()
     reopened = await AgentSessionRuntime(options).open_session(session.path)
     assert reopened.agent.history == session.agent.history
 
@@ -201,6 +215,7 @@ async def test_serialization_failure_preserves_committed_assistant_without_retry
     await independent.prompt("SDK remains usable")
     assert len(stream.requests) == 2
     await session.save()
+    await session.close()
     reopened = await AgentSessionRuntime(options).open_session(session.path)
     assert reopened.agent.history == history
 
@@ -252,6 +267,8 @@ async def test_save_and_terminal_failures_release_prompt_idle_and_close_waiters(
     assert messages[-1].is_error is False
     history = session.agent.history
     assert decode_history(await session.export()).history == history
+    with pytest.raises(OSError):
+        await session.close()
     await session.save()
     reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == history

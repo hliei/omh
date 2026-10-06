@@ -55,14 +55,14 @@ async def main() -> None:
         assert (cwd / "demo.py").read_text() == "answer = 42\n"
         original = session.agent.history
         await runtime.export_session("copy.jsonl")
-        await session.agent.close()
+        await session.close()
         restored = await runtime.open_session("conversation.jsonl")
         assert restored.agent.history == original
         assert requests == 3
         await restored.prompt("Explain the answer.")
         print(f"Reopened {len(original.entries)} records with identity {original.conversation_id}")
         print(f"File: {(cwd / 'demo.py').read_text().strip()}; requests: {requests}; save state: {restored.save_state}")
-        await restored.agent.close()
+        await restored.close()
 
 
 asyncio.run(main())

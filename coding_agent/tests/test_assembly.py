@@ -75,5 +75,6 @@ async def test_history_cwd_used_unless_host_explicitly_overrides(tmp_path):
     options = CodingAgentOptions(model=model(), stream_fn=OfflineStream(), tools=())
     stored = await AgentSessionRuntime(options).open_session(path)
     assert stored.cwd == tmp_path.resolve()
+    await stored.close()
     overridden = await AgentSessionRuntime(replace(options, cwd=tmp_path / "host")).open_session(path)
     assert overridden.cwd == (tmp_path / "host").resolve()

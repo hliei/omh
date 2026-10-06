@@ -102,7 +102,7 @@ async def test_direct_session_composition_delegates_metadata_and_saves_after_clo
     assert manager.path == session.path
     await session.prompt("first")
     assert session.save_state == manager.save_state == "saved"
-    await agent.close()
+    await session.close()
     replacement = await session.save("replacement.jsonl")
     assert replacement == manager.path == session.cwd / "replacement.jsonl"
     assert session.save_error is manager.save_error is None

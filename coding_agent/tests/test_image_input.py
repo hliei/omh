@@ -217,6 +217,7 @@ async def test_submitted_images_survive_save_reopen_after_the_source_disappears(
     assert session.save_state == "saved"
     source.unlink()
 
+    await session.close()
     reopened = await AgentSessionRuntime(options).open_session(path)
     entries = [entry for entry in reopened.agent.history.entries if entry.type == "message"]
     user = next(entry.message for entry in entries if entry.message.role == "user")

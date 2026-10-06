@@ -44,7 +44,7 @@ async def test_new_and_reopened_sessions_assemble_ordered_resources_and_actual_t
     session = await AgentSessionRuntime(options).new_session()
     if reopen:
         path = await session.save(project / "history.jsonl")
-        await session.agent.close()
+        await session.close()
         session = await AgentSessionRuntime(options).open_session(path)
     assert not stream.requests
     assert session.resources.skills[0].source == "global"
@@ -292,10 +292,9 @@ async def test_failed_resource_preparation_leaves_session_and_destination_untouc
     assert session.resources == resources
     assert session.agent.state.system_sections == sections
     assert [tool.name for tool in session.agent.state.tools] == ["read"]
-    prepared = AgentSessionRuntime(options)
     with pytest.raises(ValueError):
-        await prepared.open_session(destination)
-    assert prepared.current_session is None
+        await runtime.open_session(destination)
+    assert runtime.current_session is session
     assert destination.read_bytes() == raw
     assert not stream.requests
     await session.prompt("old session still usable")
@@ -357,7 +356,7 @@ async def test_reopen_syncs_current_resources_without_rewriting_history_or_raw_c
     )).new_session()
     await original.prompt("first")
     history = original.agent.history
-    await original.agent.close()
+    await original.close()
     (tmp_path / "AGENTS.md").write_text("new context")
     stream = OfflineStream()
     reopened = await AgentSessionRuntime(CodingAgentOptions(

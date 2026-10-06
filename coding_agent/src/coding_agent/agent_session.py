@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from omh.agent import (
     AgentTool,
     CompactionResult,
     CompactionSummaryMessage,
+    CustomAgentMessage,
     HistoryCommitEvent,
     PromptTemplateSource,
     ReadToolOptions,
@@ -108,6 +110,7 @@ class AgentSession:
         self.resources = resources
         self._resource_options = resource_options
         self._input_diagnostics: list[SkillDiagnostic] = []
+        self._close_task: asyncio.Task[None] | None = None
         self._retained_queues: AgentQueueSnapshot | None = None
         agent.subscribe(self._on_history_commit)
 
@@ -154,9 +157,12 @@ class AgentSession:
     def save_error(self) -> Exception | None:
         return self.session_manager.save_error
 
-    def _ensure_can_accept_work(self) -> None:
+    def ensure_can_accept_work(self) -> None:
+        """Check admission before the host starts new work, including a user shell."""
         if self.save_state == "unsaved":
             raise RuntimeError("Session has unsaved history; save the complete history before continuing") from self.save_error
+        if self._close_task is not None or self.agent.state.is_closed:
+            raise RuntimeError("Session is closing or closed")
 
     @property
     def supports_images(self) -> bool:
@@ -204,7 +210,7 @@ class AgentSession:
         self, message: str | AgentMessage | list[AgentMessage],
         images: list[ImageContent] | None = None,
     ) -> None:
-        self._ensure_can_accept_work()
+        self.ensure_can_accept_work()
         self._ensure_images_supported(message, images)
         if isinstance(message, str):
             message = self._expand_input(message)
@@ -230,12 +236,12 @@ class AgentSession:
         )
 
     def steer(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
-        self._ensure_can_accept_work()
+        self.ensure_can_accept_work()
         self._ensure_images_supported(message, images)
         self.agent.steer(self._queued_input(message, images))
 
     def follow_up(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
-        self._ensure_can_accept_work()
+        self.ensure_can_accept_work()
         self._ensure_images_supported(message, images)
         self.agent.follow_up(self._queued_input(message, images))
 
@@ -251,12 +257,17 @@ class AgentSession:
         return resources
 
     async def continue_(self) -> None:
-        self._ensure_can_accept_work()
+        self.ensure_can_accept_work()
         await self.agent.continue_()
 
     async def compact(self, custom_instructions: str | None = None) -> CompactionResult:
-        self._ensure_can_accept_work()
+        self.ensure_can_accept_work()
         return await self.agent.compact(custom_instructions)
+
+    async def submit_custom_message(self, message: CustomAgentMessage) -> None:
+        """Admit a host record using the SDK's safe history commit boundary."""
+        self.ensure_can_accept_work()
+        await self.agent.submit_custom_message(message)
 
     async def _on_history_commit(self, event: AgentEvent, signal: AbortSignal | None) -> None:
         if isinstance(event, HistoryCommitEvent) and self.path is not None:
@@ -269,3 +280,23 @@ class AgentSession:
     async def export(self, path: str | Path | None = None) -> str:
         """Return a full JSONL snapshot; an optional separate file receives it."""
         return await self.session_manager.export(self.agent.history, path)
+
+    async def close(self) -> None:
+        """Finish Agent-owned cleanup before releasing the application writer."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+            self._close_task.add_done_callback(self._closed)
+        await asyncio.shield(self._close_task)
+
+    def _closed(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            task.exception()
+        if not self.agent.state.is_closed:
+            self._close_task = None
+
+    async def _close(self) -> None:
+        try:
+            await self.agent.close()
+        finally:
+            if self.agent.state.is_closed:
+                await self.session_manager.close()

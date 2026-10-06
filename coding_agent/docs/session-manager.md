@@ -19,11 +19,12 @@ The manager's minimal persistence interface is `await commit(history,
 entries)`, `await save(history, path=None)` and `await export(history,
 path=None)`. These receive public SDK snapshots; `entries` is the tuple of
 newly committed SDK records. `SessionManager.load(path)` reads and validates
-an existing `Path`, returning `(manager, decoded_history)` without changing
+an existing `Path` after acquiring its writer, returning `(manager, decoded_history)` without changing
 file bytes. Restore the SDK Agent from `decoded_history.history`, finish
 host resource/model preparation and resolve the manager's cwd, then call
 `await manager.prepare_append()` to separate any unterminated tail before
-appending. The runtime coordinates this sequence automatically. The old
+appending. The runtime coordinates this sequence automatically. If manual host assembly fails,
+call `await manager.close()` to release the acquired writer. The old
 constructor's `saved=True` case is covered by this load path; hosts do not
 mark arbitrary new managers saved.
 
@@ -42,7 +43,7 @@ Under the default root, conversations are grouped by effective cwd in a
 `<timestamp>_<conversation-id>.jsonl`. The digest keeps different working
 directories in different groups even when their readable names collide. The SDK
 Agent owns the conversation ID and creation time; the product only turns them
-into a path. Nothing is created at selection time: the first real user activity
+into a path. No session directory or history file is created at selection time: the first real user activity
 creates the directory and file together, and an empty conversation stays
 `pending` with no file. Real user activity is a user or assistant message or a
 custom submission (the public API the product uses for `!`/`!!` shell records)
@@ -146,10 +147,49 @@ except (OSError, ValueError):
 ```
 
 Run the offline [save repair example](../examples/save_repair.py) with
-`python coding_agent/examples/save_repair.py`. Ordinary file I/O does not
-guarantee fsync, atomic replacement or power-loss durability and is not atomic
-with the SDK's memory commit. Partial on-disk files require repair; the retained
-in-memory history is the source for that repair.
+`python coding_agent/examples/save_repair.py`. Full save, repair, name changes followed by save, and file export finish a
+same-directory temporary file before `os.replace` publishes the snapshot. A
+serialization, temporary write or replacement failure leaves the original
+file intact, and temporary files are removed. Ordinary append can still write
+only a prefix before failing. Memory commits and disk writes are not atomic
+with each other; neither path promises fsync or power-loss durability. The
+retained in-memory history is the source for full repair.
+
+## Single writer and closing
+
+A file-backed manager takes a nonblocking cross-process advisory lock before
+binding a path, including a pending destination, and `load` takes it before
+reading. Another writer raises the exported `SessionWriterError`. Paths resolve
+relative to cwd and through symbolic links. Lock files live under
+`/tmp/omh-coding-agent-writers-<uid>/`, keyed by the resolved path, so a pending
+conversation leaves its session directory absent. Lock files are kept in place
+for stable inode identity; the OS releases the held lock when its descriptor
+closes or its process exits. These locks coordinate application writers on the
+supported macOS/Linux hosts; external programs do not participate automatically.
+
+Full replacements retain the path lock throughout. Saving to a different path
+takes the new lock while retaining the old one, writes the complete snapshot,
+then changes the binding and releases the old lock. Failure releases only the
+new lock and keeps the old path, complete history and error. Assigning `path`
+also takes the new lock before releasing the old one, but only selects a pending
+destination; use `save(path)` to write complete history and clear a save error.
+
+Use `await session.close()` or `await runtime.close()` for normal application
+shutdown. They await Agent-owned cleanup before releasing the writer, even if a
+terminal notification fails. Cancelling a close waiter ends only its wait; the
+owned cleanup retains the lock until completion. Direct `agent.close()` closes
+only the SDK runtime; follow it with `session.close()` to release application
+resources. Direct manager users call `manager.close()` after all commits finish.
+
+Closed and retained sessions keep metadata and snapshots for recovery. Their
+`save` takes a temporary writer and releases it after writing; it cannot overwrite
+a target still owned by another current session. A separate export also takes a
+temporary lock on its destination, never binds it, and preserves the original
+save state/error on success or failure. Read-only discovery and
+`decode_history(path.read_bytes())` do not acquire a writer and can coexist with
+an open session. Use those for inspection; `SessionManager.load` is a writable
+open. Full replacements give readers an old or new complete snapshot, while
+readers during ordinary append can still see incomplete bytes.
 
 ## Saving compaction commits
 

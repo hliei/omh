@@ -15,6 +15,7 @@ from omh.agent import (
     AgentMessage,
     AgentOptions,
     CompactionResult,
+    CustomAgentMessage,
     validate_history,
 )
 from omh.llm.types import AbortSignal, ImageContent
@@ -42,6 +43,7 @@ class AgentSessionRuntime:
         self.current_session: AgentSession | None = None
         self._preparing = False
         self._switch_task: asyncio.Task[AgentSession] | None = None
+        self._close_task: asyncio.Task[None] | None = None
         self._subscriptions: list[_Subscription] = []
         self._retained_sessions: list[AgentSession] = []
 
@@ -89,6 +91,7 @@ class AgentSessionRuntime:
         old = self.current_session
         if (previous_history is not None and old is not None and session.path == old.path
                 and (old.agent.state.is_busy or old.agent.history != previous_history)):
+            await session.session_manager.close()
             raise RuntimeError("Wait for stable idle history before reopening the current session file")
         try:
             if old is not None:
@@ -97,12 +100,18 @@ class AgentSessionRuntime:
             # A failed terminal notification still retires the old instance.
             if old is None or old.agent.state.is_closed:
                 if old is not None:
+                    if session.path is not None and session.path == old.path:
+                        session.session_manager._take_writer_from(old.session_manager)
+                    else:
+                        await old.session_manager.close()
                     old._retained_queues = old.agent.get_queued_messages()
                     self._retained_sessions.append(old)
                 self.current_session = session
                 for subscription in self._subscriptions:
                     subscription.unsubscribe()
                     subscription.unsubscribe = session.agent.subscribe(subscription.listener)
+            else:
+                await session.session_manager.close()
         return session
 
     async def _replace_session(
@@ -110,7 +119,10 @@ class AgentSessionRuntime:
     ) -> AgentSession:
         if self._preparing or self._switching():
             raise RuntimeError("A session switch is already in progress")
+        if self._close_task is not None and not self._close_task.done():
+            raise RuntimeError("Runtime is closing")
         self._preparing = True
+        session = None
         try:
             previous_history = (self.current_session.agent.history
                                 if path is not None and self.current_session is not None else None)
@@ -121,6 +133,10 @@ class AgentSessionRuntime:
             await asyncio.sleep(0)
             self._switch_task = asyncio.create_task(self._publish(session, previous_history=previous_history))
             self._switch_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+        except BaseException:
+            if session is not None:
+                await session.session_manager.close()
+            raise
         finally:
             self._preparing = False
         return await asyncio.shield(self._switch_task)
@@ -198,21 +214,28 @@ class AgentSessionRuntime:
 
     async def _prepare_open_session(self, path: str | Path) -> AgentSession:
         destination = _path(path, Path(self.options.cwd or Path.cwd()).expanduser().resolve())
-        manager, decoded = SessionManager.load(destination)
-        options, cwd, fallback_message, resources, sections = self._assemble(decoded)
-        agent = Agent.from_history(decoded.history, options)
-        await agent.set_system_sections(sections)
-        if options.session_id is None:
-            agent.session_id = agent.history.conversation_id
-        manager.cwd = cwd
-        # Repair only after semantic validation and assembly have succeeded.
-        await manager.prepare_append()
-        session = AgentSession(
-            agent, session_manager=manager,
-            model_fallback_message=fallback_message, resources=resources,
-            resource_options=self.options,
-        )
-        return session
+        old = self.current_session
+        owner = old.session_manager if old is not None and destination == old.path else None
+        if owner is not None and old is not None and old.agent.state.is_busy:
+            raise RuntimeError("Wait for stable idle history before reopening the current session file")
+        manager, decoded = SessionManager._load(destination, owner)
+        try:
+            options, cwd, fallback_message, resources, sections = self._assemble(decoded)
+            agent = Agent.from_history(decoded.history, options)
+            await agent.set_system_sections(sections)
+            if options.session_id is None:
+                agent.session_id = agent.history.conversation_id
+            manager.cwd = cwd
+            # Same-file preparation retains the old writer through retirement.
+            await manager.prepare_append()
+            return AgentSession(
+                agent, session_manager=manager,
+                model_fallback_message=fallback_message, resources=resources,
+                resource_options=self.options,
+            )
+        except BaseException:
+            await manager.close()
+            raise
 
     async def switch_session(self, path: str | Path) -> AgentSession:
         """Prepare a saved conversation before retiring the current Agent."""
@@ -222,6 +245,18 @@ class AgentSessionRuntime:
         if self.current_session is None:
             raise RuntimeError("Create or open a session first")
         return self.current_session
+
+    def ensure_can_accept_work(self) -> None:
+        """Check current-session admission before starting host work."""
+        if self._preparing or self._switching():
+            raise RuntimeError("A session switch is already in progress")
+        if self._close_task is not None and not self._close_task.done():
+            raise RuntimeError("Runtime is closing")
+        self._current().ensure_can_accept_work()
+
+    async def submit_custom_message(self, message: CustomAgentMessage) -> None:
+        self.ensure_can_accept_work()
+        await self._current().submit_custom_message(message)
 
     async def prompt(
         self, message: str | AgentMessage | list[AgentMessage],
@@ -249,3 +284,20 @@ class AgentSessionRuntime:
 
     async def export_session(self, path: str | Path | None = None) -> str:
         return await self._current().export(path)
+
+    async def close(self) -> None:
+        """Finish any owned handoff, then close the actual current session."""
+        if self._preparing:
+            raise RuntimeError("A session switch is being prepared")
+        if self._close_task is None or self._close_task.done():
+            self._close_task = asyncio.create_task(self._close())
+            self._close_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+        await asyncio.shield(self._close_task)
+
+    async def _close(self) -> None:
+        try:
+            if self._switching():
+                await self.wait_for_switch()
+        finally:
+            if self.current_session is not None:
+                await self.current_session.close()

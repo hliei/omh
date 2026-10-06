@@ -58,7 +58,8 @@ and `switch_session(path)` perform the same saved-conversation handoff, preservi
 its identity and complete history. All three can replace a current open Agent.
 File reading, JSON decoding, SDK validation, model selection, tools, resources
 and the idle candidate Agent are prepared before closing the current Agent.
-Preparation failure or cancellation leaves the old session usable and current;
+The candidate acquires its writer before reading. Preparation failure or
+cancellation releases its writer and leaves the old session usable and current;
 the candidate executes no model or tool work. Resource diagnostics retain their
 normal helper semantics; a fatal preparation error rejects the replacement.
 Reopening the current session's own file while its Agent is busy raises
@@ -66,7 +67,12 @@ Reopening the current session's own file while its Agent is busy raises
 A same-file handoff also rejects if old history changed during preparation,
 even when the old activity has since become idle. Wait for stable idle history
 or close first, then retry to reopen that same file with complete history.
-Switching to a different file can retire an active Agent normally.
+Switching to a different file can retire an active Agent normally. A stable
+same-file reopen reads under the old writer, then transfers its lock only after
+the old Agent closes. No unlock/relock gap is needed, and a retained old session
+cannot write over the new current session. Other paths release the old writer
+after final commits; the candidate keeps its lock throughout preparation and
+publication.
 
 After preparation, the runtime owns the close and publication task. Closing
 cooperatively signals the old activity and waits for tools and terminal
@@ -104,6 +110,13 @@ captures the queues after final cleanup; later reads return isolated copies of
 that snapshot, even if the host clears the old Agent's queues. Queued input is
 not part of JSONL history and is never automatically moved to the new Agent.
 The runtime does not automatically discard retained sessions or unsaved memory.
+
+`await runtime.close()` waits for any owned handoff and closes the actual
+current session, releasing its writer even when the handoff reports a terminal
+notification error. Cancelling its waiter ends only the wait. Close during
+cancellable preparation raises `RuntimeError`; finish or cancel that preparation
+before retrying. No unsaved history is discarded and retained recovery stays
+available. The host owns user decisions about repair or discarding at exit.
 
 Migration: callers that previously closed the current Agent before new/open can
 let the runtime coordinate the handoff. Register UI/event observers on the

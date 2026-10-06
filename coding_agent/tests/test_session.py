@@ -24,6 +24,7 @@ async def test_default_tools_prompt_save_reopen_and_continue(tmp_path):
     assert session.save_state == "saved"
     assert len(stream.requests) == 4
     saved = session.agent.history
+    await session.close()
     reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == saved
     assert reopened.agent.state.messages == session.agent.state.messages
@@ -32,6 +33,7 @@ async def test_default_tools_prompt_save_reopen_and_continue(tmp_path):
     assert len(stream.requests) == 4
     reopened.agent.steer(UserMessage(content="continue", timestamp=2000))
     await reopened.continue_()
+    await reopened.close()
     again = await AgentSessionRuntime(options).open_session(path)
     assert again.agent.history == reopened.agent.history
     assert len(stream.requests) == 5
@@ -151,6 +153,7 @@ async def test_cancelled_waiter_does_not_drop_tool_settlement_or_saved_history(t
     finally:
         session.agent.abort()
         await session.agent.wait_for_idle()
+    await session.close()
     saved = await AgentSessionRuntime(options).open_session(session.path)
     assert saved.agent.history == session.agent.history
     assert saved.save_state == "saved"
