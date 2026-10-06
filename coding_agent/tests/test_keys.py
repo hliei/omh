@@ -25,6 +25,14 @@ def test_shift_enter_encodings_insert_a_newline() -> None:
     assert names(KeyDecoder(), b"\x1b[27;2;13~") == ["newline"]
 
 
+def test_alt_enter_and_other_modifier_keys_are_left_unbound() -> None:
+    # Alt+Enter belongs to follow-up, and a non-newline CSI 13;2 final stays unbound.
+    assert names(KeyDecoder(), b"\x1b\r") == []
+    assert names(KeyDecoder(), b"\x1b[13;2A") == []
+    assert names(KeyDecoder(), b"\x1b[13;3u") == []
+    assert KeyDecoder().flush_escape() is None
+
+
 def test_arrows_and_control_keys() -> None:
     decoder = KeyDecoder()
     assert names(decoder, b"\x1b[A\x1b[B\x1b[C\x1b[D") == ["up", "down", "right", "left"]

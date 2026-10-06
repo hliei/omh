@@ -46,6 +46,22 @@ def clipboard_command(
     return None
 
 
+def _backend_hint(platform: str, environ: Mapping[str, str]) -> str:
+    """Name the clipboard command this platform would use, for a diagnostic."""
+    if platform == "darwin":
+        return "pbcopy"
+    if platform.startswith("win"):
+        return "clip"
+    names: list[str] = []
+    if environ.get("TERMUX_VERSION"):
+        names.append("termux-clipboard-set")
+    if environ.get("WAYLAND_DISPLAY"):
+        names.append("wl-copy")
+    if environ.get("DISPLAY"):
+        names.extend(["xclip", "xsel"])
+    return ", ".join(names) if names else "wl-copy, xclip or xsel"
+
+
 def copy_text(
     text: str, *, platform: str | None = None, environ: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] | None = None,
@@ -54,8 +70,10 @@ def copy_text(
     """Copy ``text`` to the desktop clipboard or raise :class:`ClipboardError`."""
     command = clipboard_command(platform=platform, environ=environ, which=which)
     if command is None:
+        selected = sys.platform if platform is None else platform
+        environment = os.environ if environ is None else environ
         raise ClipboardError(
-            "No clipboard backend is available; install pbcopy, wl-copy, xclip or xsel "
+            f"No clipboard backend is available; install {_backend_hint(selected, environment)} "
             "to enable /copy. omh does not install one automatically."
         )
     run = subprocess.run if runner is None else runner

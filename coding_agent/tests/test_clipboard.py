@@ -34,6 +34,15 @@ def test_copy_text_reports_the_missing_backend() -> None:
     assert "does not install" in message
 
 
+def test_missing_backend_names_the_platform_command() -> None:
+    with pytest.raises(ClipboardError) as error:
+        copy_text("answer", platform="darwin", environ={}, which=lambda name: None)
+    assert "install pbcopy" in str(error.value)
+    with pytest.raises(ClipboardError) as error:
+        copy_text("answer", platform="linux", environ={"DISPLAY": ":0"}, which=lambda name: None)
+    assert "xclip" in str(error.value)
+
+
 def test_copy_text_pipes_the_answer_to_the_backend() -> None:
     calls: list[tuple[list[str], str]] = []
 

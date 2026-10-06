@@ -110,9 +110,9 @@ def _escape_sequence(blob: bytes, index: int) -> tuple[str | None, int] | None:
     if index + 1 >= len(blob):
         return None
     second = blob[index + 1]
-    if second == 0x0D:
-        return ("newline", 2)
     if second != 0x5B:
+        # A bare Escape or an unbound modifier sequence; a later delivery owns
+        # Alt+Enter (follow-up), so ESC CR is not treated as a newline here.
         return (None, 2)
     final = index + 2
     while final < len(blob) and not 0x40 <= blob[final] <= 0x7E:
@@ -127,10 +127,11 @@ def _escape_sequence(blob: bytes, index: int) -> tuple[str | None, int] | None:
     if final_byte == "Z":
         return (None, consumed)
     parts = body.split(";")
-    if parts[0] == "13" and "2" in parts[1:]:
-        return ("newline", consumed)
-    if final_byte == "~" and len(parts) >= 3 and parts[2] == "13" and "2" in parts[1:]:
-        return ("newline", consumed)
+    if final_byte in {"u", "~"}:
+        if parts[0] == "13" and "2" in parts[1:]:
+            return ("newline", consumed)
+        if final_byte == "~" and len(parts) >= 3 and parts[2] == "13" and "2" in parts[1:]:
+            return ("newline", consumed)
     return (None, consumed)
 
 

@@ -379,12 +379,13 @@ class _Session:
         if session is None:
             return
         calls: dict[str, tuple[str, dict[str, object]]] = {}
+        sent: list[str] = []
         for message in session.agent.state.messages:
             if isinstance(message, UserMessage):
                 text = _user_text(message)
                 if text:
                     self._items.append(_You(text))
-                    self.editor.remember(text)
+                    sent.append(text)
             elif isinstance(message, AssistantMessage):
                 self._items.append(_assistant_from(message))
                 for block in message.content:
@@ -400,6 +401,7 @@ class _Session:
                 )
                 self._tools[item.tool_id] = item
                 self._items.append(item)
+        self.editor.seed_history(sent)
 
     # ------------------------------------------------------------------ #
     # Terminal input
@@ -480,6 +482,7 @@ class _Session:
         if name == "newline":
             self.editor.insert("\n")
             self._completion = None
+            self._ctrl_c_at = 0.0
             return
         if name == "up":
             if self._completion is not None:
@@ -504,6 +507,7 @@ class _Session:
         if name == "backspace":
             self.editor.backspace()
             self._refresh_completion()
+            self._ctrl_c_at = 0.0
             return
         if name == "ctrl_c":
             self._ctrl_c()
@@ -527,6 +531,7 @@ class _Session:
         if key.value:
             self.editor.insert(key.value)
             self._refresh_completion()
+            self._ctrl_c_at = 0.0
 
     def _accept_or_submit(self) -> None:
         completion = self._completion
@@ -609,6 +614,7 @@ class _Session:
     def _submit(self) -> None:
         text = self.editor.text
         self._completion = None
+        self._ctrl_c_at = 0.0
         if self._chooser == "cwd":
             stripped = text.strip()
             if not stripped:
@@ -1102,18 +1108,22 @@ class _Session:
 def _fit_chrome(
     status: list[str], candidates: list[str], entry: list[str], cursor_row: int, rows: int,
 ) -> tuple[list[str], list[str], list[str], int]:
-    """Trim chrome so the entry, status and completion fit above one body row."""
+    """Trim chrome so the entry keeps a status line and fits above one body row."""
     budget = max(rows - 1, 1)
-    entry = list(entry)
-    if len(entry) > budget:
-        start = max(0, min(cursor_row - budget // 2, len(entry) - budget))
-        entry = entry[start:start + budget]
+    status_lines = list(status)
+    entry_lines = list(entry)
+    # The phase line must stay visible even while a long draft fills the editor.
+    status_keep = min(len(status_lines), max(1, budget // 4)) if status_lines else 0
+    entry_budget = max(1, budget - status_keep) if entry_lines else 0
+    if len(entry_lines) > entry_budget:
+        start = max(0, min(cursor_row - entry_budget // 2, len(entry_lines) - entry_budget))
+        entry_lines = entry_lines[start:start + entry_budget]
         cursor_row -= start
-    remaining = budget - len(entry)
-    status = list(status)[:remaining] if remaining > 0 else []
-    remaining -= len(status)
-    candidates = list(candidates)[:remaining] if remaining > 0 else []
-    return status, candidates, entry, cursor_row
+    remaining = budget - len(entry_lines)
+    status_lines = status_lines[:max(0, remaining)]
+    remaining -= len(status_lines)
+    candidates = list(candidates)[:max(0, remaining)]
+    return status_lines, candidates, entry_lines, cursor_row
 
 
 def _layout_entry(text: str, *, width: int, prefix: str, cursor: int) -> tuple[list[str], int, int]:

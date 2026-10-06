@@ -1100,3 +1100,28 @@ def test_help_argument_completion_through_the_screen(home: Path, tmp_path: Path)
         assert session.finish() == 0
     finally:
         session.close()
+
+
+def test_ctrl_c_latch_resets_after_new_typing(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"discarded")
+        session.send(b"\x03")
+        session.send(b"kept")
+        session.send(b"\x03")
+        session.send(b"sent\r")
+        session.wait_for("reply:sent")
+        assert "reply:kept" not in session.visible()
+        assert session.process.poll() is None
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
