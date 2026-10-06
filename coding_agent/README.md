@@ -96,6 +96,7 @@ await runtime.save_session()
 exported_jsonl = await runtime.export_session("conversation-copy.jsonl")
 restored = await runtime.open_session("conversation.jsonl")
 await restored.prompt("Explain the change.")
+await runtime.close()  # Settle the Agent and release the session writer.
 ```
 
 The installed command resolves the same selection through `CodingAgentHost`,
@@ -160,3 +161,21 @@ run against their independent installation too. Separate quality jobs run Ruff,
 mypy and offline tests on macOS and Ubuntu 24.04, including file and process
 cancellation. These checks validate the Python embedding APIs; they make no
 live-provider or performance claim.
+
+### Writer ownership and save recovery
+
+Writable session paths have one application writer across processes on macOS
+and Linux. A conflicting open or binding raises `SessionWriterError`; read-only
+history inspection and separate backups can coexist. Use `await runtime.close()`
+or `await session.close()` at shutdown so the Agent settles before the writer is
+released. Direct SDK `agent.close()` needs a subsequent application close.
+
+A save failure keeps complete memory history and pauses new application work,
+including queued input, compaction and new host shell admission. Retry with
+`save()` for the original target, or `save(new_path)` to save and bind a new target.
+Full saves and repairs replace a finished same-directory temporary snapshot;
+failed replacement preserves the old file. `export(backup_path)` writes an
+independent complete backup and preserves the original unsaved state. Ordinary
+append can partially fail; saving does not promise fsync or power-loss durability.
+See [writer ownership and closing](docs/session-manager.md#single-writer-and-closing)
+and the runnable [save repair example](examples/save_repair.py).

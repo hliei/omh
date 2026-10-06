@@ -12,7 +12,7 @@ sessions; the session connects awaited SDK history commits to its manager.
 `new_session`, `open_session` and `switch_session` return `AgentSession`, which exposes
 `agent`, `session_manager`, `path`, `cwd`, `display_name`, `save_state`, `save_error`,
 `save_mode` and `model_fallback_message`. Session methods `prompt`, `continue_`, `compact`,
-`save` and `export` have matching runtime wrappers. `steer`, `follow_up` and
+`save`, `export`, `submit_custom_message` and `close` have matching runtime wrappers. `steer`, `follow_up` and
 `reload_resources` also work through either the session or runtime. `save_mode` is
 `"auto"` for a file-backed conversation and `"memory"` when no destination exists;
 see [storage modes](session-manager.md#storage-modes-and-layout). `continue_` follows the
@@ -32,15 +32,32 @@ continue to obtain the current complete snapshot from the Agent.
 
 ## Save-failure admission
 
-While `unsaved`, session and runtime `prompt`, `continue_`, `compact`, `steer`
-and `follow_up` raise `RuntimeError` before accepting input, expanding resources,
+While `unsaved`, session and runtime `prompt`, `continue_`, `compact`, `steer`,
+`follow_up` and `submit_custom_message` raise `RuntimeError` before accepting input, expanding resources,
 changing history or adding queued messages. The original `save_error` is the
 exception's cause. Previously queued input remains available through the Agent.
-History/state reads, `session.agent.abort()`, `session.agent.close()`, session switching, full
+History/state reads, `session.agent.abort()`, `session.close()`, session switching, full
 `save` and `export` remain usable, including saving or exporting after close.
 Resource reload retains its configuration-only behavior; it does not clear a
 save failure. Direct `session.agent` calls follow the SDK contract and bypass
 application admission checks; the SDK has no permanent save-failure state.
+
+Hosts call `session.ensure_can_accept_work()` (or the runtime wrapper) before
+starting a new user shell or other host write. It raises with the same save-error
+cause while unsaved, and rejects a closing or closed session. `await session.submit_custom_message(message)` admits a new custom submission;
+once accepted, it follows the SDK safe commit boundary. For a shell already
+admitted before a later save failure, commit its final output through
+`await session.agent.submit_custom_message(message)` without another admission
+check: the SDK retains that record even when the saving listener propagates the
+existing error. Hosts finish admitted shell records before application close.
+Already accepted Agent work settles through the SDK cleanup rules.
+The public SDK `agent` remains available for reading and cooperative abort.
+
+`await session.close()` owns Agent close and writer release. Cancelled waiters
+can call it again to await the same result. History, queues, errors, full saving
+and exporting remain available after close. See the
+[single-writer contract](session-manager.md#single-writer-and-closing) for manual
+manager ownership and direct SDK-close migration.
 
 For save-state meanings, full repair and export behavior, see
 [SessionManager](session-manager.md#save-failures-and-repair).

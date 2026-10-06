@@ -182,6 +182,7 @@ async def test_switch_retains_unsaved_history_and_complete_separate_queues(tmp_p
     await runtime.prompt("new input")
     assert len(stream.requests) == 1
     assert all("follow one" not in str(message) for message in stream.requests[0][1].messages)
+    runtime.options.session_file = "third.jsonl"
     third = await runtime.new_session()
     assert runtime.retained_sessions == (old, new)
     assert runtime.current_session is third

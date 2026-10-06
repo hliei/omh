@@ -71,7 +71,7 @@ async def main() -> None:
         last = [message for message in requests[-1].messages if message.role == "user"][-1]
         assert last.content[0].text == "Updated review of final."
         history = session.agent.history
-        await session.agent.close()
+        await session.close()
         reopened = await runtime.open_session("conversation.jsonl")
         assert reopened.agent.history == history
         await reopened.prompt("Reopened with current resources.")
@@ -79,7 +79,7 @@ async def main() -> None:
         assert "Keep changes focused" in prompt and "Updated catalog" in prompt
         print(f"Resource flow: {len(requests)} requests; {len(reopened.resources.skills)} skill; "
               f"{len(reopened.resources.templates)} template; {len(reopened.resources.diagnostics)} diagnostics")
-        await reopened.agent.close()
+        await reopened.close()
 
 
 asyncio.run(main())

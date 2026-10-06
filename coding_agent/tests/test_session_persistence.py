@@ -152,7 +152,7 @@ async def test_custom_only_activity_creates_a_saveable_file(tmp_path: Path) -> N
     assert session.save_state == "pending"
     assert session.path is not None and not session.path.exists()
 
-    await session.agent.submit_custom_message(
+    await session.submit_custom_message(
         CustomAgentMessage(custom_type="bashExecution", content="! ls", display=True),
     )
     assert stream.requests == []
@@ -162,6 +162,7 @@ async def test_custom_only_activity_creates_a_saveable_file(tmp_path: Path) -> N
     assert decoded.history == session.agent.history
     assert decoded.history.entries[-1].type == "custom_message"
 
+    await session.close()
     reopened = await AgentSessionRuntime(options).open_session(session.path)
     assert reopened.agent.history == session.agent.history
     assert not stream.requests
@@ -225,6 +226,7 @@ async def test_default_root_open_repairs_an_unterminated_tail(tmp_path: Path) ->
     raw = session.path.read_bytes().rstrip(b"\n") + b"\n{broken"
     session.path.write_bytes(raw)
 
+    await session.close()
     reopened = await AgentSessionRuntime(options).open_session(session.path)
     assert session.path.read_bytes() == raw + b"\n"
     assert reopened.agent.history == session.agent.history

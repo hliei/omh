@@ -64,13 +64,13 @@ async def main() -> None:
         # Explicit save authorizes overwriting this chosen destination in full.
         await runtime.save_session()
         assert session.save_state == "saved"
-        reopened = await AgentSessionRuntime(options).open_session(path)
+        reopened = await runtime.open_session(path)
         assert reopened.agent.history == retained
         await runtime.continue_()
         assert requests == 1
-        assert decode_history(path.read_bytes()).history == session.agent.history
-        await reopened.agent.close()
-        await session.agent.close()
+        assert decode_history(path.read_bytes()).history == reopened.agent.history
+        await reopened.close()
+        await session.close()
         print(f"Repaired {len(retained.entries)} records; resumed with {requests} request.")
 
 

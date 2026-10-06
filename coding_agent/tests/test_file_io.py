@@ -20,11 +20,13 @@ async def test_unterminated_tail_survives_open_append_reopen(tmp_path, tail):
     await original.prompt("first")
     raw = path.read_bytes().rstrip(b"\n") + tail
     path.write_bytes(raw)
+    await original.close()
     opened = await AgentSessionRuntime(options).open_session(path)
     assert path.read_bytes() == raw + b"\n"
     assert opened.agent.history == original.agent.history
     await opened.prompt("second")
     assert path.read_bytes().startswith(raw + b"\n")
+    await opened.close()
     reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == opened.agent.history
     assert len(stream.requests) == 2
@@ -40,6 +42,7 @@ async def test_bad_json_lines_are_skipped_but_missing_relations_fail(tmp_path):
     path.write_text('{bad\n\n' + text.replace('\n', '\nnot json\n'))
     reopened = await AgentSessionRuntime(options).open_session(path)
     assert reopened.agent.history == original.agent.history
+    await reopened.close()
     lines = text.splitlines()
     # Replace an actual parent record with broken JSON; do not hide the missing relationship.
     lines[2] = "{missing record"

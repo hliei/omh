@@ -142,6 +142,7 @@ async def test_all_records_roundtrip_and_continue_from_latest_projection(tmp_pat
     assert "summarized original" not in projection
     assert "inactive branch" not in projection
     assert "hidden_key" not in projection
+    await session.close()
     reopened = await AgentSessionRuntime(runtime.options).open_session(path)
     assert reopened.agent.history == session.agent.history
     assert history.entries[-1] in reopened.agent.history.entries

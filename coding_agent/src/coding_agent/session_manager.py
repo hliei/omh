@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +21,7 @@ from coding_agent.history import (
     encode_entries,
     encode_history,
 )
+from coding_agent.writer_lock import WriterLock
 
 SaveState = Literal["pending", "saved", "unsaved"]
 SaveMode = Literal["auto", "memory"]
@@ -51,7 +54,9 @@ class SessionManager:
         display_name: str | None = None,
     ) -> None:
         self.cwd = cwd
-        self.path = path
+        self._path = _path(path, cwd) if path is not None else None
+        self._writer = WriterLock(self._path) if self._path is not None else None
+        self._closed = False
         self.display_name = display_name
         self._save_state: SaveState = "pending"
         self._save_error: Exception | None = None
@@ -59,16 +64,65 @@ class SessionManager:
         self._file_lock = asyncio.Lock()
         self._needs_separator = False
 
+    @property
+    def path(self) -> Path | None:
+        return self._path
+
+    @path.setter
+    def path(self, value: Path | None) -> None:
+        destination = _path(value, self.cwd) if value is not None else None
+        if destination == self._path:
+            return
+        writer = WriterLock(destination) if destination is not None and not self._closed else None
+        if self._writer is not None:
+            self._writer.close()
+        self._path, self._writer = destination, writer
+        self._saved_ids.clear()
+        if self._save_error is None:
+            self._save_state = "pending"
+
+    async def close(self) -> None:
+        """Release the writer after its host has finished all history commits."""
+        async with self._file_lock:
+            self._closed = True
+            if self._writer is not None:
+                self._writer.close()
+                self._writer = None
+
     @classmethod
     def load(cls, path: Path) -> tuple[SessionManager, DecodedHistory]:
-        """Read and validate a saved file without modifying its bytes."""
-        raw = path.read_bytes()
-        decoded = decode_history(raw)
-        manager = cls(cwd=Path(decoded.cwd), path=path, display_name=decoded.display_name)
+        """Acquire a writer, then read and validate without modifying bytes."""
+        return cls._load(path)
+
+    @classmethod
+    def _load(
+        cls, path: Path, owner: SessionManager | None = None,
+    ) -> tuple[SessionManager, DecodedHistory]:
+        # Same-path runtime preparation reads under the current writer. The
+        # candidate receives ownership only after the old Agent has closed.
+        path = _path(path, Path.cwd())
+        manager = cls(cwd=path.parent, path=path if owner is None or owner._writer is None else None)
+        manager._path = path
+        try:
+            raw = path.read_bytes()
+            decoded = decode_history(raw)
+        except BaseException:
+            if manager._writer is not None:
+                manager._writer.close()
+            raise
+        manager.cwd = Path(decoded.cwd)
+        manager.display_name = decoded.display_name
         manager._save_state = "saved"
         manager._saved_ids = {entry.id for entry in decoded.history.entries}
         manager._needs_separator = bool(raw and not raw.endswith(b"\n"))
         return manager, decoded
+
+    def _take_writer_from(self, owner: SessionManager) -> None:
+        assert self.path == owner.path
+        if owner._writer is not None:
+            assert self._writer is None
+            self._writer, owner._writer = owner._writer, None
+        owner._closed = True
 
     async def prepare_append(self) -> None:
         """Separate an unterminated tail after the host has assembled its Agent."""
@@ -93,6 +147,8 @@ class SessionManager:
 
     async def commit(self, history: AgentHistory, entries: tuple[AgentHistoryEntry, ...]) -> None:
         """Persist newly committed records, using a full snapshot for the first write."""
+        if self._closed:
+            raise RuntimeError("Session manager is closed")
         if self.path is None:
             return
         async with self._file_lock:
@@ -117,30 +173,59 @@ class SessionManager:
             self._save_state, self._save_error = "saved", None
 
     async def save(self, history: AgentHistory, path: str | Path | None = None) -> Path:
-        """Explicitly write the complete history, even before a first prompt."""
+        """Replace complete history, then bind it; a closed host takes a temporary lock."""
         async with self._file_lock:
             destination = _path(path, self.cwd) if path is not None else self.path
             if destination is None:
                 raise ValueError("Saving an in-memory session requires an explicit path")
+            writer = None
             try:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                with destination.open("w", encoding="utf-8", newline="\n") as file:
-                    file.write(encode_history(history, cwd=str(self.cwd), display_name=self.display_name))
+                if destination != self.path or self._writer is None:
+                    writer = WriterLock(destination)
+                text = encode_history(history, cwd=str(self.cwd), display_name=self.display_name)
+                _replace_file(destination, text)
             except Exception as error:
                 self._save_state, self._save_error = "unsaved", error
                 raise
-            self.path = destination
-            self._saved_ids = {entry.id for entry in history.entries}
-            self._save_state, self._save_error = "saved", None
-            return destination
+            else:
+                if writer is not None and not self._closed:
+                    old_writer, self._writer = self._writer, writer
+                    writer = None
+                    if old_writer is not None:
+                        old_writer.close()
+                self._path = destination
+                self._saved_ids = {entry.id for entry in history.entries}
+                self._needs_separator = False
+                self._save_state, self._save_error = "saved", None
+                return destination
+            finally:
+                if writer is not None:
+                    writer.close()
 
     async def export(self, history: AgentHistory, path: str | Path | None = None) -> str:
-        """Return a full JSONL snapshot; an optional separate file receives it."""
-        if path is not None and _path(path, self.cwd) == self.path:
+        """Export a full backup; only the bound destination performs repair."""
+        destination = _path(path, self.cwd) if path is not None else None
+        if destination is not None and destination == self.path:
             await self.save(history)
         text = encode_history(history, cwd=str(self.cwd), display_name=self.display_name)
-        if path is not None and _path(path, self.cwd) != self.path:
-            destination = _path(path, self.cwd)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(text, encoding="utf-8", newline="\n")
+        if destination is not None and destination != self.path:
+            writer = WriterLock(destination)
+            try:
+                _replace_file(destination, text)
+            finally:
+                writer.close()
         return text
+
+
+def _replace_file(destination: Path, text: str) -> None:
+    """Finish a same-directory temporary snapshot before replacing old bytes."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(dir=destination.parent, prefix=f".{destination.name}.")
+    temporary = Path(name)
+    os.close(descriptor)
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as file:
+            file.write(text)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)

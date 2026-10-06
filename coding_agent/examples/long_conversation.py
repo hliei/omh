@@ -168,7 +168,7 @@ async def main() -> None:
         assert not stream.dialogue
         assert restored.save_state == "saved"
         assert decode_history(await runtime.export_session()).history == restored.agent.history
-        await restored.agent.close()
+        await restored.close()
         print(f"Long conversation verified: {len(history.entries)} records, {stream.summary_attempts} summary attempts, identity preserved.")
 
 
