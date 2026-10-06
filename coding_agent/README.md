@@ -11,7 +11,9 @@ listing, shared session selection, persistent names, JSONL/HTML export, and
 print text and JSON execution. Print text composes piped stdin, file attachments
 and the first prompt into one task, runs every later prompt serially in the same saved
 session, and writes only the final task's assistant text to stdout. JSON streams the
-session header and incremental events; consumers inspect final messages as well as the process exit. See the [JSON wire contract](docs/print-json.md)
+session header and incremental events; consumers inspect final messages as well as the process exit. Print writes stdout
+serially with slow-consumer backpressure, retries temporary buffer errors and exits `1`
+on a permanent write error without a synthetic result. See the [JSON wire contract](docs/print-json.md)
 and [consumer example](examples/consume_print_json.py). Interactive execution
 arrives in a later delivery and currently reports a diagnostic and exits
 non-zero. See the [command line entry](docs/cli.md).
