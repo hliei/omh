@@ -18,7 +18,6 @@ ends print with exit 1 without waiting for cooperative cleanup or saving.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import tempfile
 from collections.abc import Sequence
