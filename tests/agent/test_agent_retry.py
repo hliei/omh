@@ -8,6 +8,7 @@ import pytest
 from omh.agent import (
     Agent,
     AgentContext,
+    AgentEndEvent,
     AgentEvent,
     AgentInitialState,
     AgentOptions,
@@ -84,6 +85,7 @@ async def test_transient_failures_are_retained_but_omitted_from_retry_and_restor
     await agent.prompt("go")
 
     assert stream.calls == 3
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [True, True, False]
     assert all(message.role != "assistant" for message in stream.requests[1].context.messages)
     assert all(message.role != "assistant" for message in stream.requests[2].context.messages)
     omissions = [entry for entry in agent.history.entries if isinstance(entry, ContextEditHistoryEntry)]
@@ -117,9 +119,12 @@ async def test_transient_failures_are_retained_but_omitted_from_retry_and_restor
 async def test_selected_transient_response_errors_retry(text: str) -> None:
     stream = ScriptedStreamFn([lambda: error(text), lambda: text_message("ok")])
     agent = make_agent(stream)
+    events = []
+    agent.subscribe(lambda event, signal: events.append(event))
     await agent.prompt("go")
     assert stream.calls == 2
     assert agent.state.error_message is None
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [True, False]
 
 
 @pytest.mark.parametrize("text", [
@@ -138,8 +143,11 @@ async def test_selected_transient_response_errors_retry(text: str) -> None:
 async def test_permanent_capacity_and_unselected_response_errors_do_not_retry(text: str) -> None:
     stream = ScriptedStreamFn([lambda: error(text), lambda: text_message("never")])
     agent = make_agent(stream, compaction=CompactionSettings(enabled=False))
+    events = []
+    agent.subscribe(lambda event, signal: events.append(event))
     await agent.prompt("go")
     assert stream.calls == 1
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [False]
     assert not any(isinstance(entry, ContextEditHistoryEntry) for entry in agent.history.entries)
 
 
@@ -150,6 +158,7 @@ async def test_default_budget_is_three_retries_and_retains_final_failure(clock: 
     agent.subscribe(lambda event, signal: events.append(event))
     await agent.prompt("go")
     assert stream.calls == 4
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [True, True, True, False]
     assert clock.delays == [2, 4, 8]
     assert len([entry for entry in agent.history.entries if isinstance(entry, ContextEditHistoryEntry)]) == 3
     assert agent.state.messages[-1].stop_reason == "error"
@@ -169,8 +178,135 @@ async def test_extended_budget_caps_backoff_without_jitter(clock: Clock) -> None
 async def test_retry_can_be_disabled(policy: RetryPolicy) -> None:
     stream = ScriptedStreamFn([error])
     agent = make_agent(stream, retry=policy)
+    events = []
+    agent.subscribe(lambda event, signal: events.append(event))
     await agent.prompt("go")
     assert stream.calls == 1
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [False]
+
+
+@pytest.mark.parametrize("outcome", ["retry", "abort", "listener_failure"])
+async def test_agent_end_intent_precedes_awaited_notifications_and_can_be_blocked(outcome: str) -> None:
+    stream = ScriptedStreamFn([error, lambda: text_message("done")])
+    agent = make_agent(stream)
+    events = []
+    later_events = []
+    reached, release = asyncio.Event(), asyncio.Event()
+    failure = OSError("503 terminal notification failed")
+
+    async def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        events.append(event)
+        if isinstance(event, AgentEndEvent) and event.will_retry:
+            reached.set()
+            await release.wait()
+            if outcome == "listener_failure":
+                raise failure
+
+    agent.subscribe(listener)
+    agent.subscribe(lambda event, signal: later_events.append(event))
+    caller = asyncio.create_task(agent.prompt("go"))
+    idle = None
+    try:
+        await asyncio.wait_for(reached.wait(), 1)
+        ending = events[-1]
+        assert isinstance(ending, AgentEndEvent) and ending.will_retry
+        assert stream.calls == 1
+        assert not any(isinstance(event, RetryStartEvent) for event in events)
+        assert not any(isinstance(entry, ContextEditHistoryEntry) for entry in agent.history.entries)
+        assert agent.state.is_busy and agent.state.is_streaming
+        idle = asyncio.create_task(agent.wait_for_idle())
+        await asyncio.sleep(0)
+        assert not caller.done() and not idle.done()
+        if outcome != "retry":
+            agent.steer(UserMessage(content="keep steering", timestamp=1))
+            agent.follow_up(UserMessage(content="keep follow-up", timestamp=2))
+            queued = agent.get_queued_messages()
+        if outcome == "abort":
+            agent.abort()
+        release.set()
+        if outcome == "listener_failure":
+            with pytest.raises(OSError) as raised:
+                await asyncio.wait_for(caller, 1)
+            assert raised.value is failure
+        else:
+            await asyncio.wait_for(caller, 1)
+        await asyncio.wait_for(idle, 1)
+    finally:
+        release.set()
+        agent.abort()
+        await asyncio.gather(caller, *([idle] if idle is not None else []), return_exceptions=True)
+
+    assert ending.will_retry  # The boundary snapshot survives subsequent blocking.
+    assert stream.calls == (2 if outcome == "retry" else 1)
+    assert sum(event.type == "agent_settled" for event in events) == 1
+    assert events[-1].aborted == (outcome == "abort")
+    assert not agent.state.is_busy
+    if outcome != "retry":
+        assert agent.get_queued_messages() == queued
+        assert not any(isinstance(event, RetryStartEvent) for event in events)
+        assert not any(isinstance(entry, ContextEditHistoryEntry) for entry in agent.history.entries)
+        assert agent.state.messages[-1].error_message == "503 overloaded"
+    assert sum(event.type == "agent_end" for event in later_events) == (0 if outcome == "listener_failure" else stream.calls)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_agent_end_intent_is_isolated_and_does_not_freeze_live_retry_policy(enabled: bool) -> None:
+    stream = ScriptedStreamFn([error, lambda: text_message("done")])
+    agent = make_agent(stream, retry=RetryPolicy(enabled=enabled))
+    observed = []
+
+    async def first(event: AgentEvent, signal: AbortSignal) -> None:
+        if isinstance(event, AgentEndEvent):
+            if event.messages[-1].stop_reason == "error":
+                assert event.will_retry is enabled
+                event.will_retry = not enabled
+                await agent.set_retry_policy(RetryPolicy(enabled=not enabled))
+
+    agent.subscribe(first)
+    agent.subscribe(lambda event, signal: observed.append(event))
+    await agent.prompt("go")
+    assert [event.will_retry for event in observed if isinstance(event, AgentEndEvent)] == ([True] if enabled else [False, False])
+    assert sum(isinstance(event, RetryStartEvent) for event in observed) == (0 if enabled else 1)
+    assert stream.calls == (1 if enabled else 2)
+
+
+async def test_abort_before_agent_end_has_no_retry_intent() -> None:
+    stream = ScriptedStreamFn([error])
+    agent = make_agent(stream)
+    events = []
+
+    def listener(event: AgentEvent, signal: AbortSignal) -> None:
+        events.append(event)
+        if event.type == "turn_end":
+            agent.abort()
+
+    agent.subscribe(listener)
+    await agent.prompt("go")
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [False]
+    assert not any(isinstance(event, RetryStartEvent) for event in events)
+    assert stream.calls == 1
+
+
+async def test_cancelled_retry_execution_has_no_intent_at_terminal_cleanup() -> None:
+    def cancelled_response() -> AssistantMessage:
+        raise asyncio.CancelledError("provider task cancelled")
+
+    stream = ScriptedStreamFn([error, cancelled_response])
+    agent = make_agent(stream)
+    events = []
+    agent.subscribe(lambda event, signal: events.append(event))
+    with pytest.raises(asyncio.CancelledError):
+        await agent.prompt("go")
+    await agent.wait_for_idle()
+
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [True, False]
+    assert stream.calls == 2
+    assert sum(event.type == "retry_start" for event in events) == 1
+    assert events[-1].type == "agent_settled"
+    assert not agent.state.is_busy
+    assistants = [entry.message for entry in agent.history.entries if isinstance(entry, MessageHistoryEntry)
+                  and isinstance(entry.message, AssistantMessage)]
+    assert len(assistants) == 1 and assistants[0].error_message == "503 overloaded"
 
 
 async def test_start_listener_abort_does_not_wait_or_admit_another_request(clock: Clock) -> None:
@@ -385,6 +521,7 @@ async def test_hook_errors_with_transient_text_do_not_enter_provider_retry(phase
     assert not any(isinstance(event, RetryStartEvent) for event in events)
     assert stream.calls <= 1
     assert "host hook" in agent.state.error_message
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [False]
 
 
 @pytest.mark.parametrize("phase", ["history_commit", "message_end", "retry_start", "omission", "retry_end"])
@@ -418,6 +555,8 @@ async def test_save_and_listener_errors_with_transient_text_stop_retry_without_f
     assistants = [entry.message for entry in agent.history.entries if isinstance(entry, MessageHistoryEntry) and isinstance(entry.message, AssistantMessage)]
     assert len(assistants) == stream.calls
     assert all(message.error_message != str(failure) for message in assistants)
+    expected_intents = [True, False] if phase == "retry_end" else [phase in {"retry_start", "omission"}]
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == expected_intents
 
 
 @pytest.mark.parametrize("phase", ["execute", "before_tool_call", "after_tool_call"])
@@ -453,9 +592,12 @@ async def test_effective_finish_end_after_retry_stops_all_queue_scheduling() -> 
         return "end"
 
     agent.finish_turn = finish
+    events = []
+    agent.subscribe(lambda event, signal: events.append(event))
     await agent.prompt("go")
     assert stream.calls == 2
     assert agent.has_queued_messages()
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [True, False]
 
 
 @pytest.mark.parametrize("stop", ["stop", "length", "aborted", "toolUse"])
@@ -467,6 +609,7 @@ async def test_transient_error_text_alone_cannot_retry_a_non_error_response(stop
     await agent.prompt("go")
     assert stream.calls == 1
     assert not any(isinstance(event, RetryStartEvent) for event in events)
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [False]
 
 
 @pytest.mark.parametrize("values", [

@@ -6,12 +6,22 @@ from pathlib import Path
 import pytest
 from omh.agent import (
     Agent,
+    AgentEndEvent,
     AgentInitialState,
     AgentOptions,
+    ContextEditHistoryEntry,
     CustomAgentMessage,
+    MessageHistoryEntry,
     RetryPolicy,
 )
-from omh.llm.types import ToolCall
+from omh.llm.types import (
+    AssistantMessage,
+    ErrorEvent,
+    TextContent,
+    ToolCall,
+    empty_usage,
+)
+from omh.llm.utils.event_stream import create_assistant_message_event_stream
 from support import OfflineStream, model
 
 from coding_agent import AgentSessionRuntime, CodingAgentOptions, decode_history
@@ -218,6 +228,70 @@ async def test_serialization_failure_preserves_committed_assistant_without_retry
     await session.close()
     reopened = await AgentSessionRuntime(options).open_session(session.path)
     assert reopened.agent.history == history
+
+
+async def test_retry_intent_survives_omission_save_failure_and_history_can_be_reopened(tmp_path, fail_writes):
+    path = tmp_path / "history.jsonl"
+    requests = []
+
+    def stream_fn(selected_model, context, options):
+        requests.append(context)
+        message = AssistantMessage(
+            api=selected_model.api, provider=selected_model.provider, model=selected_model.id,
+            usage=empty_usage(), stop_reason="error", timestamp=1000,
+            content=[TextContent(text="partial")], error_message="503 overloaded",
+        )
+        stream = create_assistant_message_event_stream()
+        stream.push(ErrorEvent(reason="error", error=message))
+        return stream
+
+    options = CodingAgentOptions(
+        cwd=tmp_path, model=model(), stream_fn=stream_fn, tools=(), session_file=path,
+        agent_options=AgentOptions(retry=RetryPolicy(base_delay_ms=0)),
+    )
+    runtime = AgentSessionRuntime(options)
+    session = await runtime.new_session()
+    events = []
+    failure = None
+    queued = None
+
+    def listener(event, signal):
+        nonlocal failure, queued
+        events.append(event)
+        if isinstance(event, AgentEndEvent):
+            assert event.will_retry
+            assert len(requests) == 1
+            assert session.save_state == "saved"
+            assert decode_history(path.read_bytes()).history == session.agent.history
+            runtime.steer("keep steering")
+            runtime.follow_up("keep follow-up")
+            queued = session.queued_messages
+            failure = fail_writes(path, "a", contains='"type": "context_edit"', attempts=1)
+
+    runtime.subscribe(listener)
+    with pytest.raises(OSError) as failed:
+        await asyncio.wait_for(runtime.prompt("retain response"), 2)
+    assert failed.value is failure
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [True]
+    assert len(requests) == 1
+    assert sum(event.type == "retry_start" for event in events) == 1
+    assert events[-1].type == "agent_settled"
+    assert not session.agent.state.is_busy
+    assert session.save_state == "unsaved" and session.save_error is failure
+    assert session.queued_messages == queued
+    history = session.agent.history
+    assistants = [entry.message for entry in history.entries if isinstance(entry, MessageHistoryEntry)
+                  and isinstance(entry.message, AssistantMessage)]
+    assert len(assistants) == 1 and assistants[0].error_message == "503 overloaded"
+    assert sum(isinstance(entry, ContextEditHistoryEntry) for entry in history.entries) == 1
+    assert decode_history(await session.export()).history == history
+    await session.save()
+    await runtime.close()
+    reopened = await AgentSessionRuntime(options).open_session(path)
+    assert reopened.agent.history == history
+    assert not any(message.role == "assistant" for message in reopened.agent.state.messages)
+    assert len(requests) == 1
+    await reopened.close()
 
 
 async def test_save_and_terminal_failures_release_prompt_idle_and_close_waiters(tmp_path, fail_writes):
