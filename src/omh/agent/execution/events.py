@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from omh.agent.compaction.types import CompactionResult
@@ -22,7 +22,10 @@ class AgentStartEvent:
 
 @dataclass(slots=True)
 class AgentEndEvent:
+    """One loop's end, with response-retry intent captured before notification."""
+
     messages: list[LoopMessage]
+    will_retry: bool = field(default=False, kw_only=True)
     type: Literal["agent_end"] = "agent_end"
 
 

@@ -170,6 +170,16 @@ keeps the full original history, including failed assistant responses, omission
 records and compaction checkpoints. Reopening reconstructs the same effective
 context and identity without starting model or tool work.
 
+Subscribers can read the public SDK `AgentEndEvent.will_retry` at each loop's
+end to observe dialogue response-retry intent. The value is captured before
+awaited listeners run; it does not guarantee a subsequent request. Cancellation,
+notification failure or saving failure can still stop advancement. For example,
+a transient response can announce true, then the omission's `history_commit`
+can fail to save: the session becomes unsaved, retains full in-memory history
+and unconsumed queues, and sends no retry request. Observe `retry_start` for
+scheduling and `agent_settled` for completion. See the SDK's
+[retry contract and cancellation example](../../docs/agent.md#dialogue-retries).
+
 Migration: hosts that previously implemented summaries or response retry around
 application prompts can configure the SDK policies instead. Observe
 `agent_settled` for dialogue completion; automatic `compaction_end` is an
