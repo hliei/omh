@@ -14,9 +14,9 @@ session, and writes only the final task's assistant text to stdout. JSON streams
 session header and incremental events; consumers inspect final messages as well as the process exit. Print writes stdout
 serially with slow-consumer backpressure, retries temporary buffer errors and exits `1`
 on a permanent write error without a synthetic result. See the [JSON wire contract](docs/print-json.md)
-and [consumer example](examples/consume_print_json.py). Interactive execution
-arrives in a later delivery and currently reports a diagnostic and exits
-non-zero. See the [command line entry](docs/cli.md).
+and [consumer example](examples/consume_print_json.py). Interactive mode scrolls
+the conversation above an editor and status line; see
+[Interactive session](docs/interactive.md). See the [command line entry](docs/cli.md).
 
 From the repository root, install both projects for development:
 
@@ -50,6 +50,7 @@ repository. The root SDK checks run separately.
 | Contract | Responsibility |
 | --- | --- |
 | [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands, argument validation and print text/JSON |
+| [Interactive session](docs/interactive.md) | Regular terminal conversation, streaming fold, status, themes and exit |
 | [Print JSON](docs/print-json.md) | Incremental wire schema, messages, retry/compact projection and process outcomes |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |

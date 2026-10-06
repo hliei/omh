@@ -1,10 +1,9 @@
 """The installed ``omh`` command: mode dispatch, read-only commands and arguments.
 
 The command parses and validates its complete option surface before any
-request. Read-only commands run without credentials. Print text resolves the
-common host and runs the composed task chain; interactive and JSON task
-execution are delivered by later deliveries and report themselves as
-unavailable instead of pretending to run.
+request. Read-only commands run without credentials. Print text and JSON
+resolve the common host and run the composed task chain. Interactive mode
+uses the same host through the regular terminal session.
 """
 
 from __future__ import annotations
@@ -46,6 +45,7 @@ from coding_agent.terminal import (
     plain_text,
     write_diagnostic,
 )
+from coding_agent.theme import THEMES
 
 Mode = Literal["interactive", "text", "json"]
 
@@ -91,9 +91,19 @@ SIGINT/SIGTERM/SIGHUP stops the remaining tasks, cleans up and exits 130/143/129
 a second signal exits immediately with a saving warning. A failed automatic save
 exits 1 and reports a rescue path or the lack of a complete save on stderr.
 
+Interactive mode scrolls the conversation and keeps an editor and status line
+at the bottom. Enter submits the editor. Ctrl+T expands or collapses thinking.
+Ctrl+O expands or collapses recorded tool output. The first Ctrl+C clears the
+editor; a second Ctrl+C within 500ms exits. Ctrl+D exits when the editor is
+empty. OS SIGINT, SIGTERM and SIGHUP cancel through the Agent and exit 130,
+143 and 129. A missing key, invalid configuration or a missing saved working
+directory keeps this screen and explains the repair; no verification request
+is sent. --use-theme selects dark or light. NO_COLOR or TERM=dumb uses the
+plain theme.
+
 Options:
   -c, --continue                 Continue the most recent session for the working directory
-  -r, --resume                   Select a saved session to reopen; print lists sessions, never prompts
+  -r, --resume                   Print lists sessions and never prompts. Interactive asks for --session and does not open a selector
   --session <path|id>            Reopen a session file or a unique ID prefix
   --session-dir <dir>            Replace the session storage root
   --no-session                   Run an in-memory session without automatic reopen or save
@@ -338,6 +348,10 @@ def validate_args(args: CliArgs, directory: ModelDirectory) -> None:
         raise CliUsageError("--approve cannot be combined with --no-approve")
     if args.system_prompt is not None and args.system_prompt_file is not None:
         raise CliUsageError("--system-prompt cannot be combined with --system-prompt-file")
+    if args.use_theme is not None and args.use_theme not in THEMES:
+        raise CliUsageError(
+            f"unknown theme {args.use_theme!r}; valid themes: {', '.join(THEMES)}"
+        )
 
     selectors = [
         flag
@@ -430,8 +444,14 @@ def run(
         if not (stdin.isatty() and stdout.isatty()):
             write_diagnostic(stderr, "interactive mode requires a terminal (stdin and stdout must be TTYs)")
             return EXIT_USAGE
-        write_diagnostic(stderr, "interactive mode is not available in this release")
-        return EXIT_FAILURE
+        from coding_agent.interactive import run_interactive
+        try:
+            return run_interactive(
+                args, host_cls=CodingAgentHost, stdin=stdin, stdout=stdout, stderr=stderr,
+            )
+        except KeyboardInterrupt:
+            write_diagnostic(stderr, "cancelled")
+            return 130
     return _run_print(args, stdin=stdin, stdout=stdout, stderr=stderr)
 
 
