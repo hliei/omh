@@ -28,6 +28,7 @@ from coding_agent.model_directory import ModelDirectory, ModelListing
 from coding_agent.print_runner import (
     PrintInputError,
     compose_tasks,
+    run_print_json,
     run_print_text,
 )
 from coding_agent.session_directory import (
@@ -427,14 +428,11 @@ def run(
             return EXIT_USAGE
         write_diagnostic(stderr, "interactive mode is not available in this release")
         return EXIT_FAILURE
-    if mode == "json":
-        write_diagnostic(stderr, "json mode is not available in this release")
-        return EXIT_FAILURE
     return _run_print(args, stdin=stdin, stdout=stdout, stderr=stderr)
 
 
 def _run_print(args: CliArgs, *, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
-    """Run print text in one event loop and map its outcome to a process code."""
+    """Run print tasks in one event loop and map the process outcome."""
     try:
         return asyncio.run(_print_text(args, stdin=stdin, stdout=stdout, stderr=stderr))
     except KeyboardInterrupt:
@@ -497,7 +495,8 @@ async def _print_text(
     except (AttachmentError, PrintInputError, OSError, UnicodeError) as error:
         write_diagnostic(stderr, error)
         return EXIT_USAGE
-    return await run_print_text(
+    runner = run_print_json if args.mode == "json" else run_print_text
+    return await runner(
         host, selection, tasks, display_name=args.name, stdout=stdout, stderr=stderr,
     )
 

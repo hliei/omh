@@ -8,12 +8,12 @@ shared by print and interactive use; both modes consume the same host once task
 execution is delivered.
 
 This delivery provides the installed command, read-only model/session commands,
-the complete argument and mode contract, and print text execution.
+the complete argument and mode contract, and print text/JSON execution.
 [`print_runner.py`](../src/coding_agent/print_runner.py) owns input composition
 and the serial task chain; `cli.py` owns parsing, validation and dispatch;
-`model_directory.py` owns the registered model metadata. Interactive and JSON
-task execution arrive in later deliveries; until then those paths report a
-plain diagnostic and exit `1` instead of pretending to run.
+`model_directory.py` owns the registered model metadata. JSON projection lives in `json_wire.py`; its [wire contract](print-json.md)
+includes the complete schema and examples. Interactive execution arrives in a
+later delivery and currently reports a plain diagnostic and exits `1`.
 
 ## Read-only commands
 
@@ -124,6 +124,18 @@ directory continues the same conversation identity with `-c`; `--session
 <path|id>` continues it from any cwd. A request, notification, saving or close
 failure is reported on stderr and exits `1`; the final answer text is only
 written after a fully successful finish.
+
+## Print JSON
+
+`--mode=json` runs the same composed tasks and session selection, writing a
+session header followed by incremental events. A normally returned final
+assistant error/aborted stops later prompts but can exit `0`; inspect its
+`stopReason` and `errorMessage` together with the process exit. Propagated
+execution/saving/close exceptions exit `1`, and input/configuration failures
+exit `2`. No final result wrapper is added; failures may leave only a prefix.
+Reopen emits new events only. Memory/saving diagnostics stay on stderr; stdout
+cannot be used as the independent version 1 history file. See the
+[complete schema, fixed examples and consumer](print-json.md).
 
 ## Options
 

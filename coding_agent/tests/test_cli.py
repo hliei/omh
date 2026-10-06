@@ -441,8 +441,8 @@ def test_equals_form_and_existing_resource_paths_are_accepted(home: Path, tmp_pa
         str(resource),
         home=home,
     )
-    assert result.returncode == EXIT_FAILURE
-    assert "json mode" in result.stderr
+    assert result.returncode == EXIT_USAGE
+    assert "No API key" in result.stderr
 
     listed = run_cli("--list-sessions=work", home=home)
     assert listed.returncode == 0
@@ -523,7 +523,7 @@ def test_default_mode_needs_both_streams_to_be_ttys(home: Path) -> None:
 def test_explicit_modes_override_tty_inference(home: Path) -> None:
     assert "No API key" in run_cli_tty("--no-approve", "--mode", "text", home=home)[2]
     assert "No API key" in run_cli_tty("--no-approve", "--print", home=home)[2]
-    assert "json mode" in run_cli_tty("--mode", "json", home=home)[2]
+    assert "No API key" in run_cli_tty("--mode", "json", "--no-approve", home=home)[2]
     code, _, errors = run_cli_tty("--mode", "interactive", home=home)
     assert code == EXIT_FAILURE
     assert "interactive mode" in errors

@@ -71,7 +71,7 @@ HTTP uses an injectable `fetch` or httpx, not the OpenAI Python SDK. The default
 
 ## Streams and persistence integration
 
-`stream` and `stream_simple` produce a unified event stream with a terminal message result. Preparation/request failures use an `error` event; successful completion uses `done`. Consumers should distinguish streamed partials from the final message and provider-reported usage.
+`stream` and `stream_simple` produce a unified event stream with a terminal message result. Preparation/request failures use an `error` event; successful completion uses `done`. The assistant stream snapshots each event when it is pushed, including partial content and cumulative usage, so queued events retain their emission-time values even when a producer runs ahead of its consumer. Consumers should distinguish streamed partials from the final message and provider-reported usage.
 
 `Usage.reported` describes the token counters' provenance: `True` means the
 provider supplied both input and output counts, `False` means the request has

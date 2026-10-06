@@ -68,6 +68,9 @@ explicit session file; a memory run must not reopen a saved path.
 record meanings and effective-context reconstruction; it does not read files
 or implement this JSON format.
 
+[Print JSON](print-json.md) uses a separate session/event wire; it cannot be
+reopened as this complete history.
+
 Version 1 starts with a header containing `format="omh-agent-history"`,
 `version=1`, `id`, ISO `timestamp`, `cwd`, `displayName`, `leafId` and
 `entryCount`. Each following valid JSON object is one complete SDK entry.

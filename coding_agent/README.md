@@ -8,12 +8,13 @@ Linux is required.
 
 This delivery provides the installed command, read-only model and session
 listing, shared session selection, persistent names, JSONL/HTML export, and
-print text execution. Print text composes piped stdin, file attachments and the
-first prompt into one task, runs every later prompt serially in the same saved
-session, and writes only the final task's assistant text to stdout. Interactive
-and JSON task execution arrive in later deliveries; until then those paths
-report a diagnostic and exit non-zero rather than pretending to run. See the
-[command line entry](docs/cli.md).
+print text and JSON execution. Print text composes piped stdin, file attachments
+and the first prompt into one task, runs every later prompt serially in the same saved
+session, and writes only the final task's assistant text to stdout. JSON streams the
+session header and incremental events; consumers inspect final messages as well as the process exit. See the [JSON wire contract](docs/print-json.md)
+and [consumer example](examples/consume_print_json.py). Interactive execution
+arrives in a later delivery and currently reports a diagnostic and exits
+non-zero. See the [command line entry](docs/cli.md).
 
 From the repository root, install both projects for development:
 
@@ -46,7 +47,8 @@ repository. The root SDK checks run separately.
 
 | Contract | Responsibility |
 | --- | --- |
-| [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands, argument validation and print text |
+| [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands, argument validation and print text/JSON |
+| [Print JSON](docs/print-json.md) | Incremental wire schema, messages, retry/compact projection and process outcomes |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
 | [Input and attachments](docs/input.md) | File argument boundaries, image conversion and limits, model modality and read images |

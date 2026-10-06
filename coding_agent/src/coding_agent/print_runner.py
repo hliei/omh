@@ -1,10 +1,10 @@
-"""Print-mode text execution over the common host.
+"""Print text and JSON execution over the common host.
 
 Print text resolves the same host, selection and resources as interactive use,
 then runs the composed first task and every later prompt serially in one
 session. Only the final executed task's assistant text reaches stdout;
 diagnostics stay on stderr. A task whose final assistant is an error or an
-abort stops the remaining prompts and exits non-zero, while a recoverable tool
+abort stops the remaining prompts (JSON may still exit zero), while a recoverable tool
 failure is fed back to the model instead of failing the process.
 
 The runner never builds a second Agent loop, retry policy or history state
@@ -15,11 +15,13 @@ outcome. ``compose_tasks`` is the pure input boundary and
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TextIO
 
-from omh.llm.types import AssistantMessage, ImageContent, TextContent
+from omh.agent import AgentEvent
+from omh.llm.types import AbortSignal, AssistantMessage, ImageContent, TextContent
 
 from coding_agent.agent_session import UnsupportedImageModelError
 from coding_agent.agent_session_runtime import AgentSessionRuntime
@@ -29,6 +31,7 @@ from coding_agent.attachments import (
     compose_first_task,
 )
 from coding_agent.host import CodingAgentHost, SessionSelection
+from coding_agent.json_wire import project_event
 from coding_agent.terminal import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, write_diagnostic
 
 
@@ -103,6 +106,23 @@ async def run_print_text(
     session's own modality message. Request, notification, saving and close
     failures are reported on ``stderr`` and fail the process.
     """
+    return await _run_print(host, selection, tasks, display_name=display_name,
+                            stdout=stdout, stderr=stderr, json_mode=False)
+
+
+async def run_print_json(
+    host: CodingAgentHost, selection: SessionSelection, tasks: Sequence[PrintTask], *,
+    display_name: str | None = None, stdout: TextIO, stderr: TextIO,
+) -> int:
+    """Stream the session header and strict events; model failures can exit 0."""
+    return await _run_print(host, selection, tasks, display_name=display_name,
+                            stdout=stdout, stderr=stderr, json_mode=True)
+
+
+async def _run_print(
+    host: CodingAgentHost, selection: SessionSelection, tasks: Sequence[PrintTask], *,
+    display_name: str | None, stdout: TextIO, stderr: TextIO, json_mode: bool,
+) -> int:
     try:
         options = host.build_options(selection)
     except Exception as error:
@@ -112,14 +132,31 @@ async def run_print_text(
     runtime = AgentSessionRuntime(options)
     outcome = _RunOutcome()
     input_rejected = False
+    close_failed = False
     try:
         try:
             await _start(runtime, selection, display_name)
+            if json_mode:
+                session = runtime.current_session
+                assert session is not None
+                history = session.agent.history
+                _write_json(stdout, {"type": "session", "version": 3,
+                                     "id": history.conversation_id,
+                                     "timestamp": history.created_at.isoformat(), "cwd": str(session.cwd)})
+                if session.save_mode == "memory":
+                    write_diagnostic(stderr, "in-memory session; history will not be saved")
+
+                def on_event(event: AgentEvent, signal: AbortSignal) -> None:
+                    projected = project_event(event)
+                    if projected is not None:
+                        _write_json(stdout, projected)
+
+                runtime.subscribe(on_event)
         except Exception as error:
             write_diagnostic(stderr, error)
             return EXIT_FAILURE
         try:
-            outcome = await _run_tasks(runtime, tasks, stderr)
+            outcome = await _run_tasks(runtime, tasks, stderr, json_mode=json_mode)
         except UnsupportedImageModelError as error:
             write_diagnostic(stderr, error)
             input_rejected = True
@@ -132,11 +169,15 @@ async def run_print_text(
         except Exception as error:
             write_diagnostic(stderr, error)
             outcome = _RunOutcome()
+            close_failed = True
 
+    if close_failed:
+        return EXIT_FAILURE
     if input_rejected:
         return EXIT_USAGE
     if outcome.text is not None:
-        stdout.write(outcome.text)
+        if not json_mode:
+            stdout.write(outcome.text)
         return EXIT_OK
     return EXIT_FAILURE
 
@@ -154,7 +195,7 @@ async def _start(
 
 
 async def _run_tasks(
-    runtime: AgentSessionRuntime, tasks: Sequence[PrintTask], stderr: TextIO,
+    runtime: AgentSessionRuntime, tasks: Sequence[PrintTask], stderr: TextIO, *, json_mode: bool = False,
 ) -> _RunOutcome:
     """Run tasks serially until completion, reporting the last executed outcome."""
     outcome = _RunOutcome()
@@ -169,7 +210,7 @@ async def _run_tasks(
         text, stop_reason, error_message = _final_assistant(session.agent.state.messages)
         if stop_reason in ("error", "aborted"):
             write_diagnostic(stderr, error_message or f"the model response ended with {stop_reason}")
-            return _RunOutcome()
+            return _RunOutcome(text="" if json_mode else None)
         outcome = _RunOutcome(text=text)
     return outcome
 
@@ -183,3 +224,8 @@ def _final_assistant(messages: Sequence[object]) -> tuple[str, str | None, str |
             )
             return text, message.stop_reason, message.error_message
     return "", None, None
+
+
+def _write_json(stdout: TextIO, value: dict[str, object]) -> None:
+    stdout.write(json.dumps(value, ensure_ascii=False, allow_nan=False) + "\n")
+    stdout.flush()
