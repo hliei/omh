@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Embeddable coding conversations with full JSONL history"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = ["omh>=0.1.0,<0.2"]
+dependencies = ["omh>=0.1.0,<0.2", "pillow>=11.3"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.4", "pytest-asyncio>=1.1", "mypy>=1.17", "ruff==0.16.7"]

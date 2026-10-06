@@ -45,6 +45,7 @@ repository. The root SDK checks run separately.
 | [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands and argument validation |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
+| [Input and attachments](docs/input.md) | File argument boundaries, image conversion and limits, model modality and read images |
 | [SessionManager](docs/session-manager.md) | File metadata, JSONL, saving state, export and repair |
 | [AgentSessionRuntime](docs/agent-session-runtime.md) | Host assembly, current-session switching, subscriptions and retained sessions |
 
@@ -56,6 +57,12 @@ define this application's terms and composition boundary. The
 the accepted separation between planned CLI output and saved history.
 The [configuration decision](docs/adr/0003-configuration-and-credentials-boundary.md)
 records the configuration, credential and selection boundary.
+The [resource trust decision](docs/adr/0004-resource-trust-and-tiers.md)
+records the project-loading authorization and the five-tier composition.
+The [image processing decision](docs/adr/0005-product-image-processing.md)
+records the product-owned conversion and its Pillow dependency.
+The [session storage decision](docs/adr/0006-session-storage-layout.md) records
+the default auto-save root, cwd grouping and in-memory mode.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen
@@ -93,7 +100,8 @@ await restored.prompt("Explain the change.")
 
 The installed command resolves the same selection through `CodingAgentHost`,
 which reads the global and trusted project settings, the model directory and
-the credential store, then reports whether the session is ready:
+the credential store, composes trusted resources and system inputs, then reports
+whether the session is ready:
 
 ```python
 from coding_agent import AgentSessionRuntime, CodingAgentHost

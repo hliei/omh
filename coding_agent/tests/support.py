@@ -55,6 +55,57 @@ def text_stream(text: str = "done") -> FetchResponse:
     return sse_response({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
 
 
+def tool_call_stream(tool_call_id: str, name: str, arguments: Mapping[str, Any]) -> FetchResponse:
+    """One SSE response that requests a tool call."""
+    return sse_response(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": tool_call_id,
+                                "type": "function",
+                                "function": {"name": name, "arguments": ""},
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{"index": 0, "function": {"arguments": json.dumps(arguments)}}]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        },
+    )
+
+
+class SequencedFetch:
+    """Controlled HTTP boundary returning queued responses in order."""
+
+    def __init__(self, *responses: FetchResponse) -> None:
+        self.responses = list(responses)
+        self.requests: list[FetchRequest] = []
+
+    async def __call__(self, request: FetchRequest) -> FetchResponse:
+        self.requests.append(request)
+        assert self.responses, "SequencedFetch received more requests than queued responses"
+        return self.responses.pop(0)
+
+    @property
+    def bodies(self) -> list[dict[str, Any]]:
+        return [request.json_body for request in self.requests]
+
+
 class RecordingFetch:
     """Controlled HTTP boundary that records every request and returns a queued response."""
 

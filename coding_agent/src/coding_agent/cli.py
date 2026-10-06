@@ -19,11 +19,10 @@ from omh.llm.models import EXTENDED_THINKING_LEVELS
 from omh.llm.types import ModelThinkingLevel
 
 from coding_agent.agent_session import ToolName
-from coding_agent.config import resolve_agent_dir
+from coding_agent.config import AppendKind, resolve_agent_dir
 from coding_agent.model_directory import ModelDirectory, ModelListing
 
 Mode = Literal["interactive", "text", "json"]
-AppendKind = Literal["text", "file"]
 
 _MODES: tuple[Mode, ...] = ("interactive", "text", "json")
 _TOOLS: tuple[ToolName, ...] = ("read", "bash", "edit", "write")
@@ -406,14 +405,18 @@ def _parse_tools(value: str) -> tuple[ToolName, ...]:
 
 
 def _validate_resources(args: CliArgs) -> None:
-    """Reject explicit resource paths that do not exist before any request."""
-    for flag, paths in (
-        ("--skill", args.skills),
-        ("--prompt-template", args.prompt_templates),
-    ):
-        for value in paths:
-            if not Path(value).expanduser().exists():
-                raise CliUsageError(f"{flag} path does not exist: {value}")
+    """Reject explicit resource or system file paths that do not exist before any request."""
+    paths = [("--skill", value) for value in args.skills]
+    paths += [("--prompt-template", value) for value in args.prompt_templates]
+    if args.system_prompt_file is not None:
+        paths.append(("--system-prompt-file", args.system_prompt_file))
+    paths += [
+        ("--append-system-prompt-file", value)
+        for kind, value in args.append_system if kind == "file"
+    ]
+    for flag, value in paths:
+        if not Path(value).expanduser().exists():
+            raise CliUsageError(f"{flag} path does not exist: {value}")
 
 
 def _validate_selection(args: CliArgs, directory: ModelDirectory) -> None:

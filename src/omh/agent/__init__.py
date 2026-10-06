@@ -150,6 +150,7 @@ from omh.agent.tools import (
     create_edit_tool,
     create_read_tool,
     create_write_tool,
+    detect_supported_image_mime_type,
 )
 from omh.llm.types import ModelThinkingLevel as ThinkingLevel
 from omh.llm.types import OnPayload, OnProviderStreamEvent, OnResponse
@@ -188,6 +189,7 @@ __all__ = [
     "create_edit_tool",
     "create_read_tool",
     "create_write_tool",
+    "detect_supported_image_mime_type",
     "AfterToolCall",
     "AfterToolCallContext",
     "AfterToolCallResult",

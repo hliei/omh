@@ -16,10 +16,19 @@ actual user task surfaces authentication failure.
 | --- | --- |
 | `~/.omh/agent` | Global agent directory, overridable with `OMH_CODING_AGENT_DIR` |
 | `~/.omh/agent/settings.json` | Global settings |
+| `~/.omh/agent/SYSTEM.md` | Global base system prompt fallback |
+| `~/.omh/agent/APPEND_SYSTEM.md` | Global system addendum fallback |
+| `~/.omh/agent/skills`, `~/.agents/skills` | Global automatic skill directories |
+| `~/.omh/agent/prompts` | Global automatic prompt-template directory |
 | `~/.omh/agent/auth.json` | Global API keys, mode `0600` |
 | `~/.omh/agent/models.json` | Global model metadata overrides |
-| `~/.omh/agent/sessions` | Default session storage root |
+| `~/.omh/agent/sessions` | Default session storage root, grouped by effective cwd |
 | `<cwd>/.omh/settings.json` | Project settings, loaded only for a trusted project |
+| `<cwd>/.omh/SYSTEM.md` | Project base system prompt, loaded only for a trusted project |
+| `<cwd>/.omh/APPEND_SYSTEM.md` | Project system addendum, loaded only for a trusted project |
+| `<cwd>/.omh/skills` | Project automatic skills, discovered only for a trusted project |
+| `<cwd>/.omh/prompts` | Project automatic prompt templates, discovered only for a trusted project |
+| `~/.omh/agent/trust.json` | Remembered per-project loading decisions, overridable with the agent directory |
 
 `auth.json` and `models.json` are global-only. A project `settings.json` cannot
 store a key: an `apiKey` or environment-variable-shaped key is reported as an
@@ -56,6 +65,63 @@ session selection, and selecting a model or tool never writes a default.
 
 Persistent writes merge only the named fields, including nested objects, and
 preserve every other key already in the file.
+
+## Project trust
+
+Trust is a loading authorization for one project's automatic configuration and
+resources. It is not tool-execution approval, a filesystem sandbox, a file
+permission, or a claim that project content is safe; the four built-in tools
+still work with the host filesystem permissions. `AGENTS` inheritance and
+explicit resource paths are independent of trust.
+
+A project layer loads only when the effective project is trusted:
+
+1. an explicit one-run `--approve`/`--no-approve` decision;
+2. a decision remembered for that project in `trust.json`;
+3. an embedding's explicit `project_trusted` value.
+
+With none of these, the project settings, project `SYSTEM.md`/`APPEND_SYSTEM.md`,
+project skills and project templates are skipped and an `untrusted` diagnostic
+reports the skip. Print never waits for an answer; interactive mode can inspect
+`host.needs_trust_decision`, ask, and persist the answer with
+`host.remember_trust("approved"|"denied")`. Global configuration and resources,
+ancestor `AGENTS` instructions, and explicit paths remain available either way.
+Trust is resolved per effective cwd, so `--cwd` and a restored cwd select their
+own decision.
+
+## Resource discovery and system inputs
+
+The installed host composes resources from ordered tiers. Within a tier, first
+wins, and the loser is reported as a collision diagnostic.
+
+| Tier | Skills | Templates |
+| --- | --- | --- |
+| explicit | `--skill` paths and explicit CLI settings | `--prompt-template` paths and explicit CLI settings |
+| project-config | trusted project `skills` array | trusted project `prompts` array |
+| project-auto | trusted `<cwd>/.omh/skills`, then `.agents/skills` from `<cwd>` through the nearest Git root (or the filesystem root) | trusted `<cwd>/.omh/prompts` |
+| global-config | global `skills` array when no higher array replaced it | global `prompts` array when no higher array replaced it |
+| global-auto | `<agent_dir>/skills`, then `~/.agents/skills` | `<agent_dir>/prompts` |
+
+Arrays replace whole: when a trusted project defines `skills` or `prompts`, the
+global array is replaced and its covered paths never revive. Template discovery
+reads only direct Markdown children and does not recurse. `--no-skills` and
+`--no-prompt-templates` close only automatic discovery; explicit and configured
+paths still load. A template that reuses a built-in command name is diagnosed so
+the interactive dispatcher can keep the built-in.
+
+`SYSTEM` and `APPEND_SYSTEM` resolve separately as explicit input, then a
+trusted project file, then the global file. `--system-prompt` and
+`--system-prompt-file` replace the base preamble, tools and rules; ancestor
+`AGENTS` instructions, the cwd, raw SDK system content and the eligible skill
+catalog still join as independent named sections. A project `APPEND_SYSTEM.md`
+replaces the global addendum instead of stacking on it, and repeated
+`--append-system-prompt`/`--append-system-prompt-file` values keep command-line
+order. Literal text is never reinterpreted as a path, and an explicit file is
+read as text. An explicit append whose parts are all empty adds nothing and
+falls back to the project/global addendum, while `--system-prompt ""` still
+intentionally replaces the base with an empty preamble. The embedded
+`CodingAgentOptions` keeps the historical `global -> project -> explicit` source
+ordering unless a host supplies tiers.
 
 ## Model, thinking and cwd precedence
 

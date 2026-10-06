@@ -21,10 +21,10 @@ reported as a diagnostic instead of silently switching provider or directory.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import TypeVar, cast
 
 from omh.agent import (
     AgentHistorySettings,
@@ -55,14 +55,20 @@ from omh.llm.utils.event_stream import AssistantMessageEventStream
 
 from coding_agent.agent_session import CodingAgentOptions, ToolName
 from coding_agent.config import (
+    APPEND_SYSTEM_FILE,
     AUTH_FILE,
+    CONFIG_DIR_NAME,
     DEFAULT_TOOLS,
+    PROMPTS_DIR,
     SETTINGS_FILE,
+    SYSTEM_FILE,
+    TRUST_FILE,
+    AppendKind,
     ConfigDiagnostic,
     ConfigError,
+    DiagnosticReason,
     DiagnosticSource,
     FileCredentialStore,
-    SettingsSnapshot,
     load_settings,
     project_settings_path,
     provider_api_key_env,
@@ -76,12 +82,28 @@ from coding_agent.config import (
     validate_tools,
 )
 from coding_agent.history import DecodedHistory, decode_history
+from coding_agent.images import count_history_images, degradation_notice
 from coding_agent.model_directory import ModelDirectory
+from coding_agent.resources import (
+    RESOURCE_TIERS,
+    automatic_skill_sources,
+    automatic_template_sources,
+    project_skill_directories,
+)
+from coding_agent.session_paths import cwd_session_directory, sessions_root
+from coding_agent.trust import TrustDecision, TrustStore
 
 #: The product's default model when neither history nor configuration selects one.
 DEFAULT_MODEL_REFERENCE = ("opencode-go", "deepseek-v4.1-flash")
 #: The default thinking level for models that accept a choice.
 DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "high"
+
+
+_TIER_FOR_SCOPE: dict[DiagnosticSource, str] = {
+    "cli": "explicit", "project": "project-config", "global": "global-config",
+}
+
+_SourceT = TypeVar("_SourceT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,32 +134,63 @@ class SessionSelection:
 
 
 class CodingAgentHost:
-    """Resolve configuration, credentials and effective selection for a session."""
+    """Resolve configuration, credentials and effective selection for a session.
+
+    Project-controlled configuration and resources load only for a trusted
+    project. ``approve``/``no_approve`` are one-run explicit decisions, a
+    ``TrustStore`` remembers a durable decision, and ``project_trusted`` lets an
+    embedding pass an already-made decision. Unknown project resources are
+    skipped with a diagnostic in both modes; interactive use can inspect
+    :attr:`needs_trust_decision` and call :meth:`remember_trust`.
+    """
 
     def __init__(
         self, *, startup_dir: str | Path, agent_dir: str | Path | None = None,
-        project_trusted: bool = False, explicit_settings: Mapping[str, object] | None = None,
+        home: str | Path | None = None,
+        project_trusted: bool | None = None,
+        approve: bool = False, no_approve: bool = False,
+        trust_store: TrustStore | None = None,
+        explicit_settings: Mapping[str, object] | None = None,
         explicit_skills: tuple[str, ...] = (), explicit_templates: tuple[str, ...] = (),
+        explicit_system_prompt: str | None = None,
+        explicit_system_prompt_file: str | Path | None = None,
+        append_system: Sequence[tuple[AppendKind, str]] = (),
+        no_skills: bool = False, no_prompt_templates: bool = False,
+        no_context_files: bool = False,
         api_key: str | None = None, fetch: FetchFunction | None = None,
+        session_dir: str | Path | None = None, no_session: bool = False,
     ) -> None:
         self.startup_dir = Path(startup_dir).expanduser().resolve()
+        self.home = Path(home).expanduser().resolve() if home is not None else Path.home()
         self.agent_dir = (
             Path(agent_dir).expanduser().resolve()
-            if agent_dir is not None else resolve_agent_dir()
-        )
-        self.settings: SettingsSnapshot = load_settings(
-            agent_dir=self.agent_dir, cwd=self.startup_dir,
-            project_trusted=project_trusted, explicit=explicit_settings,
+            if agent_dir is not None else resolve_agent_dir(home=self.home)
         )
         self._project_trusted = project_trusted
+        self._approve = approve
+        self._no_approve = no_approve
+        self._trust_store = trust_store if trust_store is not None else TrustStore(self.agent_dir / TRUST_FILE)
         self._explicit_settings = explicit_settings
+        self._explicit_skills = explicit_skills
+        self._explicit_templates = explicit_templates
+        self._explicit_system_prompt = explicit_system_prompt
+        self._explicit_system_prompt_file = explicit_system_prompt_file
+        self._append_system = tuple(append_system)
+        self._no_skills = no_skills
+        self._no_prompt_templates = no_prompt_templates
+        self._no_context_files = no_context_files
         self._settings_cwd = self.startup_dir
+        self._no_session = no_session
+        self._session_dir = self._resolve_path(session_dir) if session_dir is not None else None
+        self._trusted = False
+        self._trust_unknown = False
+        self._custom_prompt: str | None = None
+        self._append_prompt: str | None = None
         self.directory = ModelDirectory(agent_dir=self.agent_dir)
         self.credentials = FileCredentialStore(self.agent_dir / AUTH_FILE)
         self.api_key = api_key
         self._fetch = fetch
-        self._explicit_skills = explicit_skills
-        self._explicit_templates = explicit_templates
+        self._refresh_settings(self.startup_dir, [])
         self._models = self._build_models()
 
     def _build_models(self) -> ModelsImpl:
@@ -152,7 +205,60 @@ class CodingAgentHost:
 
     @property
     def diagnostics(self) -> tuple[ConfigDiagnostic, ...]:
-        return (*self.settings.diagnostics, *self.directory.diagnostics)
+        return (
+            *self.settings.diagnostics, *self.directory.diagnostics,
+            *self._trust_store.diagnostics,
+        )
+
+    @property
+    def project_trusted(self) -> bool:
+        """Whether the current effective project's controlled layer was loaded."""
+        return self._trusted
+
+    @property
+    def needs_trust_decision(self) -> bool:
+        """Whether the effective project has resources awaiting a trust decision.
+
+        Interactive mode can ask and then call :meth:`remember_trust`; print mode
+        skips the controlled layer and reports the untrusted diagnostic instead
+        of waiting for an answer.
+        """
+        return self._trust_unknown and self._project_resources(self._settings_cwd)
+
+    def remember_trust(self, decision: TrustDecision, *, cwd: str | Path | None = None) -> None:
+        """Persist a project trust decision and refresh the effective layer.
+
+        An explicit ``cwd`` for another project only records the decision; the
+        current session's settings and system inputs stay untouched.
+        """
+        target = Path(cwd).expanduser().resolve() if cwd is not None else self._settings_cwd
+        self._trust_store.remember(target, decision)
+        if target == self._settings_cwd:
+            self._refresh_settings(target, [])
+
+    @property
+    def session_root(self) -> Path | None:
+        """Return the top-level storage root; ``None`` means an in-memory session.
+
+        An explicit ``--session-dir`` replaces the root; otherwise the root is
+        ``<agent_dir>/sessions``.
+        """
+        if self._no_session:
+            return None
+        return self._session_dir if self._session_dir is not None else sessions_root(self.agent_dir)
+
+    def session_directory(self, cwd: Path) -> Path | None:
+        """Return the directory that holds a new conversation file.
+
+        An explicit ``--session-dir`` is used as given. The default root groups
+        conversations by effective cwd so different projects stay separate.
+        """
+        root = self.session_root
+        if root is None:
+            return None
+        if self._session_dir is not None:
+            return root
+        return cwd_session_directory(root, cwd)
 
     @property
     def models(self) -> ModelsImpl:
@@ -234,7 +340,7 @@ class CodingAgentHost:
         """Resolve a fresh session from explicit input, configuration then defaults."""
         diagnostics: list[ConfigDiagnostic] = []
         effective_cwd = self._resolve_cwd(cwd, history=None, diagnostics=diagnostics)
-        self._refresh_settings(effective_cwd)
+        self._refresh_settings(effective_cwd, diagnostics)
         resolved_model = self._resolve_new_model(provider, model, diagnostics)
         effective_thinking = self._resolve_thinking(thinking, history=None, model=resolved_model, diagnostics=diagnostics)
         effective_tools = self._resolve_tools(tools, diagnostics)
@@ -265,12 +371,13 @@ class CodingAgentHost:
             return SessionSelection(diagnostics=tuple(diagnostics))
         settings = validate_history(decoded.history)
         effective_cwd = self._resolve_cwd(cwd, history=decoded, diagnostics=diagnostics)
-        self._refresh_settings(effective_cwd)
+        self._refresh_settings(effective_cwd, diagnostics)
         resolved_model = self._resolve_history_model(provider, model, settings, diagnostics)
         effective_thinking = self._resolve_thinking(
             thinking, history=settings, model=resolved_model, diagnostics=diagnostics,
         )
         effective_tools = self._resolve_tools(tools, diagnostics)
+        _diagnose_saved_images(destination, decoded, resolved_model, diagnostics)
         return SessionSelection(
             cwd=effective_cwd, model=resolved_model, thinking_level=effective_thinking,
             tools=effective_tools, history=decoded, diagnostics=(*self.diagnostics, *diagnostics),
@@ -283,6 +390,8 @@ class CodingAgentHost:
         """Assemble host dependencies for a ready selection."""
         if not selection.ready or selection.model is None or selection.cwd is None:
             raise ConfigError("Cannot assemble a session from an unresolved selection")
+        if self._no_session and session_file is not None:
+            raise ConfigError("--no-session cannot reopen or bind a session file")
         base = agent_options or AgentOptions()
         compaction = self.compaction
         retry = self.retry
@@ -300,29 +409,162 @@ class CodingAgentHost:
             available_models=tuple(entry.model for entry in self.directory.listings()),
             tools=selection.tools,
             session_file=session_file,
+            session_dir=self.session_directory(selection.cwd),
             agent_options=assembled,
             agent_dir=self.agent_dir,
             skill_sources=self._skill_sources(),
             template_sources=self._template_sources(),
+            custom_prompt=self._custom_prompt,
+            append_system_prompt=self._append_prompt,
+            resource_tiers=RESOURCE_TIERS,
+            load_context_files=not self._no_context_files,
         )
 
     # ------------------------------------------------------------------ #
     # Resolution helpers
     # ------------------------------------------------------------------ #
 
-    def _refresh_settings(self, cwd: Path | None) -> None:
-        """Re-resolve project settings for the effective cwd.
+    def _refresh_settings(self, cwd: Path | None, diagnostics: list[ConfigDiagnostic]) -> None:
+        """Re-resolve project trust, settings and system inputs for the effective cwd.
 
         Project configuration and resource discovery follow the effective
         session cwd, not the startup directory, so an explicit ``--cwd`` or a
-        restored cwd selects its own ``.omh/settings.json``.
+        restored cwd selects its own trust decision, ``.omh/settings.json`` and
+        system files.
         """
         resolved_cwd = cwd if cwd is not None else self.startup_dir
         self._settings_cwd = resolved_cwd
+        trusted = self._resolve_trust(resolved_cwd, diagnostics)
+        self._trusted = trusted
         self.settings = load_settings(
             agent_dir=self.agent_dir, cwd=resolved_cwd,
-            project_trusted=self._project_trusted, explicit=self._explicit_settings,
+            project_trusted=trusted, explicit=self._explicit_settings,
         )
+        self._custom_prompt, self._append_prompt = self._resolve_system(
+            resolved_cwd, trusted, diagnostics,
+        )
+
+    def _resolve_trust(self, cwd: Path, diagnostics: list[ConfigDiagnostic]) -> bool:
+        """Resolve the project's loading authorization without asking a question.
+
+        Explicit one-run flags win over a remembered decision, which wins over
+        the embedding's ``project_trusted`` default. With no decision and real
+        controlled project resources present, the layer is skipped and reported
+        so print never waits for an answer; interactive can ask and then
+        remember one. The store is always consulted so a malformed trust file is
+        diagnosed even when a flag decides the outcome.
+        """
+        self._trust_unknown = False
+        decision = self._trust_store.decision(cwd)
+        if self._approve:
+            return True
+        if self._no_approve:
+            return False
+        if decision == "approved":
+            return True
+        if decision == "denied":
+            return False
+        if self._project_trusted is not None:
+            return self._project_trusted
+        self._trust_unknown = True
+        if self._project_resources(cwd):
+            diagnostics.append(ConfigDiagnostic(
+                str(cwd), "trust", "untrusted",
+                "Project configuration and resources are not trusted and were skipped; "
+                "use --approve or remember a decision with /trust",
+            ))
+        return False
+
+    @staticmethod
+    def _project_resources(cwd: Path) -> bool:
+        """Report whether a project holds any trust-controlled resource."""
+        base = cwd / CONFIG_DIR_NAME
+        return (
+            (base / SETTINGS_FILE).is_file()
+            or (base / SYSTEM_FILE).exists()
+            or (base / APPEND_SYSTEM_FILE).exists()
+            or (base / PROMPTS_DIR).is_dir()
+            or any(directory.is_dir() for directory in project_skill_directories(cwd))
+        )
+
+    def _resolve_system(
+        self, cwd: Path, trusted: bool, diagnostics: list[ConfigDiagnostic],
+    ) -> tuple[str | None, str | None]:
+        """Resolve the base replacement and the single addendum in fallback order.
+
+        SYSTEM and APPEND each use explicit input, then a trusted project file,
+        then the global file. A project APPEND replaces the global fallback
+        instead of stacking on it; explicit APPEND parts keep command-line order.
+        """
+        if self._explicit_system_prompt is not None:
+            custom: str | None = self._explicit_system_prompt
+        elif self._explicit_system_prompt_file is not None:
+            custom = self._read_explicit_file(self._explicit_system_prompt_file, diagnostics)
+        else:
+            custom = self._read_fallback(cwd, trusted, diagnostics, SYSTEM_FILE)
+        if self._append_system:
+            parts: list[str] = []
+            for kind, value in self._append_system:
+                text = value if kind == "text" else self._read_explicit_file(value, diagnostics)
+                if text:
+                    parts.append(text)
+            # An all-empty explicit append adds nothing; fall back instead of
+            # silently suppressing a project or global addendum.
+            append: str | None = (
+                "\n\n".join(parts) if parts else self._read_fallback(cwd, trusted, diagnostics, APPEND_SYSTEM_FILE)
+            )
+        else:
+            append = self._read_fallback(cwd, trusted, diagnostics, APPEND_SYSTEM_FILE)
+        return custom, append
+
+    def _read_explicit_file(
+        self, value: str | Path, diagnostics: list[ConfigDiagnostic],
+    ) -> str | None:
+        path = self._resolve_path(value)
+        return self._read_text(
+            path, diagnostics, source="cli", reason="unavailable", name=path.name, missing_ok=False,
+        )
+
+    def _read_fallback(
+        self, cwd: Path, trusted: bool, diagnostics: list[ConfigDiagnostic], name: str,
+    ) -> str | None:
+        if trusted:
+            project_file = cwd / CONFIG_DIR_NAME / name
+            text = self._read_text(
+                project_file, diagnostics, source="project", reason="recoverable",
+                name=name, missing_ok=True,
+            )
+            if text is not None:
+                return text
+        return self._read_text(
+            self.agent_dir / name, diagnostics, source="global", reason="recoverable",
+            name=name, missing_ok=True,
+        )
+
+    @staticmethod
+    def _read_text(
+        path: Path, diagnostics: list[ConfigDiagnostic], *, source: DiagnosticSource,
+        reason: DiagnosticReason, name: str, missing_ok: bool,
+    ) -> str | None:
+        """Read one UTF-8 text input, diagnosing a failure at its source.
+
+        ``missing_ok`` distinguishes an optional fallback candidate, which is
+        simply absent, from an explicit file whose absence blocks readiness.
+        """
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError as error:
+            if missing_ok:
+                return None
+            diagnostics.append(ConfigDiagnostic(
+                str(path), source, reason, f"Cannot read {name}: {error}",
+            ))
+            return None
+        except (OSError, UnicodeError) as error:
+            diagnostics.append(ConfigDiagnostic(
+                str(path), source, reason, f"Cannot read {name}: {error}",
+            ))
+            return None
 
     def _resolve_path(self, path: str | Path) -> Path:
         candidate = Path(path).expanduser()
@@ -508,23 +750,57 @@ class CodingAgentHost:
         return DEFAULT_TOOLS
 
     def _skill_sources(self) -> tuple[SkillSource, ...]:
-        sources = [
-            SkillSource(self._resolve_path(value), "explicit")
-            for value in self._explicit_skills
-        ]
-        source = self.settings.source_of("skills")
-        sources.extend(
-            SkillSource(value, source) for value in settings_strings(self.settings, "skills")
+        automatic = (
+            automatic_skill_sources(
+                cwd=self._settings_cwd, agent_dir=self.agent_dir, home=self.home,
+                project_trusted=self._trusted,
+            )
+            if not self._no_skills else ()
         )
-        return tuple(sources)
+        return self._resource_sources("skills", self._explicit_skills, SkillSource, automatic)
 
     def _template_sources(self) -> tuple[PromptTemplateSource, ...]:
-        sources = [
-            PromptTemplateSource(self._resolve_path(value), "explicit")
-            for value in self._explicit_templates
-        ]
-        source = self.settings.source_of("prompts")
-        sources.extend(
-            PromptTemplateSource(value, source) for value in settings_strings(self.settings, "prompts")
+        automatic = (
+            automatic_template_sources(
+                cwd=self._settings_cwd, agent_dir=self.agent_dir,
+                project_trusted=self._trusted,
+            )
+            if not self._no_prompt_templates else ()
         )
-        return tuple(sources)
+        return self._resource_sources("prompts", self._explicit_templates, PromptTemplateSource, automatic)
+
+    def _resource_sources(
+        self, key: str, explicit: tuple[str, ...], configured: Callable[[str | Path, str], _SourceT],
+        automatic: tuple[_SourceT, ...],
+    ) -> tuple[_SourceT, ...]:
+        """Compose explicit, configured and automatic sources, preserving tier order.
+
+        ``automatic`` is empty when discovery is disabled; explicit and
+        configured paths still load.
+        """
+        tier = self._configured_tier(key)
+        return (
+            *(configured(self._resolve_path(value), "explicit") for value in explicit),
+            *(configured(value, tier) for value in settings_strings(self.settings, key)),
+            *automatic,
+        )
+
+    def _configured_tier(self, key: str) -> str:
+        """Map the effective settings scope for a resource array onto its tier."""
+        return _TIER_FOR_SCOPE.get(self.settings.source_of(key), "global-config")
+
+
+def _diagnose_saved_images(
+    destination: Path, decoded: DecodedHistory, model: Model | None,
+    diagnostics: list[ConfigDiagnostic],
+) -> None:
+    """Explain saved images that a text-only model will project as placeholders."""
+    if model is None or "image" in model.input:
+        return
+    count = count_history_images(decoded.history)
+    if not count:
+        return
+    diagnostics.append(ConfigDiagnostic(
+        str(destination), "history", "adjusted",
+        degradation_notice(model.provider, model.id, count),
+    ))

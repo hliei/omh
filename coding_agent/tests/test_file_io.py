@@ -79,12 +79,14 @@ async def test_valid_json_semantic_errors_fail_without_repairing_file(tmp_path, 
 
 
 async def test_explicit_save_and_export_before_first_prompt(tmp_path):
-    from omh.agent import CustomAgentMessage
-
     options = CodingAgentOptions(cwd=tmp_path, model=model(), stream_fn=OfflineStream(), tools=(), session_file="new.jsonl")
     runtime = AgentSessionRuntime(options)
     session = await runtime.new_session(display_name="before prompt")
-    await session.agent.submit_custom_message(CustomAgentMessage(custom_type="note", content="context"))
+    assert not any(entry.type == "custom_message" for entry in session.agent.history.entries)
+    assert not any(
+        entry.type == "message" and entry.message.role in ("user", "assistant")
+        for entry in session.agent.history.entries
+    )
     assert session.save_state == "pending"
     assert not session.path.exists()
     exported = await runtime.export_session("copy.jsonl")
@@ -92,8 +94,6 @@ async def test_explicit_save_and_export_before_first_prompt(tmp_path):
     assert session.save_state == "pending"
     await runtime.save_session()
     assert session.save_state == "saved"
-    assert decode_history(session.path.read_bytes()).history == session.agent.history
-    await session.agent.submit_custom_message(CustomAgentMessage(custom_type="note", content="later"))
     assert decode_history(session.path.read_bytes()).history == session.agent.history
 
 

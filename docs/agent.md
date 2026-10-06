@@ -728,7 +728,10 @@ the notice is additional to the retained-text budget. Empty files and trailing
 newlines remain readable.
 
 Supported JPEG, PNG, GIF, and WebP signatures produce SDK `ImageContent` with
-base64 data; BMP requires conversion. `ReadToolOptions.image_processor` is an
+base64 data; BMP requires conversion. `detect_supported_image_mime_type(data)`
+is exported from `omh.agent` so a host can classify the same bytes before
+handing them to a processor; it returns the supported MIME type or `None`.
+`ReadToolOptions.image_processor` is an
 async callable accepting `(data: bytes, mime_type: str, options:
 ReadImageProcessorOptions, signal: AbortSignal | None)`. It returns
 `ReadImageProcessorSuccess(data, mime_type, hints)` or

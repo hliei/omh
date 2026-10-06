@@ -10,10 +10,12 @@ sessions; the session connects awaited SDK history commits to its manager.
 ## Session entry
 
 `new_session`, `open_session` and `switch_session` return `AgentSession`, which exposes
-`agent`, `session_manager`, `path`, `cwd`, `display_name`, `save_state`, `save_error` and
-`model_fallback_message`. Session methods `prompt`, `continue_`, `compact`,
+`agent`, `session_manager`, `path`, `cwd`, `display_name`, `save_state`, `save_error`,
+`save_mode` and `model_fallback_message`. Session methods `prompt`, `continue_`, `compact`,
 `save` and `export` have matching runtime wrappers. `steer`, `follow_up` and
-`reload_resources` also work through either the session or runtime. `continue_` follows the
+`reload_resources` also work through either the session or runtime. `save_mode` is
+`"auto"` for a file-backed conversation and `"memory"` when no destination exists;
+see [storage modes](session-manager.md#storage-modes-and-layout). `continue_` follows the
 SDK's continuation rules; an assistant tail needs queued input. The runnable
 offline example creates and edits a real temporary file and verifies the
 reopened history.
@@ -55,12 +57,19 @@ All application resource paths, including relative `agent_dir` and
 
 `skill_sources` accepts a tuple of SDK `SkillSource` values and
 `template_sources` accepts SDK `PromptTemplateSource` values. Each source path
-can be a directory or a Markdown file. The application orders source labels
-`global`, `project`, then `explicit`, retaining supplied order within each tier;
-other source labels occupy the explicit tier. Skills preserve first-source
-winners and template invocation uses the first matching ordered template.
-The host supplies these paths explicitly; `agent_dir` does not implicitly add
+can be a directory or a Markdown file. Without `resource_tiers`, the embedded
+default orders source labels `global`, then `project`, then `explicit`, retaining
+supplied order within each tier; other source labels occupy the explicit tier.
+The installed host supplies `resource_tiers=RESOURCE_TIERS` and its own five
+tier labels (`explicit`, `project-config`, `project-auto`, `global-config`,
+`global-auto`), so the CLI priority never silently changes the embedded default.
+Skills preserve first-source winners and template invocation uses the first
+matching ordered template; collisions keep winner and loser metadata. The host
+supplies these paths explicitly; `agent_dir` does not implicitly add
 skill/template directories or select a product configuration directory.
+`load_context_files=False` disables `load_project_context_files` entirely, so
+ancestor and explicit context directories contribute nothing; `append_system_prompt`
+adds one host-assembled addendum.
 
 ```python
 from omh.agent import PromptTemplateSource, SkillSource
@@ -86,6 +95,8 @@ or `bash` tool, with XML-escaped metadata; `disable-model-invocation` hides a
 skill from that catalog while retaining explicit invocation.
 `custom_prompt`, including `""`, replaces default preamble/tool/rule text while
 retaining project context, cwd and an eligible skill catalog.
+`append_system_prompt` adds one addendum section; the installed host assembles
+it from its ordered `SYSTEM`/`APPEND_SYSTEM` inputs.
 `agent_options.initial_state.system_prompt` continues to seed raw SDK system
 content on new conversations; use `custom_prompt` for a replaceable application
 base. Raw system content accumulates in history across reloads and reopen.
@@ -106,6 +117,16 @@ a diagnostic before ordinary template expansion. Queued strings are expanded
 at acceptance, including their images. Retries reuse accepted expanded messages.
 Typed SDK messages and message lists retain their data semantics; direct
 `session.agent` calls use only the SDK input contract.
+
+The `images` argument of `prompt`, `steer` and `follow_up` carries real image
+content. A text-only selected model rejects a new attachment with
+`UnsupportedImageModelError` before anything is accepted, and nothing switches
+provider. `supports_images` reports the current model's image capability, and
+`CodingAgentOptions.image_limits` passes stricter send limits. Saved history
+images are not rejected; resolving them with a text-only model adds a
+non-blocking diagnostic that explains the SDK placeholder projection. File
+argument boundaries, conversion and the read-tool image processor are described
+in [input and attachments](input.md).
 
 `await session.reload_resources()` (or the runtime wrapper) loads a complete
 batch from the current options before replacing the resource snapshot, expected
