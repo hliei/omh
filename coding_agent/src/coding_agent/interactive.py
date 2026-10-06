@@ -50,8 +50,23 @@ from omh.llm.types import (
 
 from coding_agent.agent_session_runtime import AgentSessionRuntime
 from coding_agent.cli import CliArgs
+from coding_agent.clipboard import ClipboardError, copy_text
+from coding_agent.commands import (
+    AVAILABLE_COMMANDS,
+    COMMANDS_BY_NAME,
+    RESERVED_COMMANDS,
+    SlashIntent,
+    classify,
+    command_detail,
+    help_lines,
+    hotkey_lines,
+)
+from coding_agent.completion import Completion, CompletionSources, complete
 from coding_agent.config import settings_theme
+from coding_agent.editor import Editor, normalize_paste
+from coding_agent.external_editor import editor_command, run_external_editor
 from coding_agent.host import CodingAgentHost, SessionSelection
+from coding_agent.resources import ApplicationResources
 from coding_agent.terminal import EXIT_OK
 from coding_agent.theme import resolve_theme
 
@@ -65,6 +80,33 @@ _COLORS = {
     "light": "\x1b[38;5;25m",
     "plain": "",
 }
+_PASTE_START = b"\x1b[200~"
+_PASTE_END = b"\x1b[201~"
+#: Candidates shown at once; the completion list itself is bounded separately.
+_COMPLETION_VISIBLE = 8
+_CONTINUATION = "  "
+_CONTROL_KEYS = {
+    0x0D: "enter",
+    0x0A: "newline",
+    0x09: "tab",
+    0x7F: "backspace",
+    0x08: "backspace",
+    0x03: "ctrl_c",
+    0x04: "ctrl_d",
+    0x07: "ctrl_g",
+    0x0F: "ctrl_o",
+    0x14: "ctrl_t",
+    0x18: "ctrl_x",
+}
+_ARROWS = {"A": "up", "B": "down", "C": "right", "D": "left"}
+
+
+@dataclass(frozen=True, slots=True)
+class _Key:
+    """One decoded terminal key: a named action or literal inserted text."""
+
+    name: str | None = None
+    value: str = ""
 
 
 @dataclass(slots=True)
@@ -131,8 +173,8 @@ class _Session:
         self._items: list[_Item] = []
         self._tools: dict[str, _Tool] = {}
         self._live: _Assistant | None = None
-        self._buffer = ""
-        self._cursor = 0
+        self.editor = Editor()
+        self._completion: Completion | None = None
         self._phase = "input"
         self._chooser = "prompt"
         self._request_block: str | None = None
@@ -143,15 +185,21 @@ class _Session:
         self._prompt_task: asyncio.Task[None] | None = None
         self._startup_task: asyncio.Task[None] | None = None
         self._exit_task: asyncio.Task[None] | None = None
+        self._reader_task: asyncio.Task[None] | None = None
+        self._external_task: asyncio.Task[None] | None = None
+        self._copy_task: asyncio.Task[None] | None = None
+        self._external_running = False
         self._ctrl_c_at = 0.0
         self._termios: list[object] | None = None
         self._flags: int | None = None
         self._previous: tuple[str, ...] = ()
         self._scrollback: tuple[str, ...] = ()
-        self._previous_status = ""
-        self._previous_entry = ""
+        self._previous_chrome = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._pending = b""
+        self._paste_mode = False
+        self._paste_buffer = b""
+        self._escape_handle: asyncio.TimerHandle | None = None
         self._read_future: asyncio.Future[bytes] | None = None
         self._done: asyncio.Event | None = None
         self._signals = 0
@@ -171,13 +219,14 @@ class _Session:
             if not self._closing:
                 raise
         self._redraw()
-        reader = asyncio.create_task(self._read_loop())
+        self._start_reader()
         await self._done.wait()
-        reader.cancel()
-        try:
-            await reader
-        except asyncio.CancelledError:
-            pass
+        await self._cancel_reader()
+        if self._external_task is not None:
+            try:
+                await self._external_task
+            except asyncio.CancelledError:
+                pass
         if self._exit_task is not None:
             await self._exit_task
         return self.exit_code
@@ -187,11 +236,49 @@ class _Session:
         if self._restored:
             return
         self._restored = True
+        if self._escape_handle is not None:
+            self._escape_handle.cancel()
+            self._escape_handle = None
+        try:
+            os.write(self._out, b"\x1b[?2004l")
+        except OSError:
+            pass
         if self.theme != "plain":
             try:
                 os.write(self._out, b"\x1b[0m\x1b[r\x1b[?25h\r\n")
             except OSError:
                 pass
+        self._restore_cooked()
+
+    # ------------------------------------------------------------------ #
+    # Terminal ownership
+    # ------------------------------------------------------------------ #
+
+    def _enter_terminal(self) -> None:
+        if self._termios is None:
+            self._termios = termios.tcgetattr(self._fd)
+            self._flags = fcntl.fcntl(self._fd, fcntl.F_GETFL)
+        self._apply_raw_mode()
+
+    def _apply_raw_mode(self) -> None:
+        assert self._termios is not None and self._flags is not None
+        attrs = list(self._termios)
+        attrs[0] = cast(int, attrs[0]) & ~(termios.IXON | termios.IXOFF | termios.ICRNL)
+        attrs[3] = cast(int, attrs[3]) & ~(termios.ECHO | termios.ICANON | termios.ISIG | termios.IEXTEN)
+        attrs[6] = list(cast(list[int | bytes], attrs[6]))
+        cc = cast(list[int | bytes], attrs[6])
+        cc[termios.VMIN] = 1
+        cc[termios.VTIME] = 0
+        termios.tcsetattr(
+            self._fd, termios.TCSADRAIN, cast("list[int | list[bytes | int]]", attrs),
+        )
+        fcntl.fcntl(self._fd, fcntl.F_SETFL, self._flags | os.O_NONBLOCK)
+        try:
+            os.write(self._out, b"\x1b[?2004h")
+        except OSError:
+            pass
+
+    def _restore_cooked(self) -> None:
         if self._flags is not None:
             fcntl.fcntl(self._fd, fcntl.F_SETFL, self._flags)
         if self._termios is not None:
@@ -199,17 +286,9 @@ class _Session:
                 self._fd, termios.TCSADRAIN, cast("list[int | list[bytes | int]]", self._termios),
             )
 
-    def _enter_terminal(self) -> None:
-        self._termios = termios.tcgetattr(self._fd)
-        attrs = termios.tcgetattr(self._fd)
-        attrs[0] = cast(int, attrs[0]) & ~(termios.IXON | termios.IXOFF)
-        attrs[3] = cast(int, attrs[3]) & ~(termios.ECHO | termios.ICANON | termios.ISIG | termios.IEXTEN)
-        cc = cast(list[int | bytes], attrs[6])
-        cc[termios.VMIN] = 1
-        cc[termios.VTIME] = 0
-        termios.tcsetattr(self._fd, termios.TCSADRAIN, attrs)
-        self._flags = fcntl.fcntl(self._fd, fcntl.F_GETFL)
-        fcntl.fcntl(self._fd, fcntl.F_SETFL, self._flags | os.O_NONBLOCK)
+    # ------------------------------------------------------------------ #
+    # Startup and sessions
+    # ------------------------------------------------------------------ #
 
     async def _startup(self) -> None:
         self._add("interactive")
@@ -328,6 +407,7 @@ class _Session:
                 text = _user_text(message)
                 if text:
                     self._items.append(_You(text))
+                    self.editor.remember(text)
             elif isinstance(message, AssistantMessage):
                 self._items.append(_assistant_from(message))
                 for block in message.content:
@@ -343,6 +423,25 @@ class _Session:
                 )
                 self._tools[item.tool_id] = item
                 self._items.append(item)
+
+    # ------------------------------------------------------------------ #
+    # Terminal input
+    # ------------------------------------------------------------------ #
+
+    def _start_reader(self) -> None:
+        if self._reader_task is None or self._reader_task.done():
+            self._reader_task = asyncio.create_task(self._read_loop())
+
+    async def _cancel_reader(self) -> None:
+        task = self._reader_task
+        self._reader_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def _read_loop(self) -> None:
         while not self._closing:
@@ -380,98 +479,257 @@ class _Session:
                 self._read_future = None
 
     def _handle(self, data: bytes) -> None:
+        self._cancel_escape_timer()
         for key in self._keys(data):
-            if key == "\r" or key == "\n":
-                self._submit()
-            elif key in {"\x7f", "\x08"}:
-                self._backspace()
-            elif key == "\x03":
-                self._ctrl_c()
-            elif key == "\x04":
-                if self._buffer == "":
-                    self._request_exit(EXIT_OK)
-            elif key == "\x0f":
-                self._tools_open = not self._tools_open
-            elif key == "\x14":
-                self._thinking_open = not self._thinking_open
-            elif key == "left":
-                self._cursor = max(0, self._cursor - 1)
-            elif key == "right":
-                self._cursor = min(len(self._buffer), self._cursor + 1)
-            elif key.isprintable():
-                self._buffer = self._buffer[:self._cursor] + key + self._buffer[self._cursor:]
-                self._cursor += len(key)
-                self._ctrl_c_at = 0.0
+            self._handle_key(key)
+        if self._pending == b"\x1b":
+            self._arm_escape_timer()
         self._redraw()
 
-    def _keys(self, data: bytes) -> list[str]:
+    def _handle_key(self, key: _Key) -> None:
+        name = key.name
+        if name == "escape":
+            self._completion = None
+            return
+        if name == "tab":
+            if self._completion is not None:
+                self._accept_completion()
+            else:
+                self._open_completion()
+            return
+        if name == "enter":
+            self._accept_or_submit()
+            return
+        if name == "newline":
+            self.editor.insert("\n")
+            self._completion = None
+            return
+        if name == "up":
+            if self._completion is not None:
+                self._completion.select(-1)
+            else:
+                self.editor.move_up()
+            return
+        if name == "down":
+            if self._completion is not None:
+                self._completion.select(1)
+            else:
+                self.editor.move_down()
+            return
+        if name == "left":
+            self.editor.move(-1)
+            self._completion = None
+            return
+        if name == "right":
+            self.editor.move(1)
+            self._completion = None
+            return
+        if name == "backspace":
+            self.editor.backspace()
+            self._refresh_completion()
+            return
+        if name == "ctrl_c":
+            self._ctrl_c()
+            return
+        if name == "ctrl_d":
+            if self.editor.empty:
+                self._request_exit(EXIT_OK)
+            return
+        if name == "ctrl_o":
+            self._tools_open = not self._tools_open
+            return
+        if name == "ctrl_t":
+            self._thinking_open = not self._thinking_open
+            return
+        if name == "ctrl_g":
+            self._open_external_editor()
+            return
+        if name == "ctrl_x":
+            self._start_copy()
+            return
+        if key.value:
+            self.editor.insert(key.value)
+            self._refresh_completion()
+
+    def _accept_or_submit(self) -> None:
+        completion = self._completion
+        if completion is not None:
+            self._accept_completion()
+            if not completion.submit:
+                self._refresh_completion()
+                return
+        text = self.editor.text
+        cursor = self.editor.cursor
+        if cursor > 0 and text[cursor - 1] == "\\":
+            self.editor.backspace()
+            self.editor.insert("\n")
+            return
+        self._submit()
+
+    def _accept_completion(self) -> None:
+        completion = self._completion
+        if completion is None:
+            return
+        self.editor.replace_token(completion.start, completion.end, completion.current.value)
+        self._completion = None
+
+    def _keys(self, data: bytes) -> list[_Key]:
         blob = self._pending + data
         self._pending = b""
-        keys: list[str] = []
+        keys: list[_Key] = []
         index = 0
         while index < len(blob):
+            if self._paste_mode:
+                end = blob.find(_PASTE_END, index)
+                if end == -1:
+                    self._paste_buffer += blob[index:]
+                    break
+                self._paste_buffer += blob[index:end]
+                keys.append(_Key(value=normalize_paste(self._paste_buffer.decode("utf-8", "replace"))))
+                self._paste_mode = False
+                self._paste_buffer = b""
+                index = end + len(_PASTE_END)
+                continue
             byte = blob[index]
             if byte == 0x1B:
-                if index + 1 >= len(blob):
-                    self._pending = blob[index:]
-                    break
-                if blob[index + 1] != 0x5B:
-                    index += 1
+                if blob.startswith(_PASTE_START, index):
+                    self._paste_mode = True
+                    index += len(_PASTE_START)
                     continue
-                final = index + 2
-                while final < len(blob) and not 0x40 <= blob[final] <= 0x7E:
-                    final += 1
-                if final >= len(blob):
+                matched = self._escape_sequence(blob, index)
+                if matched is None:
                     self._pending = blob[index:]
                     break
-                sequence = blob[index:final + 1]
-                if sequence == b"\x1b[D":
-                    keys.append("left")
-                elif sequence == b"\x1b[C":
-                    keys.append("right")
-                index = final + 1
+                name, consumed = matched
+                if name is not None:
+                    keys.append(_Key(name=name))
+                index += consumed
                 continue
             if byte < 0x20 or byte == 0x7F:
-                keys.append(chr(byte))
+                name = _CONTROL_KEYS.get(byte)
+                if name is not None:
+                    keys.append(_Key(name=name))
                 index += 1
                 continue
             character = self._decoder.decode(blob[index:index + 1])
             index += 1
             if character:
-                keys.append(character)
+                keys.append(_Key(value=character))
         return keys
 
-    def _backspace(self) -> None:
-        if self._cursor == 0:
+    @staticmethod
+    def _escape_sequence(blob: bytes, index: int) -> tuple[str | None, int] | None:
+        """Decode one escape sequence, or ``None`` while it may be incomplete."""
+        if index + 1 >= len(blob):
+            return None
+        second = blob[index + 1]
+        if second == 0x0D:
+            return ("newline", 2)
+        if second != 0x5B:
+            return (None, 2)
+        final = index + 2
+        while final < len(blob) and not 0x40 <= blob[final] <= 0x7E:
+            final += 1
+        if final >= len(blob):
+            return None
+        consumed = final + 1 - index
+        body = blob[index + 2:final].decode("ascii", "replace")
+        final_byte = chr(blob[final])
+        if not body and final_byte in _ARROWS:
+            return (_ARROWS[final_byte], consumed)
+        if final_byte == "Z":
+            return (None, consumed)
+        parts = body.split(";")
+        if parts[0] == "13" and "2" in parts[1:]:
+            return ("newline", consumed)
+        if final_byte == "~" and len(parts) >= 3 and parts[2] == "13" and "2" in parts[1:]:
+            return ("newline", consumed)
+        return (None, consumed)
+
+    def _arm_escape_timer(self) -> None:
+        loop = asyncio.get_running_loop()
+        self._escape_handle = loop.call_later(0.05, self._flush_escape)
+
+    def _flush_escape(self) -> None:
+        self._escape_handle = None
+        if self._pending != b"\x1b":
             return
-        self._buffer = self._buffer[:self._cursor - 1] + self._buffer[self._cursor:]
-        self._cursor -= 1
-        self._ctrl_c_at = 0.0
+        self._pending = b""
+        self._handle_key(_Key(name="escape"))
+        self._redraw()
+
+    def _cancel_escape_timer(self) -> None:
+        if self._escape_handle is not None:
+            self._escape_handle.cancel()
+            self._escape_handle = None
 
     def _ctrl_c(self) -> None:
         now = asyncio.get_running_loop().time()
         if self._ctrl_c_at and now - self._ctrl_c_at <= 0.5:
             self._request_exit(EXIT_OK)
             return
-        self._buffer = ""
-        self._cursor = 0
+        self.editor.clear()
+        self._completion = None
         self._ctrl_c_at = now
 
+    # ------------------------------------------------------------------ #
+    # Completion
+    # ------------------------------------------------------------------ #
+
+    def _open_completion(self) -> None:
+        self._completion = complete(self.editor.text, self.editor.cursor, self._completion_sources())
+
+    def _refresh_completion(self) -> None:
+        if self._completion is not None:
+            self._open_completion()
+
+    def _completion_sources(self) -> CompletionSources:
+        session = self.runtime.current_session if self.runtime is not None else None
+        resources = session.resources if session is not None else ApplicationResources()
+        cwd = (
+            session.cwd if session is not None
+            else Path(self.args.cwd or Path.cwd()).expanduser()
+        )
+        return CompletionSources(
+            cwd=cwd,
+            commands=AVAILABLE_COMMANDS,
+            skills=tuple((skill.name, skill.description) for skill in resources.skills),
+            templates=tuple((template.name, template.description) for template in resources.templates),
+            reserved=RESERVED_COMMANDS,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Submission and dispatch
+    # ------------------------------------------------------------------ #
+
     def _submit(self) -> None:
-        text = self._buffer
-        self._buffer = ""
-        self._cursor = 0
-        self._ctrl_c_at = 0.0
+        text = self.editor.text
+        self._completion = None
+        if self._chooser == "cwd":
+            stripped = text.strip()
+            if not stripped:
+                return
+            self.editor.clear()
+            self._choose_cwd(stripped)
+            return
+        if text.strip():
+            intent = classify(text, skills=self._skill_names(), templates=self._template_names())
+            if intent.kind == "builtin":
+                self.editor.clear()
+                self._run_command(intent)
+                return
+            if intent.kind == "reserved":
+                self.editor.clear()
+                self._print(f"/{intent.name} is reserved for a later delivery; nothing was sent.")
+                return
+            if intent.kind == "unknown":
+                self._print(f"Unknown command /{intent.name}; sending the text as an ordinary prompt.")
         if self._busy:
-            self._buffer = text
-            self._cursor = len(text)
             return
         if not text.strip():
-            self._redraw()
             return
-        if self._chooser == "cwd":
-            self._choose_cwd(text.strip())
-            return
+        self.editor.clear()
+        self.editor.remember(text)
         self._items.append(_You(text))
         if self._request_block is not None or self.runtime is None:
             self._add(f"notice {self._request_block or 'The session is not ready.'}")
@@ -484,6 +742,67 @@ class _Session:
         self._busy = True
         self._set_phase("model")
         self._prompt_task = asyncio.create_task(self._prompt(text))
+
+    def _skill_names(self) -> tuple[str, ...]:
+        session = self.runtime.current_session if self.runtime is not None else None
+        if session is None:
+            return ()
+        return tuple(skill.name for skill in session.resources.skills)
+
+    def _template_names(self) -> tuple[str, ...]:
+        session = self.runtime.current_session if self.runtime is not None else None
+        if session is None:
+            return ()
+        return tuple(template.name for template in session.resources.templates)
+
+    def _run_command(self, intent: SlashIntent) -> None:
+        spec = COMMANDS_BY_NAME.get(intent.name)
+        if spec is None:
+            return
+        argument = intent.argument.strip()
+        if len(argument.split()) > spec.max_arguments:
+            limit = "no arguments" if spec.max_arguments == 0 else "at most one argument"
+            self._print(f"/{spec.name} takes {limit}; nothing was sent.")
+            return
+        if spec.name == "help":
+            if not argument:
+                for line in help_lines():
+                    self._print(line)
+            else:
+                name = argument.lstrip("/").split()[0] if argument.split() else ""
+                detail = command_detail(name)
+                if detail is not None:
+                    for line in detail:
+                        self._print(line)
+                elif name in RESERVED_COMMANDS:
+                    self._print(f"/{name} is reserved for a later delivery.")
+                else:
+                    self._print(f"Unknown command /{name}.")
+        elif spec.name == "hotkeys":
+            for line in hotkey_lines():
+                self._print(line)
+        elif spec.name == "copy":
+            self._start_copy()
+
+    def _start_copy(self) -> None:
+        if self._copy_task is None or self._copy_task.done():
+            self._copy_task = asyncio.create_task(self._copy_answer())
+
+    async def _copy_answer(self) -> None:
+        text = _last_assistant_text(self.runtime)
+        if not text:
+            self._print("No assistant answer to copy yet.")
+            self._redraw()
+            return
+        try:
+            await asyncio.to_thread(copy_text, text)
+        except ClipboardError as error:
+            self._print(str(error))
+        except Exception as error:  # the screen must survive any copy failure
+            self._print(f"Cannot copy the last assistant answer: {error}")
+        else:
+            self._print("Copied the last assistant answer to the clipboard.")
+        self._redraw()
 
     def _choose_cwd(self, text: str) -> None:
         candidate = Path(text).expanduser()
@@ -505,6 +824,8 @@ class _Session:
 
     async def _prompt(self, text: str) -> None:
         assert self.runtime is not None
+        session = self.runtime.current_session
+        before = len(session.input_diagnostics) if session is not None else 0
         try:
             await self.runtime.prompt(text)
         except Exception as error:
@@ -512,9 +833,17 @@ class _Session:
         finally:
             self._busy = False
             self._remember_save()
+            self._show_input_diagnostics(before)
             if not self._closing:
                 self._set_phase("input")
             self._redraw()
+
+    def _show_input_diagnostics(self, before: int) -> None:
+        session = self.runtime.current_session if self.runtime is not None else None
+        if session is None:
+            return
+        for diagnostic in session.input_diagnostics[before:]:
+            self._add(f"notice {diagnostic.message}")
 
     def _remember_save(self) -> None:
         session = self.runtime.current_session if self.runtime is not None else None
@@ -526,6 +855,58 @@ class _Session:
         session = self.runtime.current_session if self.runtime is not None else None
         if session is not None and session.save_error is not None:
             self._add(f"notice {session.save_error}")
+
+    # ------------------------------------------------------------------ #
+    # External editor
+    # ------------------------------------------------------------------ #
+
+    def _open_external_editor(self) -> None:
+        if self._external_running:
+            return
+        self._completion = None
+        self._external_running = True
+        self._external_task = asyncio.create_task(self._external_editor())
+
+    async def _external_editor(self) -> None:
+        command = editor_command(os.environ)
+        content = self.editor.text
+        await self._cancel_reader()
+        self._cancel_escape_timer()
+        self._suspend_terminal()
+        message: str | None = None
+        content_update: str | None = None
+        try:
+            result = await run_external_editor(
+                command, content, stdin=self._fd, stdout=self._out, stderr=self._out,
+            )
+        except Exception as error:  # keep the editor usable after an unexpected failure
+            message = f"External editor failed: {error}"
+        else:
+            if result.status == "complete":
+                content_update = result.content
+            else:
+                message = result.message
+        finally:
+            self._apply_raw_mode()
+            self._start_reader()
+            self._external_running = False
+        if content_update is not None:
+            self.editor.set_text(content_update)
+            self._print("External editor returned; the draft was updated and not submitted.")
+        elif message is not None:
+            self._print(message)
+        self._redraw()
+
+    def _suspend_terminal(self) -> None:
+        try:
+            os.write(self._out, b"\x1b[?2004l\x1b[0m\x1b[?25h\r\n")
+        except OSError:
+            pass
+        self._restore_cooked()
+
+    # ------------------------------------------------------------------ #
+    # Agent events and status
+    # ------------------------------------------------------------------ #
 
     def _on_event(self, event: AgentEvent, signal: AbortSignal) -> None:
         del signal
@@ -624,6 +1005,10 @@ class _Session:
             return
         self._items.append(_Note(text))
 
+    def _print(self, text: str) -> None:
+        """Append one line of command or diagnostic output without deduplication."""
+        self._items.append(_Note(text))
+
     def _request_exit(self, code: int) -> None:
         if self._exit_task is None:
             self._exit_task = asyncio.create_task(self._shutdown(code))
@@ -647,6 +1032,12 @@ class _Session:
                     await self._startup_task
                 except asyncio.CancelledError:
                     pass
+            if self._external_task is not None and not self._external_task.done():
+                self._external_task.cancel()
+                try:
+                    await self._external_task
+                except asyncio.CancelledError:
+                    pass
             if self._prompt_task is not None and not self._prompt_task.done():
                 session = self.runtime.current_session if self.runtime is not None else None
                 if session is not None and session.agent.state.is_busy:
@@ -665,22 +1056,52 @@ class _Session:
             if self._done is not None:
                 self._done.set()
 
+    # ------------------------------------------------------------------ #
+    # Rendering
+    # ------------------------------------------------------------------ #
+
     def _redraw(self) -> None:
-        if self._termios is None or self._restored:
+        if self._termios is None or self._restored or self._external_running:
             return
         rows, cols = _window_size(self._out)
         lines = _render(self._items, cols, thinking_open=self._thinking_open, tools_open=self._tools_open)
         status = _wrap(self._status(), cols)
-        entry = _fit(self._entry(), cols)
+        candidates = self._completion_lines(cols)
+        entry, cursor_row, cursor_col = self._entry_layout(cols)
         if self.theme == "plain" or rows < 3:
-            self._paint_linear(lines, status, entry)
+            self._paint_linear(lines, status, candidates, entry)
             return
-        self._paint_fancy(lines, status[: rows - 2], entry, rows, cols)
+        self._paint_fancy(lines, status, candidates, entry, cursor_row, cursor_col, rows, cols)
+
+    def _completion_lines(self, cols: int) -> list[str]:
+        completion = self._completion
+        if completion is None or not completion.items:
+            return []
+        items = completion.items
+        start = max(0, min(completion.index - _COMPLETION_VISIBLE // 2, max(0, len(items) - _COMPLETION_VISIBLE)))
+        shown = items[start:start + _COMPLETION_VISIBLE]
+        lines = [
+            _fit(
+                f"{'>' if start + offset == completion.index else ' '} {item.label}"
+                f"{'  ' + item.description if item.description else ''}",
+                cols,
+            )
+            for offset, item in enumerate(shown)
+        ]
+        if len(items) > _COMPLETION_VISIBLE:
+            lines.append(_fit(f"  {len(items)} candidates", cols))
+        return lines
+
+    def _entry_layout(self, cols: int) -> tuple[list[str], int, int]:
+        prefix = "directory> " if self._chooser == "cwd" else "> "
+        return _layout_entry(self.editor.text, width=cols, prefix=prefix, cursor=self.editor.cursor)
 
     def _paint_fancy(
-        self, lines: Sequence[str], status: Sequence[str], entry: str, rows: int, cols: int,
+        self, lines: Sequence[str], status: list[str], candidates: list[str], entry: list[str],
+        cursor_row: int, cursor_col: int, rows: int, cols: int,
     ) -> None:
-        chrome = len(status) + 1
+        status, candidates, entry, cursor_row = _fit_chrome(status, candidates, entry, cursor_row, rows)
+        chrome = len(status) + len(candidates) + len(entry)
         body = max(rows - chrome, 1)
         if len(lines) > body:
             hidden = list(lines[:-body])
@@ -693,10 +1114,14 @@ class _Session:
         for row in range(1, body + 1):
             text = visible[row - 1] if row - 1 < len(visible) else ""
             parts.append(f"\x1b[{row};1H\x1b[K{self._paint(text)}")
-        for offset, text in enumerate(status):
-            parts.append(f"\x1b[{body + 1 + offset};1H\x1b[K{self._paint(text)}")
-        parts.append(f"\x1b[{rows};1H\x1b[K{self._paint(entry)}")
-        parts.append(f"\x1b[{rows};{self._entry_column(cols)}H\x1b[?25h")
+        row = body + 1
+        for section in (status, candidates, entry):
+            for text in section:
+                parts.append(f"\x1b[{row};1H\x1b[K{self._paint(text)}")
+                row += 1
+        entry_top = body + len(status) + len(candidates) + 1
+        column = max(1, min(cursor_col + 1, cols))
+        parts.append(f"\x1b[{entry_top + cursor_row};{column}H\x1b[?25h")
         self._write("".join(parts))
 
     def _emit_scrollback(self, hidden: Sequence[str], body_rows: int) -> None:
@@ -716,7 +1141,9 @@ class _Session:
         parts.append("\x1b[r")
         self._write("".join(parts))
 
-    def _paint_linear(self, lines: Sequence[str], status: Sequence[str], entry: str) -> None:
+    def _paint_linear(
+        self, lines: Sequence[str], status: list[str], candidates: list[str], entry: list[str],
+    ) -> None:
         previous = self._previous
         share = 0
         for left, right in zip(previous, lines, strict=False):
@@ -729,13 +1156,10 @@ class _Session:
         if fresh:
             self._write("\n".join(self._paint(line) for line in fresh) + "\n")
         self._previous = tuple(lines)
-        status_text = "\n".join(status)
-        if status_text != self._previous_status:
-            self._write(self._paint(status_text) + "\n")
-            self._previous_status = status_text
-        if entry != self._previous_entry:
-            self._write(self._paint(entry) + "\n")
-            self._previous_entry = entry
+        chrome = "\n".join([*status, *candidates, *entry])
+        if chrome != self._previous_chrome:
+            self._write(self._paint(chrome) + "\n")
+            self._previous_chrome = chrome
 
     def _paint(self, text: str) -> str:
         color = _COLORS[self.theme]
@@ -762,19 +1186,6 @@ class _Session:
             f"cwd {cwd} | path {path}"
         )
 
-    def _entry_column(self, cols: int) -> int:
-        prefix = "directory> " if self._chooser == "cwd" else "> "
-        raw = prefix + self._buffer
-        if _display_width(raw) <= cols:
-            column = 1 + _display_width(prefix + self._buffer[:self._cursor])
-        else:
-            column = _display_width(_fit(raw, cols))
-        return max(1, min(column, cols))
-
-    def _entry(self) -> str:
-        prefix = "directory> " if self._chooser == "cwd" else "> "
-        return prefix + self._buffer
-
     def _write(self, text: str) -> None:
         view = memoryview(text.encode("utf-8"))
         while view:
@@ -790,6 +1201,69 @@ class _Session:
             if written <= 0:
                 return
             view = view[written:]
+
+
+def _fit_chrome(
+    status: list[str], candidates: list[str], entry: list[str], cursor_row: int, rows: int,
+) -> tuple[list[str], list[str], list[str], int]:
+    """Trim chrome so the entry, status and completion fit above one body row."""
+    budget = max(rows - 1, 1)
+    entry = list(entry)
+    if len(entry) > budget:
+        start = max(0, min(cursor_row - budget // 2, len(entry) - budget))
+        entry = entry[start:start + budget]
+        cursor_row -= start
+    remaining = budget - len(entry)
+    status = list(status)[:remaining] if remaining > 0 else []
+    remaining -= len(status)
+    candidates = list(candidates)[:remaining] if remaining > 0 else []
+    return status, candidates, entry, cursor_row
+
+
+def _layout_entry(text: str, *, width: int, prefix: str, cursor: int) -> tuple[list[str], int, int]:
+    """Wrap the editor buffer and map the cursor to a rendered row and column."""
+    lines = text.split("\n")
+    cursor_line = 0
+    remaining = cursor
+    for index, line in enumerate(lines):
+        if remaining <= len(line):
+            cursor_line, cursor_column = index, remaining
+            break
+        remaining -= len(line) + 1
+    else:
+        cursor_line, cursor_column = len(lines) - 1, len(lines[-1])
+    rendered: list[str] = []
+    cursor_row = cursor_col = 0
+    for index, line in enumerate(lines):
+        lead = prefix if index == 0 else _CONTINUATION
+        chunks = _wrap(lead + line, width)
+        start = len(rendered)
+        rendered.extend(chunks)
+        if index == cursor_line:
+            column = _display_width(lead) + _display_width(line[:cursor_column])
+            used = 0
+            for offset, chunk in enumerate(chunks):
+                chunk_width = _display_width(chunk)
+                if used + chunk_width >= column or offset == len(chunks) - 1:
+                    cursor_row = start + offset
+                    cursor_col = max(0, column - used)
+                    break
+                used += chunk_width
+    if not rendered:
+        rendered = [""]
+    return rendered, cursor_row, cursor_col
+
+
+def _last_assistant_text(runtime: AgentSessionRuntime | None) -> str:
+    session = runtime.current_session if runtime is not None else None
+    if session is None:
+        return ""
+    for message in reversed(session.agent.state.messages):
+        if isinstance(message, AssistantMessage):
+            text = "".join(block.text for block in message.content if isinstance(block, TextContent)).strip()
+            if text:
+                return text
+    return ""
 
 
 def _render(
@@ -948,21 +1422,21 @@ def _wrap(text: str, width: int) -> list[str]:
     text = _terminal_text(text)
     if width < 1 or not text:
         return [text]
-    lines: list[str] = []
-    current = ""
-    used = 0
-    for char in text:
-        needed = _char_width(char)
-        if current and used + needed > width:
-            lines.append(current)
-            current = char
-            used = needed
-        else:
-            current += char
-            used += needed
-    if current or not lines:
-        lines.append(current)
-    return lines
+    rendered: list[str] = []
+    for source in text.split("\n"):
+        current = ""
+        used = 0
+        for char in source:
+            needed = _char_width(char)
+            if current and used + needed > width:
+                rendered.append(current)
+                current = char
+                used = needed
+            else:
+                current += char
+                used += needed
+        rendered.append(current)
+    return rendered
 
 
 def _fit(text: str, width: int) -> str:
