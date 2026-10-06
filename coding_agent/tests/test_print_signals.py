@@ -292,3 +292,122 @@ def test_no_session_does_not_rescue(home: Path, tmp_path: Path) -> None:
     assert "answer" in stdout
     assert "rescue" not in stderr.lower()
     assert list(home.rglob("*.jsonl")) == []
+
+
+@pytest.mark.parametrize("mode", ["--mode=json", "--mode=text"])
+def test_full_stdout_pipe_still_handles_first_and_second_signals(
+    home: Path, tmp_path: Path, mode: str,
+) -> None:
+    gate = tmp_path / "gate"
+    stderr_path = tmp_path / "stderr"
+    prompts = ("first", "second") if mode == "--mode=json" else ("first",)
+    process = launch(home, tmp_path, "stdout_block", gate, *prompts,
+                     mode=mode, stderr_path=stderr_path)
+    try:
+        wait_for(gate / "ready_stdout", process)
+        process.send_signal(signal.SIGINT)
+        acknowledged = wait_for_file_text(stderr_path, "received SIGINT")
+        assert "received SIGINT" in acknowledged
+        assert process.poll() is None
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=8) == 143
+        assert "saving may be incomplete" in stderr_path.read_text()
+        assert (home / "sends").read_text().splitlines() == ["dialogue"]
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_signal_while_waiting_for_stdin_eof_exits_without_a_request(
+    home: Path, tmp_path: Path, signum: int,
+) -> None:
+    site = home / "stdin-site"
+    site.mkdir()
+    ready = home / "stdin-ready"
+    (site / "sitecustomize.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "class Input:\n"
+        "    def isatty(self): return False\n"
+        "    def read(self):\n"
+        f"        Path({str(ready)!r}).write_text('ready')\n"
+        "        return sys.__stdin__.read()\n"
+        "sys.stdin = Input()\n"
+    )
+    env = clean_env(home)
+    env["PYTHONPATH"] = str(site)
+    process = subprocess.Popen(
+        [*cli_command(), "--mode=text", "--no-approve", "--no-session", "--api-key", "offline"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cwd=tmp_path, env=env, text=True,
+    )
+    try:
+        wait_for(ready, process)
+        process.send_signal(signum)
+        assert process.wait(timeout=8) == 128 + signum
+        stdout, stderr = process.communicate(timeout=2)
+        assert stdout == ""
+        assert "received" in stderr
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+
+@pytest.mark.parametrize("stderr_open", [True, False])
+def test_unwritable_stderr_cannot_block_signal_abort_or_force_exit(
+    home: Path, tmp_path: Path, stderr_open: bool,
+) -> None:
+    import os
+
+    gate = tmp_path / "gate"
+    site = home / "site"
+    site.mkdir()
+    ready = gate / "ready_stderr"
+    script = PROVIDER.read_text() + """
+import errno
+_real_stderr_write = os.write
+os.set_blocking(2, False)
+while True:
+    try:
+        _real_stderr_write(2, b'x' * 4096)
+    except OSError as error:
+        if error.errno in {errno.EAGAIN, errno.EWOULDBLOCK, errno.EPIPE}:
+            break
+        raise
+os.set_blocking(2, True)
+Path(os.environ['JSON_GATE'], 'ready_stderr').write_text('ready')
+"""
+    (site / "sitecustomize.py").write_text(script)
+    env = clean_env(home)
+    env.update(PYTHONPATH=str(site), JSON_SCENARIO="signal_close", JSON_GATE=str(gate),
+               JSON_SENDS=str(home / "sends"), JSON_SESSIONS=str(home / "sessions"))
+    gate.mkdir()
+    read_fd, write_fd = os.pipe()
+    if not stderr_open:
+        os.close(read_fd)
+    process = subprocess.Popen(
+        [*cli_command(), "--mode=json", "--no-approve", "--api-key", "offline",
+         "--session-dir", str(home / "sessions"), "use a tool"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=write_fd, env=env,
+        cwd=tmp_path, text=True,
+    )
+    os.close(write_fd)
+    try:
+        wait_for(ready, process)
+        wait_for(gate / "ready_tool", process)
+        process.send_signal(signal.SIGINT)
+        wait_for(gate / "ready_close", process)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=8) == 143
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        if process.stdout is not None:
+            process.stdout.close()
+        if stderr_open:
+            os.close(read_fd)

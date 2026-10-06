@@ -137,11 +137,14 @@ Cancelling an awaited prompt is not a way to stop the work it owns, so the
 command never cancels the prompt waiter, never waits for idle/close from inside
 an awaited callback handled by the signal path, sets no automatic hard timeout
 and does not roll back completed side effects. A second termination signal stops
-the process immediately and says on stderr that saving may be incomplete; it no
-longer promises cooperative cleanup or a complete save. This contract begins
-when print execution starts: a signal during argument, stdin or host
-preparation is not covered, `SIGINT` there keeps the existing `omh: cancelled`
-diagnostic and exits `1`, and `SIGTERM`/`SIGHUP` keep the process default.
+the process immediately and, when stderr is writable, says that saving may be incomplete; it no
+longer promises cooperative cleanup or a complete save. Process handlers also
+run during blocked stdout writes and temporary-error
+retries, so a second signal can still force exit while the consumer is stopped.
+Once print dispatch begins, preparation (including waiting for stdin EOF) uses
+the same signal exit codes and sends no request after interruption. Argument
+parsing and read-only commands precede print dispatch.
+
 
 JSON output during cancellation keeps only the ordinary header and event lines;
 no `cancelled` marker or final result is added. A normally returned assistant
@@ -189,7 +192,7 @@ a retryable model failure and adds no JSON `result`, `cancelled` or private
 wire event. JSON failures during the event stream skip the normal close; text
 writes its final answer only after a normal close, so a failure there surfaces
 after that save. Signal cooperation and automatic save rescue remain owned by
-the signals delivery.
+[signals and save rescue](#signals-and-save-rescue).
 
 ## Options
 

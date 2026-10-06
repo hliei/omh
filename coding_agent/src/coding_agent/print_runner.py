@@ -147,11 +147,25 @@ async def _run_print(
         return EXIT_USAGE
 
     runtime = AgentSessionRuntime(options)
-    loop = asyncio.get_running_loop()
     cancellation = PrintCancellation(stderr) if handle_signals else None
     if cancellation is not None:
-        cancellation.install(loop, lambda: _abort_current(runtime))
+        cancellation.install(lambda: _abort_current(runtime), loop=asyncio.get_running_loop())
     writer = StdoutWriter(stdout)
+    try:
+        return await _execute_print(
+            runtime, selection, tasks, display_name=display_name, writer=writer,
+            stderr=stderr, json_mode=json_mode, cancellation=cancellation,
+        )
+    finally:
+        if cancellation is not None:
+            cancellation.uninstall()
+
+
+async def _execute_print(
+    runtime: AgentSessionRuntime, selection: SessionSelection, tasks: Sequence[PrintTask], *,
+    display_name: str | None, writer: StdoutWriter, stderr: TextIO, json_mode: bool,
+    cancellation: PrintCancellation | None,
+) -> int:
     outcome = _RunOutcome()
     input_rejected = False
     close_failed = False
@@ -163,17 +177,17 @@ async def _run_print(
                 session = runtime.current_session
                 assert session is not None
                 history = session.agent.history
-                await asyncio.to_thread(writer.write, _json_line({"type": "session", "version": 3,
+                writer.write(_json_line({"type": "session", "version": 3,
                                          "id": history.conversation_id,
                                          "timestamp": history.created_at.isoformat(),
                                          "cwd": str(session.cwd)}))
                 if session.save_mode == "memory":
                     write_diagnostic(stderr, "in-memory session; history will not be saved")
 
-                async def on_event(event: AgentEvent, signal: AbortSignal) -> None:
+                def on_event(event: AgentEvent, signal: AbortSignal) -> None:
                     projected = project_event(event)
                     if projected is not None:
-                        await asyncio.to_thread(writer.write, _json_line(projected))
+                        writer.write(_json_line(projected))
 
                 runtime.subscribe(on_event)
         except Exception as error:
@@ -200,8 +214,6 @@ async def _run_print(
                 outcome = _RunOutcome()
                 close_failed = True
             await _rescue_unsaved(runtime, stderr)
-        if cancellation is not None:
-            cancellation.uninstall(loop)
 
     if writer.failed:
         return EXIT_FAILURE
@@ -215,12 +227,12 @@ async def _run_print(
     if outcome.text is not None:
         try:
             if not json_mode:
-                await asyncio.to_thread(writer.write, outcome.text)
-            await asyncio.to_thread(writer.flush)
+                writer.write(outcome.text)
+            writer.flush()
         except StdoutWriteError as error:
             write_diagnostic(stderr, error)
             return EXIT_FAILURE
-        return EXIT_OK
+        return cancellation.exit_code if _cancel_requested(cancellation) and cancellation is not None else EXIT_OK
     return EXIT_FAILURE
 
 

@@ -139,8 +139,8 @@ incomplete. A failed default auto save exits `1` and reports a rescue path (or
 that no complete history was saved) only on stderr. See
 [signals and save rescue](cli.md#signals-and-save-rescue).
 
-Print awaits each serial stdout write outside the event-loop thread, preserving
-backpressure while allowing termination signals to be handled. Normal completion
+Print writes records serially, preserving producer backpressure. Process signal
+handlers remain responsive while a stdout write is blocked. Normal completion
 flushes all output. `ENOBUFS`, `EAGAIN` and `EWOULDBLOCK` retry pending bytes after
 10 ms. Other write errors, including `EPIPE`, take precedence over cancellation
 and exit `1` without waiting for cooperative cleanup, full saving or rescue.

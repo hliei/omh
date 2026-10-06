@@ -19,9 +19,10 @@ import asyncio
 import os
 import signal
 from collections.abc import Callable
+from types import FrameType
 from typing import TextIO
 
-from coding_agent.terminal import write_diagnostic
+from coding_agent.terminal import plain_text, write_diagnostic
 
 #: The three termination signals the print command handles cooperatively.
 _SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -38,7 +39,8 @@ class PrintCancellation:
     def __init__(self, stderr: TextIO) -> None:
         self._stderr = stderr
         self._signal_number: int | None = None
-        self._installed: list[int] = []
+        self._previous: dict[int, signal._HANDLER] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def requested(self) -> bool:
@@ -49,51 +51,56 @@ class PrintCancellation:
         assert self._signal_number is not None
         return signal_exit_code(self._signal_number)
 
-    def install(self, loop: asyncio.AbstractEventLoop, abort: Callable[[], None]) -> None:
-        """Install the three handlers when the loop and thread allow it.
+    def install(
+        self, abort: Callable[[], None], *, loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        """Handle signals even while stdout backpressure blocks the event loop."""
+        self._loop = loop
 
-        Unsupported platforms or a non-main thread keep the previous process
-        behavior rather than failing the print run.
-        """
-        def handler(signal_number: int) -> None:
+        def handler(signal_number: int, frame: FrameType | None) -> None:
             self._handle(signal_number, abort)
 
         for signal_number in _SIGNALS:
+            previous = signal.getsignal(signal_number)
             try:
-                loop.add_signal_handler(signal_number, handler, signal_number)
-            except (NotImplementedError, RuntimeError, ValueError):
+                signal.signal(signal_number, handler)
+            except (OSError, ValueError):
                 continue
-            self._installed.append(signal_number)
+            self._previous[signal_number] = previous
 
-    def uninstall(self, loop: asyncio.AbstractEventLoop) -> None:
-        for signal_number in self._installed:
-            try:
-                loop.remove_signal_handler(signal_number)
-            except (NotImplementedError, RuntimeError, ValueError):
-                continue
-        self._installed.clear()
+    def uninstall(self) -> None:
+        for signal_number, previous in self._previous.items():
+            signal.signal(signal_number, previous)
+        self._previous.clear()
+        self._loop = None
 
     def _handle(self, signal_number: int, abort: Callable[[], None]) -> None:
         if self._signal_number is None:
             self._signal_number = signal_number
-            write_diagnostic(
-                self._stderr,
-                f"received {_signal_name(signal_number)}; stopping remaining tasks "
-                "and waiting for cleanup and saving",
-            )
             try:
-                abort()
-            except Exception:
-                # A failed abort must not break signal delivery; close still
-                # awaits the Agent-owned cleanup it started.
-                pass
+                try:
+                    if self._loop is not None:
+                        # Wake a sleeping selector so syscall retry cannot delay
+                        # the cleanup scheduled by the public abort callback.
+                        self._loop.call_soon_threadsafe(lambda: None)
+                    abort()
+                except Exception:
+                    # Close still awaits the Agent-owned cleanup it started.
+                    pass
+            finally:
+                _signal_diagnostic(
+                    self._stderr,
+                    f"received {_signal_name(signal_number)}; stopping remaining tasks "
+                    "and waiting for cleanup and saving",
+                )
             return
-        write_diagnostic(
-            self._stderr,
-            f"received a second {_signal_name(signal_number)}; saving may be incomplete",
-        )
-        _flush(self._stderr)
-        os._exit(signal_exit_code(signal_number))
+        try:
+            _signal_diagnostic(
+                self._stderr,
+                f"received a second {_signal_name(signal_number)}; saving may be incomplete",
+            )
+        finally:
+            os._exit(signal_exit_code(signal_number))
 
 
 def _signal_name(signal_number: int) -> str:
@@ -103,8 +110,29 @@ def _signal_name(signal_number: int) -> str:
         return str(signal_number)
 
 
-def _flush(stream: TextIO) -> None:
+def _signal_diagnostic(stream: TextIO, message: str) -> None:
+    """Use a best-effort unbuffered write; stderr cannot hold signal exit hostage."""
     try:
-        stream.flush()
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        try:
+            write_diagnostic(stream, message)
+        except Exception:
+            pass
+        return
+    try:
+        blocking = os.get_blocking(fd)
+        os.set_blocking(fd, False)
+        try:
+            os.write(fd, f"omh: {plain_text(message)}\n".encode("utf-8"))
+        finally:
+            os.set_blocking(fd, blocking)
     except Exception:
         pass
+
+
+class PrintPreparationCancelled(BaseException):
+    """A termination signal interrupted print before the runtime owned work."""
+
+    def __init__(self, exit_code: int) -> None:
+        self.exit_code = exit_code

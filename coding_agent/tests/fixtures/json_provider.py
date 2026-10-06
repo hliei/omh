@@ -144,7 +144,7 @@ def _respond(model, context, options):
         text = TextContent(text="", text_signature="text-token")
         output.content.append(text)
         stream.push(TextStartEvent(content_index=0, partial=output))
-        text.text = "summary" if summary else "answer"
+        text.text = "x" * 1_000_000 if SCENARIO == "stdout_block" else ("summary" if summary else "answer")
         stream.push(TextDeltaEvent(content_index=0, delta=text.text, partial=output))
         stream.push(TextEndEvent(content_index=0, content=text.text, partial=output))
         output.stop_reason = "error" if SCENARIO == "compact_error" and summary else "stop"
@@ -246,3 +246,22 @@ if SCENARIO in {"intent_abort", "intent_listener", "intent_save", "close_failure
             return super().subscribe(observed)
 
     runner.AgentSessionRuntime = ControlledRuntime
+
+# Observe a genuinely full pipe before restoring the normal blocking write.
+if SCENARIO == "stdout_block":
+    _real_stdout_write = os.write
+
+    def blocked_write(fd, data):
+        if fd != 1:
+            return _real_stdout_write(fd, data)
+        blocking = os.get_blocking(fd)
+        os.set_blocking(fd, False)
+        try:
+            return _real_stdout_write(fd, data)
+        except BlockingIOError:
+            gate_ready("stdout")
+        finally:
+            os.set_blocking(fd, blocking)
+        return _real_stdout_write(fd, data)
+
+    os.write = blocked_write
