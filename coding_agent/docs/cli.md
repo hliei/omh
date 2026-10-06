@@ -7,12 +7,13 @@ The `omh-coding-agent` distribution installs the `omh` command. Installing the
 shared by print and interactive use; both modes consume the same host once task
 execution is delivered.
 
-This delivery provides the installed command, read-only model/session commands
-and the complete argument and mode contract. Print and interactive task
-execution arrive in later deliveries; until then those paths report a
-plain diagnostic and exit `1` instead of pretending to run. `cli.py` owns
-parsing, validation and dispatch; `model_directory.py` owns the registered
-model metadata.
+This delivery provides the installed command, read-only model/session commands,
+the complete argument and mode contract, and print text execution.
+[`print_runner.py`](../src/coding_agent/print_runner.py) owns input composition
+and the serial task chain; `cli.py` owns parsing, validation and dispatch;
+`model_directory.py` owns the registered model metadata. Interactive and JSON
+task execution arrive in later deliveries; until then those paths report a
+plain diagnostic and exit `1` instead of pretending to run.
 
 ## Read-only commands
 
@@ -88,6 +89,42 @@ Explicit modes always win over TTY inference. Explicit interactive mode without
 a usable terminal fails before any request with exit `2`. `-p` combined with
 `--mode interactive` is a conflict.
 
+## Print text
+
+Print text reads a non-TTY stdin to EOF and keeps its exact text; a TTY stdin
+supplies no task. A pure-whitespace stdin is no task. `@path` arguments are read
+in argument order and contribute a `<file name="...">...</file>` boundary; an
+image becomes real image content. Relative `@path` and other CLI paths resolve
+against the startup directory (an explicit `--cwd` when given, otherwise the
+invocation directory), not a reopened session's saved cwd. The first task places
+stdin, then the attachments, then the first positional prompt, separated so no
+part runs into the next. Every later positional prompt runs on its own in the
+same session, after the previous task has completed normally. `--` ends flag and
+`@` interpretation, so every later token is literal task text.
+
+Only the final executed task's assistant text reaches stdout; intermediate
+answers, thinking, tool progress and welcome text never mix in. Diagnostics stay
+on stderr. A task whose final assistant ends in `error` or `aborted` stops the
+remaining prompts, writes to stderr and exits `1`; prompts that never ran are
+not written to history. An error the SDK retries resolves to the retried
+outcome, not to the transient error. A recoverable tool failure is fed back to
+the model and does not by itself fail the process.
+
+Print expands `/skill:` commands and prompt-template input only. It never
+executes an interactive builtin or `!`/`!!` shell syntax; an unknown slash
+command or a leading `!` stays ordinary task text. The four model tools follow
+the SDK's existing execution, truncation and cleanup contract.
+
+A new session saves by default; `--session-dir` replaces the root,
+`--no-session` keeps it in memory, `-c`/`--continue` continues the effective
+cwd's newest session, `--session <path|id>` reopens one, and `--name` sets or
+updates the display name. A normal finish waits for the complete activity and
+the selected saving mode before printing. A later print run in the same project
+directory continues the same conversation identity with `-c`; `--session
+<path|id>` continues it from any cwd. A request, notification, saving or close
+failure is reported on stderr and exits `1`; the final answer text is only
+written after a fully successful finish.
+
 ## Options
 
 Single-value options cannot be repeated. Repeatable options keep command-line
@@ -112,7 +149,7 @@ path must exist.
 | `--model <provider/id\|id>` | Exact model ID, never fuzzy-replaced |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; the selected model restricts the valid set, and a fixed thinking model accepts none |
 | `--api-key <key>` | API key for this process only |
-| `--name <name>` | Session display name for task execution (later print/UI delivery); persistent name APIs are available now |
+| `--name <name>` | Session display name for a new session; updates a reopened session's saved name |
 | `--tools <names>` | Comma-separated distinct subset of `read`, `bash`, `edit`, `write` |
 | `--no-tools` | Disable model tools; a user shell stays separate |
 | `--system-prompt <text>` | Replace the base system prompt with literal text |
@@ -155,9 +192,10 @@ A text attachment keeps the file's original content inside a
 sent as real image content. The first task combines piped stdin, the
 attachments in argument order and the first prompt, separated so that no part
 runs into the next. A missing file, or bytes that are neither a supported image
-nor UTF-8 text, is rejected before the request. Formats, limits and the model
-modality rule are in [input and attachments](input.md); print task execution
-delivers this composition in a later delivery.
+nor UTF-8 text, is rejected before the request. An image with a text-only
+selected model is rejected before the request as well; no provider is switched
+automatically. Formats, limits and the model modality rule are in
+[input and attachments](input.md).
 
 ## Conflicts and rejection
 
@@ -183,6 +221,6 @@ or traceback. Credentials never appear in stdout or stderr.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Read-only command completed |
-| `1` | Recognized capability that this delivery does not provide yet |
+| `0` | Read-only command completed, or print text finished normally |
+| `1` | The final assistant ended in `error`/`aborted`, or a run, notification, saving or close failure |
 | `2` | Invalid command line, input or configuration rejected before any request |

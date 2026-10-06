@@ -42,6 +42,12 @@ from coding_agent.images import (
     read_image,
 )
 from coding_agent.model_directory import ModelDirectory, ModelListing
+from coding_agent.print_runner import (
+    PrintInputError,
+    PrintTask,
+    compose_tasks,
+    run_print_text,
+)
 from coding_agent.resources import ApplicationDiagnostic, ApplicationResources
 from coding_agent.session_directory import (
     SessionDirectory,
@@ -63,11 +69,12 @@ __all__ = [
     "AttachmentError", "CodingAgentHost", "CodingAgentOptions", "ConfigDiagnostic", "ConfigError",
     "DecodedHistory", "ExportFormat", "FileAttachment", "FileCredentialStore", "IMAGE_MAX_BASE64_BYTES",
     "IMAGE_MAX_DIMENSION", "ImageInputError", "ImageLimits", "ModelDirectory", "ModelListing",
-    "ProcessedImage", "SaveMode", "SaveState", "SessionDirectory", "SessionInfo", "SessionLookupError", "SessionSort",
+    "ProcessedImage", "PrintInputError", "PrintTask", "SaveMode", "SaveState", "SessionDirectory", "SessionInfo", "SessionLookupError", "SessionSort",
     "SessionManager", "SessionWriterError", "SessionSelection", "SettingsSnapshot",
     "ToolName", "TrustDecision", "TrustStore", "UnsupportedImageModelError", "attachment_images", "compose_first_task",
+    "compose_tasks",
     "count_history_images", "create_read_image_processor", "decode_history", "degradation_notice",
     "encode_history", "encode_history_html", "load_settings", "merge_settings", "process_image",
     "project_settings_path", "read_file_attachment", "read_image", "render_attachment",
-    "resolve_agent_dir", "update_settings",
+    "resolve_agent_dir", "run_print_text", "update_settings",
 ]
