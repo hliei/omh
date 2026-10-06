@@ -52,7 +52,7 @@ therefore does not append to the global array.
 | `retry` | `enabled`, `maxRetries`, `baseDelayMs`, `maxAgentDelayMs`, mapped to the SDK's public retry policy |
 | `skills`, `prompts` | Additional resource paths resolved against the effective session cwd |
 | `sessionDir` | Session storage root preference consumed by session discovery |
-| `theme` | Built-in theme preference consumed by the interactive delivery |
+| `theme` | Built-in `dark` or `light` preference for the [interactive session](interactive.md); `NO_COLOR` and `TERM=dumb` select the plain fallback |
 
 Unknown keys are reported with a hint and preserved; a known key with the wrong
 type or an invalid compaction/retry budget prevents session assembly until

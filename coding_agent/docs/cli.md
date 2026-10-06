@@ -12,8 +12,9 @@ the complete argument and mode contract, and print text/JSON execution.
 [`print_runner.py`](../src/coding_agent/print_runner.py) owns input composition
 and the serial task chain; `cli.py` owns parsing, validation and dispatch;
 `model_directory.py` owns the registered model metadata. JSON projection lives in `json_wire.py`; its [wire contract](print-json.md)
-includes the complete schema and examples. Interactive execution arrives in a
-later delivery and currently reports a plain diagnostic and exits `1`.
+includes the complete schema and examples. Interactive execution is the
+[regular terminal session](interactive.md). It imports neither the print runner's
+task chain nor a second Agent loop, and print does not import the terminal session.
 
 ## Read-only commands
 
@@ -87,7 +88,8 @@ entitlement has been verified.
 
 Explicit modes always win over TTY inference. Explicit interactive mode without
 a usable terminal fails before any request with exit `2`. `-p` combined with
-`--mode interactive` is a conflict.
+`--mode interactive` is a conflict. The interactive session is documented in
+[Interactive session](interactive.md).
 
 ## Print text
 
@@ -175,7 +177,7 @@ path must exist.
 | `--no-context-files` | Disable AGENTS.md and CLAUDE.md discovery |
 | `--approve` | Trust project-local configuration and resources for this run |
 | `--no-approve` | Skip untrusted project-local configuration and resources |
-| `--use-theme <name>` | Built-in theme for this run |
+| `--use-theme <name>` | Built-in theme for this run: `dark` or `light` |
 | `--` | End options and `@file` arguments |
 
 Literal text options never reinterpret file-looking values; the matching

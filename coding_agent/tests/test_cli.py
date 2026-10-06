@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import pty
+import select
 import shutil
 import subprocess
 import sys
+import time
 from importlib.metadata import distribution, entry_points
 from pathlib import Path
 
@@ -119,6 +121,7 @@ def run_cli_controlled(
 
 def run_cli_tty(
     *args: str, home: Path, stdin_tty: bool = True, stdout_tty: bool = True,
+    keys: bytes | None = None, timeout: float | None = None,
 ) -> tuple[int, str, str]:
     master, slave = pty.openpty()
     try:
@@ -131,13 +134,30 @@ def run_cli_tty(
         )
     finally:
         os.close(slave)
+    if keys and stdin_tty:
+        os.write(master, keys)
     captured = b""
     if stdout_tty:
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            try:
-                chunk = os.read(master, 65536)
-            except OSError:
+            if deadline is not None and time.monotonic() > deadline:
+                process.kill()
                 break
+            if deadline is None:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
+            else:
+                ready, _, _ = select.select([master], [], [], 0.1)
+                if not ready:
+                    if process.poll() is not None:
+                        break
+                    continue
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
             if not chunk:
                 break
             captured += chunk
@@ -514,7 +534,11 @@ def test_bare_model_id_is_accepted(home: Path, provider_args: tuple[str, ...]) -
 
 
 def test_default_mode_needs_both_streams_to_be_ttys(home: Path) -> None:
-    assert "interactive mode" in run_cli_tty(home=home)[2]
+    code, output, errors = run_cli_tty(home=home, keys=b"\x04", timeout=8)
+    assert code == 0
+    assert "No API key" in output
+    assert "not available" not in output
+    assert "not available" not in errors
     assert "No API key" in run_cli("--no-approve", home=home).stderr
     assert "No API key" in run_cli_tty("--no-approve", home=home, stdout_tty=False)[2]
     assert "No API key" in run_cli_tty("--no-approve", home=home, stdin_tty=False)[2]
@@ -524,9 +548,10 @@ def test_explicit_modes_override_tty_inference(home: Path) -> None:
     assert "No API key" in run_cli_tty("--no-approve", "--mode", "text", home=home)[2]
     assert "No API key" in run_cli_tty("--no-approve", "--print", home=home)[2]
     assert "No API key" in run_cli_tty("--mode", "json", "--no-approve", home=home)[2]
-    code, _, errors = run_cli_tty("--mode", "interactive", home=home)
-    assert code == EXIT_FAILURE
-    assert "interactive mode" in errors
+    code, output, errors = run_cli_tty("--mode", "interactive", home=home, keys=b"\x04", timeout=8)
+    assert code == 0
+    assert "No API key" in output
+    assert "not available" not in errors
 
 
 def test_explicit_interactive_without_a_terminal_fails_clearly(home: Path) -> None:
