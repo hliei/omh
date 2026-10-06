@@ -130,3 +130,19 @@ no fork, navigation, queue persistence or process recovery here.
 
 Run the offline [session switching example](../examples/session_switch.py) with
 `python coding_agent/examples/session_switch.py` from the repository root.
+
+## Discovery, names and exports
+
+The [shared session directory](session-discovery.md) resolves current/all-project
+queries, ID prefixes and the newest mtime before runtime assembly. Common-host
+`SessionSelection.session_path` is the path to pass to `open_session`; a
+new-session selection leaves it `None`. Reopen keeps the saved identity and cwd,
+with an explicit cwd override available through the host.
+
+`await runtime.set_session_name(name)` persists the name through the current
+SessionManager; `None` clears it. `await runtime.export_session(path,
+format="jsonl" | "html")` delegates to the current session. A retained session
+has the same `set_name` and `export` APIs, with temporary writer acquisition
+after close. Independent export preserves its save error and binding; a bound
+destination always performs complete JSONL save. See
+[persistent names and offline export](session-manager.md#persistent-names-and-offline-export).

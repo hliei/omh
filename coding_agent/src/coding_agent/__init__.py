@@ -27,6 +27,7 @@ from coding_agent.config import (
     update_settings,
 )
 from coding_agent.history import DecodedHistory, decode_history, encode_history
+from coding_agent.history_html import encode_history_html
 from coding_agent.host import CodingAgentHost, SessionSelection
 from coding_agent.images import (
     IMAGE_MAX_BASE64_BYTES,
@@ -42,19 +43,31 @@ from coding_agent.images import (
 )
 from coding_agent.model_directory import ModelDirectory, ModelListing
 from coding_agent.resources import ApplicationDiagnostic, ApplicationResources
-from coding_agent.session_manager import SaveMode, SaveState, SessionManager
+from coding_agent.session_directory import (
+    SessionDirectory,
+    SessionInfo,
+    SessionLookupError,
+    SessionSort,
+)
+from coding_agent.session_manager import (
+    ExportFormat,
+    SaveMode,
+    SaveState,
+    SessionManager,
+)
 from coding_agent.trust import TrustDecision, TrustStore
 from coding_agent.writer_lock import SessionWriterError
 
 __all__ = [
     "AgentSession", "AgentSessionRuntime", "ApplicationDiagnostic", "ApplicationResources",
     "AttachmentError", "CodingAgentHost", "CodingAgentOptions", "ConfigDiagnostic", "ConfigError",
-    "DecodedHistory", "FileAttachment", "FileCredentialStore", "IMAGE_MAX_BASE64_BYTES",
+    "DecodedHistory", "ExportFormat", "FileAttachment", "FileCredentialStore", "IMAGE_MAX_BASE64_BYTES",
     "IMAGE_MAX_DIMENSION", "ImageInputError", "ImageLimits", "ModelDirectory", "ModelListing",
-    "ProcessedImage", "SaveMode", "SaveState", "SessionManager", "SessionWriterError", "SessionSelection", "SettingsSnapshot",
+    "ProcessedImage", "SaveMode", "SaveState", "SessionDirectory", "SessionInfo", "SessionLookupError", "SessionSort",
+    "SessionManager", "SessionWriterError", "SessionSelection", "SettingsSnapshot",
     "ToolName", "TrustDecision", "TrustStore", "UnsupportedImageModelError", "attachment_images", "compose_first_task",
     "count_history_images", "create_read_image_processor", "decode_history", "degradation_notice",
-    "encode_history", "load_settings", "merge_settings", "process_image",
+    "encode_history", "encode_history_html", "load_settings", "merge_settings", "process_image",
     "project_settings_path", "read_file_attachment", "read_image", "render_attachment",
     "resolve_agent_dir", "update_settings",
 ]

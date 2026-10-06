@@ -44,7 +44,12 @@ from omh.llm.types import (
 from coding_agent.config import ToolName as ToolName
 from coding_agent.images import ImageLimits, create_read_image_processor
 from coding_agent.resources import ApplicationResources, load_resources
-from coding_agent.session_manager import SaveMode, SaveState, SessionManager
+from coding_agent.session_manager import (
+    ExportFormat,
+    SaveMode,
+    SaveState,
+    SessionManager,
+)
 
 
 class UnsupportedImageModelError(RuntimeError):
@@ -277,9 +282,13 @@ class AgentSession:
         """Explicitly write the complete history, even before a first prompt."""
         return await self.session_manager.save(self.agent.history, path)
 
-    async def export(self, path: str | Path | None = None) -> str:
+    async def set_name(self, name: str | None) -> None:
+        """Persist a display name; None clears it, failure retains the requested name."""
+        await self.session_manager.set_name(self.agent.history, name)
+
+    async def export(self, path: str | Path | None = None, *, format: ExportFormat = "jsonl") -> str:
         """Return a full JSONL snapshot; an optional separate file receives it."""
-        return await self.session_manager.export(self.agent.history, path)
+        return await self.session_manager.export(self.agent.history, path, format=format)
 
     async def close(self) -> None:
         """Finish Agent-owned cleanup before releasing the application writer."""

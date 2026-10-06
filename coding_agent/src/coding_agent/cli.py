@@ -21,6 +21,13 @@ from omh.llm.types import ModelThinkingLevel
 from coding_agent.agent_session import ToolName
 from coding_agent.config import AppendKind, resolve_agent_dir
 from coding_agent.model_directory import ModelDirectory, ModelListing
+from coding_agent.session_directory import (
+    SESSION_SORTS,
+    SessionDirectory,
+    SessionInfo,
+    SessionSort,
+)
+from coding_agent.session_paths import sessions_root
 
 Mode = Literal["interactive", "text", "json"]
 
@@ -29,13 +36,13 @@ _TOOLS: tuple[ToolName, ...] = ("read", "bash", "edit", "write")
 _BOOLEAN_FLAGS = frozenset({
     "--help", "-h", "--version", "-v", "--print", "-p", "--continue", "-c", "--resume", "-r",
     "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--no-context-files",
-    "--approve", "--no-approve",
+    "--approve", "--no-approve", "--all-projects", "--reverse",
 })
 _VALUE_FLAGS = frozenset({
     "--mode", "--provider", "--model", "--thinking", "--api-key", "--name", "--session",
     "--session-dir", "--cwd", "--use-theme", "--tools", "--system-prompt", "--system-prompt-file",
     "--append-system-prompt", "--append-system-prompt-file", "--skill", "--prompt-template",
-    "--list-models", "--list-sessions",
+    "--list-models", "--list-sessions", "--sort",
 })
 
 EXIT_OK = 0
@@ -52,7 +59,10 @@ Read-only commands (no API key, no model request, no configuration change):
   -v, --version                  Show the installed product version and exit
   --list-models [search]         List registered models with protocol, input, thinking, capacity, cost,
                                   source and catalog date; global models.json overrides are included
-  --list-sessions [search]       List saved sessions (discovery is not available in this release)
+  --list-sessions [search]       List current-project sessions; search name, ID, cwd, time or messages
+  --all-projects                 List sessions across projects (also for print --resume)
+  --sort <field>                 mtime (default), created, name, id, cwd
+  --reverse                      Reverse the default sort order
 
 Execution modes (task execution is not available in this release):
   --mode <mode>                  interactive, text, or json; text and json are print
@@ -133,6 +143,9 @@ class CliArgs:
     list_models_search: str | None = None
     list_sessions: bool = False
     list_sessions_search: str | None = None
+    all_projects: bool = False
+    session_sort: SessionSort | None = None
+    reverse: bool = False
     messages: list[str] = field(default_factory=list)
     file_args: list[str] = field(default_factory=list)
 
@@ -214,6 +227,16 @@ def parse_args(argv: Sequence[str]) -> CliArgs:
             args.approve = True
         elif token == "--no-approve":
             args.no_approve = True
+        elif token == "--all-projects":
+            args.all_projects = True
+        elif token == "--reverse":
+            args.reverse = True
+        elif token == "--sort":
+            single("sort", "--sort")
+            value = take("--sort")
+            if value not in SESSION_SORTS:
+                raise CliUsageError(f"invalid session sort {value!r}; valid values: {', '.join(SESSION_SORTS)}")
+            args.session_sort = value
         elif token == "--mode":
             single("mode", "--mode")
             args.mode = _parse_mode(take("--mode"))
@@ -305,6 +328,10 @@ def validate_args(args: CliArgs, directory: ModelDirectory) -> None:
         raise CliUsageError(f"--no-session cannot be combined with {selectors[0]}")
     if args.no_session and args.session_dir is not None:
         raise CliUsageError("--no-session cannot be combined with --session-dir")
+    if (args.all_projects or args.reverse or args.session_sort is not None) and not (args.list_sessions or args.resume):
+        raise CliUsageError("--all-projects, --sort and --reverse require --list-sessions or --resume")
+    if args.cwd is not None and not Path(args.cwd).expanduser().is_dir():
+        raise CliUsageError(f"Working directory does not exist: {args.cwd}")
 
     _validate_resources(args)
     _validate_selection(args, directory)
@@ -359,16 +386,46 @@ def run(
             _diagnostic(stderr, f"{diagnostic.source}: {diagnostic.message}")
         _write_listings(stdout, directory.listings(args.list_models_search))
         return EXIT_OK
-    if args.list_sessions:
-        _diagnostic(stderr, "session listing is not available in this release")
-        return EXIT_FAILURE
-
     mode = resolve_mode(args, stdin_tty=stdin.isatty(), stdout_tty=stdout.isatty())
+    sessions = SessionDirectory(args.session_dir or sessions_root(resolve_agent_dir()))
+    cwd = Path(args.cwd or Path.cwd()).expanduser().resolve()
+    if args.list_sessions or (args.resume and mode != "interactive"):
+        sort = args.session_sort or "mtime"
+        reverse = None if not args.reverse else sort not in ("mtime", "created")
+        listings = sessions.list(
+            cwd=None if args.all_projects else cwd, search=args.list_sessions_search,
+            sort=sort, reverse=reverse,
+        )
+        for session_diagnostic in sessions.diagnostics:
+            _diagnostic(stderr, session_diagnostic)
+        _write_sessions(stdout, listings)
+        return EXIT_OK
     if mode == "interactive" and not (stdin.isatty() and stdout.isatty()):
         _diagnostic(stderr, "interactive mode requires a terminal (stdin and stdout must be TTYs)")
         return EXIT_USAGE
+    try:
+        path = sessions.resolve(args.session) if args.session is not None else (
+            sessions.recent(cwd) if args.continue_session else None
+        )
+    except (OSError, ValueError) as error:
+        _diagnostic(stderr, error)
+        return EXIT_USAGE
+    if path is not None:
+        _diagnostic(stderr, f"Selected session: {path}")
+    elif args.continue_session:
+        _diagnostic(stderr, f"No saved session for {cwd}; starting a new session")
     _diagnostic(stderr, f"{mode} mode is not available in this release")
     return EXIT_FAILURE
+
+
+def _write_sessions(stream: TextIO, listings: Sequence[SessionInfo]) -> None:
+    if not listings:
+        return
+    stream.write("ID\tNAME\tCWD\tCREATED\tMODIFIED\tPATH\n")
+    for item in listings:
+        values = (item.conversation_id, item.display_name or "", str(item.cwd),
+                  item.created_at.isoformat(), item.modified_at.isoformat(), str(item.path))
+        stream.write("\t".join(_plain_text(value) for value in values) + "\n")
 
 
 def _option_label(token: str) -> str:
@@ -486,7 +543,13 @@ def _write_listings(stream: TextIO, listings: Sequence[ModelListing]) -> None:
 
 
 def _diagnostic(stream: TextIO, error: Exception | str) -> None:
-    stream.write(f"omh: {error}\n")
+    stream.write(f"omh: {_plain_text(str(error))}\n")
+
+
+def _plain_text(value: str) -> str:
+    """Keep each terminal field on one line, with controls shown as escapes."""
+    return "".join(char if char.isprintable() and char != "\\" else ascii(char)[1:-1]
+                   for char in value)
 
 
 def _product_version() -> str:

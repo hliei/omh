@@ -6,9 +6,9 @@ installable distribution is `omh-coding-agent`; its Python import is
 does not install this application or its command. Python 3.14 on macOS or
 Linux is required.
 
-This delivery provides the installed command, the read-only commands and the
-complete argument and mode contract. Print and interactive task execution, and
-session discovery, arrive in later deliveries; until then those paths report a
+This delivery provides the installed command, read-only model and session
+listing, shared session selection, persistent names and JSONL/HTML export.
+Print and interactive task execution arrive in later deliveries; until then those paths report a
 diagnostic and exit non-zero rather than pretending to run. See the
 [command line entry](docs/cli.md).
 
@@ -20,6 +20,7 @@ source .venv/bin/activate
 pip install -e . -e "coding_agent[dev]"
 omh --version
 omh --list-models
+omh --list-sessions --all-projects --sort name
 python coding_agent/examples/history_roundtrip.py
 ```
 
@@ -47,6 +48,7 @@ repository. The root SDK checks run separately.
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
 | [Input and attachments](docs/input.md) | File argument boundaries, image conversion and limits, model modality and read images |
 | [SessionManager](docs/session-manager.md) | File metadata, JSONL, saving state, export and repair |
+| [Session discovery](docs/session-discovery.md) | Current/all projects, search, ordering, paths/IDs and recent-session selection |
 | [AgentSessionRuntime](docs/agent-session-runtime.md) | Host assembly, current-session switching, subscriptions and retained sessions |
 
 The [SDK Agent contract](../docs/agent.md) defines history, execution policies and

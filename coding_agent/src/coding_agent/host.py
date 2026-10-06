@@ -90,6 +90,7 @@ from coding_agent.resources import (
     automatic_template_sources,
     project_skill_directories,
 )
+from coding_agent.session_directory import SessionDirectory
 from coding_agent.session_paths import cwd_session_directory, sessions_root
 from coding_agent.trust import TrustDecision, TrustStore
 
@@ -115,6 +116,7 @@ class SessionSelection:
     thinking_level: ModelThinkingLevel | None = None
     tools: tuple[ToolName, ...] = DEFAULT_TOOLS
     history: DecodedHistory | None = None
+    session_path: Path | None = None
     diagnostics: tuple[ConfigDiagnostic, ...] = ()
 
     @property
@@ -358,7 +360,12 @@ class CodingAgentHost:
         diagnostics: list[ConfigDiagnostic] = []
         destination = self._resolve_path(path)
         try:
-            decoded = decode_history(destination.read_text(encoding="utf-8"))
+            if self._no_session:
+                raise ValueError("--no-session cannot reopen a session file")
+            root = self.session_root
+            assert root is not None
+            destination = SessionDirectory(root).resolve(path, cwd=self.startup_dir)
+            decoded = decode_history(destination.read_bytes())
         except FileNotFoundError:
             diagnostics.append(ConfigDiagnostic(
                 str(destination), "history", "invalid-schema", f"Session file does not exist: {destination}",
@@ -380,8 +387,37 @@ class CodingAgentHost:
         _diagnose_saved_images(destination, decoded, resolved_model, diagnostics)
         return SessionSelection(
             cwd=effective_cwd, model=resolved_model, thinking_level=effective_thinking,
-            tools=effective_tools, history=decoded, diagnostics=(*self.diagnostics, *diagnostics),
+            tools=effective_tools, history=decoded, session_path=destination,
+            diagnostics=(*self.diagnostics, *diagnostics),
         )
+
+    def select_continue(
+        self, *, provider: str | None = None, model: str | None = None,
+        thinking: ModelThinkingLevel | None = None,
+        tools: tuple[ToolName, ...] | None = None, cwd: str | Path | None = None,
+    ) -> SessionSelection:
+        """Continue the effective cwd's newest file, or select a diagnosed new session."""
+        diagnostics: list[ConfigDiagnostic] = []
+        effective_cwd = self._resolve_cwd(cwd, history=None, diagnostics=diagnostics)
+        if effective_cwd is None:
+            return SessionSelection(diagnostics=tuple(diagnostics))
+        if self.session_root is None:
+            return SessionSelection(diagnostics=(ConfigDiagnostic(
+                str(effective_cwd), "cli", "invalid-value", "--no-session cannot continue a saved session",
+            ),))
+        directory = SessionDirectory(self.session_root)
+        path = directory.recent(effective_cwd)
+        selected = (self.select_open(path, provider=provider, model=model, thinking=thinking, tools=tools, cwd=cwd)
+                    if path is not None else
+                    self.select_new(provider=provider, model=model, thinking=thinking, tools=tools, cwd=cwd))
+        diagnostics.extend(ConfigDiagnostic(str(directory.root), "history", "recoverable", message)
+                           for message in directory.diagnostics)
+        if path is None:
+            diagnostics.append(ConfigDiagnostic(
+                str(effective_cwd), "history", "recoverable",
+                f"No saved session for {effective_cwd}; starting a new session",
+            ))
+        return replace(selected, diagnostics=(*selected.diagnostics, *diagnostics))
 
     def build_options(
         self, selection: SessionSelection, *, session_file: str | Path | None = None,
@@ -390,6 +426,8 @@ class CodingAgentHost:
         """Assemble host dependencies for a ready selection."""
         if not selection.ready or selection.model is None or selection.cwd is None:
             raise ConfigError("Cannot assemble a session from an unresolved selection")
+        if session_file is None:
+            session_file = selection.session_path
         if self._no_session and session_file is not None:
             raise ConfigError("--no-session cannot reopen or bind a session file")
         base = agent_options or AgentOptions()
