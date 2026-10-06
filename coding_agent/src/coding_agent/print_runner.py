@@ -18,9 +18,12 @@ ends print with exit 1 without waiting for cooperative cleanup or saving.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TextIO
 
 from omh.agent import AgentEvent
@@ -33,10 +36,17 @@ from coding_agent.attachments import (
     attachment_images,
     compose_first_task,
 )
+from coding_agent.cancellation import PrintCancellation
 from coding_agent.host import CodingAgentHost, SessionSelection
 from coding_agent.json_wire import project_event
 from coding_agent.stdout_writer import StdoutWriteError, StdoutWriter
-from coding_agent.terminal import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, write_diagnostic
+from coding_agent.terminal import (
+    EXIT_FAILURE,
+    EXIT_OK,
+    EXIT_USAGE,
+    write_best_effort_diagnostic,
+    write_diagnostic,
+)
 
 
 class PrintInputError(ValueError):
@@ -101,6 +111,7 @@ async def run_print_text(
     display_name: str | None = None,
     stdout: TextIO,
     stderr: TextIO,
+    handle_signals: bool = False,
 ) -> int:
     """Run the task chain and return the process outcome.
 
@@ -109,23 +120,31 @@ async def run_print_text(
     for a text-only model is a pre-request input error, reported through the
     session's own modality message. Request, notification, saving and close
     failures are reported on ``stderr`` and fail the process.
+
+    With ``handle_signals`` the installed command cooperatively handles the
+    first SIGINT/SIGTERM/SIGHUP; a failed automatic save is rescued to an
+    independent temporary copy in either case.
     """
     return await _run_print(host, selection, tasks, display_name=display_name,
-                            stdout=stdout, stderr=stderr, json_mode=False)
+                            stdout=stdout, stderr=stderr, json_mode=False,
+                            handle_signals=handle_signals)
 
 
 async def run_print_json(
     host: CodingAgentHost, selection: SessionSelection, tasks: Sequence[PrintTask], *,
     display_name: str | None = None, stdout: TextIO, stderr: TextIO,
+    handle_signals: bool = False,
 ) -> int:
     """Stream the session header and strict events; model failures can exit 0."""
     return await _run_print(host, selection, tasks, display_name=display_name,
-                            stdout=stdout, stderr=stderr, json_mode=True)
+                            stdout=stdout, stderr=stderr, json_mode=True,
+                            handle_signals=handle_signals)
 
 
 async def _run_print(
     host: CodingAgentHost, selection: SessionSelection, tasks: Sequence[PrintTask], *,
     display_name: str | None, stdout: TextIO, stderr: TextIO, json_mode: bool,
+    handle_signals: bool = False,
 ) -> int:
     try:
         options = host.build_options(selection)
@@ -134,10 +153,29 @@ async def _run_print(
         return EXIT_USAGE
 
     runtime = AgentSessionRuntime(options)
+    cancellation = PrintCancellation(stderr) if handle_signals else None
+    if cancellation is not None:
+        cancellation.install(lambda: _abort_current(runtime), loop=asyncio.get_running_loop())
     writer = StdoutWriter(stdout)
+    try:
+        return await _execute_print(
+            runtime, selection, tasks, display_name=display_name, writer=writer,
+            stderr=stderr, json_mode=json_mode, cancellation=cancellation,
+        )
+    finally:
+        if cancellation is not None:
+            cancellation.uninstall()
+
+
+async def _execute_print(
+    runtime: AgentSessionRuntime, selection: SessionSelection, tasks: Sequence[PrintTask], *,
+    display_name: str | None, writer: StdoutWriter, stderr: TextIO, json_mode: bool,
+    cancellation: PrintCancellation | None,
+) -> int:
     outcome = _RunOutcome()
     input_rejected = False
     close_failed = False
+    start_failed = False
     try:
         try:
             await _start(runtime, selection, display_name)
@@ -159,28 +197,37 @@ async def _run_print(
 
                 runtime.subscribe(on_event)
         except Exception as error:
-            write_diagnostic(stderr, error)
-            return EXIT_FAILURE
-        try:
-            outcome = await _run_tasks(runtime, tasks, stderr, json_mode=json_mode)
-        except UnsupportedImageModelError as error:
-            write_diagnostic(stderr, error)
-            input_rejected = True
-        except Exception as error:
-            write_diagnostic(stderr, error)
-            outcome = _RunOutcome()
+            (write_best_effort_diagnostic if writer.failed else write_diagnostic)(stderr, error)
+            start_failed = True
+        if not start_failed:
+            try:
+                outcome = await _run_tasks(
+                    runtime, tasks, stderr, json_mode=json_mode, cancellation=cancellation,
+                )
+            except UnsupportedImageModelError as error:
+                write_diagnostic(stderr, error)
+                input_rejected = True
+            except Exception as error:
+                (write_best_effort_diagnostic if writer.failed else write_diagnostic)(stderr, error)
+                outcome = _RunOutcome()
     finally:
-        # A permanent stdout failure must end without waiting for cooperative
-        # cleanup, complete saving or rescue.
+        # Permanent stdout errors take precedence over cooperative cancellation.
         if not writer.failed:
             try:
                 await runtime.close()
             except Exception as error:
-                write_diagnostic(stderr, error)
+                (write_best_effort_diagnostic if writer.failed else write_diagnostic)(stderr, error)
                 outcome = _RunOutcome()
                 close_failed = True
+            if not writer.failed:
+                await _rescue_unsaved(runtime, stderr)
 
-    if writer.failed or close_failed:
+    if writer.failed:
+        return EXIT_FAILURE
+    if _cancel_requested(cancellation):
+        assert cancellation is not None
+        return cancellation.exit_code
+    if start_failed or close_failed:
         return EXIT_FAILURE
     if input_rejected:
         return EXIT_USAGE
@@ -190,10 +237,47 @@ async def _run_print(
                 writer.write(outcome.text)
             writer.flush()
         except StdoutWriteError as error:
-            write_diagnostic(stderr, error)
+            write_best_effort_diagnostic(stderr, error)
             return EXIT_FAILURE
-        return EXIT_OK
+        return cancellation.exit_code if _cancel_requested(cancellation) and cancellation is not None else EXIT_OK
     return EXIT_FAILURE
+
+
+def _abort_current(runtime: AgentSessionRuntime) -> None:
+    """Cooperatively abort the current Agent activity through its public API."""
+    session = runtime.current_session
+    if session is not None and not session.agent.state.is_closed:
+        session.agent.abort()
+
+
+def _cancel_requested(cancellation: PrintCancellation | None) -> bool:
+    """Report whether a termination signal asked this run to stop."""
+    return cancellation is not None and cancellation.requested
+
+
+async def _rescue_unsaved(runtime: AgentSessionRuntime, stderr: TextIO) -> None:
+    """Write an independent complete-history copy after a failed auto save.
+
+    This is the print runner's host policy for a failed automatic save. It
+    never rebinds the session, repairs the original target or turns the failed
+    call into a success; it only preserves the complete in-memory history in a
+    separate temporary directory. In-memory sessions are not rescued.
+    """
+    session = runtime.current_session
+    if session is None or session.save_mode != "auto":
+        return
+    if session.save_state != "unsaved":
+        return
+    try:
+        directory = Path(tempfile.mkdtemp(prefix="omh-rescue-"))
+        destination = directory / f"{session.agent.history.conversation_id}.jsonl"
+        await session.export(destination)
+    except Exception as error:
+        write_diagnostic(
+            stderr, f"automatic saving failed and no complete history was rescued: {error}",
+        )
+        return
+    write_diagnostic(stderr, f"automatic saving failed; rescued complete history to {destination}")
 
 
 async def _start(
@@ -209,13 +293,24 @@ async def _start(
 
 
 async def _run_tasks(
-    runtime: AgentSessionRuntime, tasks: Sequence[PrintTask], stderr: TextIO, *, json_mode: bool = False,
+    runtime: AgentSessionRuntime, tasks: Sequence[PrintTask], stderr: TextIO, *,
+    json_mode: bool = False, cancellation: PrintCancellation | None = None,
 ) -> _RunOutcome:
-    """Run tasks serially until completion, reporting the last executed outcome."""
+    """Run tasks serially until completion, reporting the last executed outcome.
+
+    Once a termination signal requested cancellation, no further task is
+    admitted or sent; the in-flight task is awaited so the SDK can finish its
+    own cooperative cleanup, and a cancellation abort is not reported as a
+    model failure.
+    """
     outcome = _RunOutcome()
     reported = 0
     for task in tasks:
+        if _cancel_requested(cancellation):
+            return _RunOutcome()
         await runtime.prompt(task.text, images=list(task.images) or None)
+        if _cancel_requested(cancellation):
+            return _RunOutcome()
         session = runtime.current_session
         assert session is not None
         for diagnostic in session.input_diagnostics[reported:]:

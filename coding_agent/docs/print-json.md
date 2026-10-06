@@ -119,6 +119,8 @@ identical complete traces.
 | Exception propagated by prompt, notification, saving or close | 1 | Already emitted prefix; no synthetic result |
 | Permanent stdout write error (`EPIPE` and other non-temporary errors) | 1 | Already emitted prefix; no result, `cancelled` event or rescue |
 | Invalid CLI, input or configuration | 2 | May be empty, or a header if input is rejected after session preparation |
+| First `SIGINT`/`SIGTERM`/`SIGHUP` | 130/143/129 | Only already-emitted compatible header/event lines; no cancellation marker or result |
+| Second termination signal | 128 + signal | A prefix, possibly a partial line; saving may be incomplete |
 
 An exception encoded by the SDK as an assistant error follows the normally
 returned message row. A recoverable tool error is model feedback, and retry or
@@ -130,18 +132,20 @@ Failures before entering print can have only stderr. Failures after entry can
 leave a header or a partial event stream; no complete final message is promised.
 Diagnostics, memory mode, saving errors and paths stay on stderr or independent
 files. Stdout contains no logs, ANSI, traceback, welcome text or credentials.
+The first `SIGINT`/`SIGTERM`/`SIGHUP` stops the remaining tasks, cooperatively
+aborts the current activity and exits 130/143/129 after cleanup and saving; a
+second signal stops the process with a stderr warning that saving may be
+incomplete. A failed default auto save exits `1` and reports a rescue path (or
+that no complete history was saved) only on stderr. See
+[signals and save rescue](cli.md#signals-and-save-rescue).
 
-Print writes records serially to stdout: a write returns only after the
-operating system accepted every byte, so a slow consumer applies backpressure
-and events cannot be dropped, duplicated or reordered behind an unbounded
-buffer. A normal finish flushes all output first. `ENOBUFS`, `EAGAIN` and
-`EWOULDBLOCK` retry the same pending bytes after 10 ms; any other write error,
-including `EPIPE`, is permanent and ends the process with exit `1` without
-waiting for cooperative cleanup, a complete save or a rescue attempt. A
-permanent stdout failure emits no JSON `result`, `cancelled` or private wire
-event, and it does not make the in-flight model response retryable. The
-cooperative signal exit codes and automatic save rescue remain owned by the
-signals delivery; this document does not establish those pending guarantees.
+Print writes records serially, preserving producer backpressure. Process signal
+handlers remain responsive while a stdout write is blocked. Normal completion
+flushes all output. `ENOBUFS`, `EAGAIN` and `EWOULDBLOCK` retry pending bytes after
+10 ms. Other write errors, including `EPIPE`, take precedence over cancellation
+and exit `1` without waiting for cooperative cleanup, full saving or rescue.
+They add no wire event and do not trigger model response retry.
+
 
 The runnable [consumer](../examples/consume_print_json.py) checks both the
 last authoritative assistant and the subprocess exit, and treats a missing

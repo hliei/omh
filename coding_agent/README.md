@@ -72,6 +72,8 @@ The [image processing decision](docs/adr/0005-product-image-processing.md)
 records the product-owned conversion and its Pillow dependency.
 The [session storage decision](docs/adr/0006-session-storage-layout.md) records
 the default auto-save root, cwd grouping and in-memory mode.
+The [print signals and rescue decision](docs/adr/0008-print-signals-and-rescue.md)
+records cooperative termination signals and complete-history rescue.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen
@@ -186,5 +188,7 @@ Full saves and repairs replace a finished same-directory temporary snapshot;
 failed replacement preserves the old file. `export(backup_path)` writes an
 independent complete backup and preserves the original unsaved state. Ordinary
 append can partially fail; saving does not promise fsync or power-loss durability.
+The installed print command's cooperative signals and failed-save rescue are in
+[signals and save rescue](docs/cli.md#signals-and-save-rescue).
 See [writer ownership and closing](docs/session-manager.md#single-writer-and-closing)
 and the runnable [save repair example](examples/save_repair.py).

@@ -202,6 +202,10 @@ only a prefix before failing. Memory commits and disk writes are not atomic
 with each other; neither path promises fsync or power-loss durability. The
 retained in-memory history is the source for full repair.
 
+`SessionManager` never rescues a failed save automatically; the print runner's
+failed-save rescue and cooperative signal behavior are in
+[signals and save rescue](cli.md#signals-and-save-rescue).
+
 ## Single writer and closing
 
 A file-backed manager takes a nonblocking cross-process advisory lock before
