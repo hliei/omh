@@ -141,6 +141,7 @@ class _Session:
         self._busy = False
         self._closing = False
         self._prompt_task: asyncio.Task[None] | None = None
+        self._startup_task: asyncio.Task[None] | None = None
         self._exit_task: asyncio.Task[None] | None = None
         self._ctrl_c_at = 0.0
         self._termios: list[object] | None = None
@@ -157,13 +158,18 @@ class _Session:
         self._restored = False
 
     async def run(self) -> int:
-        self._enter_terminal()
         self._done = asyncio.Event()
-        await self._startup()
         loop = asyncio.get_running_loop()
         for signum, code in _EXIT_SIGNALS.items():
             loop.add_signal_handler(signum, self._on_process_signal, code)
         loop.add_signal_handler(signal.SIGWINCH, self._redraw)
+        self._enter_terminal()
+        self._startup_task = asyncio.create_task(self._startup())
+        try:
+            await self._startup_task
+        except asyncio.CancelledError:
+            if not self._closing:
+                raise
         self._redraw()
         reader = asyncio.create_task(self._read_loop())
         await self._done.wait()
@@ -301,16 +307,16 @@ class _Session:
         assert self.host is not None
         options = self.host.build_options(selection)
         runtime = AgentSessionRuntime(options)
+        self.runtime = runtime
         if selection.session_path is None:
             await runtime.new_session(display_name=self.args.name)
         else:
             await runtime.open_session(selection.session_path)
-            if self.args.name is not None:
-                await runtime.set_session_name(self.args.name)
         runtime.subscribe(self._on_event)
-        self.runtime = runtime
         self._chooser = "prompt"
         self._load_history()
+        if selection.session_path is not None and self.args.name is not None:
+            await runtime.set_session_name(self.args.name)
 
     def _load_history(self) -> None:
         session = self.runtime.current_session if self.runtime is not None else None
@@ -635,6 +641,12 @@ class _Session:
         self._closing = True
         self.exit_code = code
         try:
+            if self._startup_task is not None and not self._startup_task.done():
+                self._startup_task.cancel()
+                try:
+                    await self._startup_task
+                except asyncio.CancelledError:
+                    pass
             if self._prompt_task is not None and not self._prompt_task.done():
                 session = self.runtime.current_session if self.runtime is not None else None
                 if session is not None and session.agent.state.is_busy:
@@ -933,6 +945,7 @@ def _char_width(char: str) -> int:
 
 
 def _wrap(text: str, width: int) -> list[str]:
+    text = _terminal_text(text)
     if width < 1 or not text:
         return [text]
     lines: list[str] = []
@@ -953,6 +966,7 @@ def _wrap(text: str, width: int) -> list[str]:
 
 
 def _fit(text: str, width: int) -> str:
+    text = _terminal_text(text)
     if _display_width(text) <= width:
         return text
     kept: list[str] = []
@@ -967,4 +981,9 @@ def _fit(text: str, width: int) -> str:
 
 
 def _display_width(text: str) -> int:
-    return sum(_char_width(char) for char in text)
+    return sum(_char_width(char) for char in _terminal_text(text))
+
+
+def _terminal_text(text: str) -> str:
+    """Show untrusted terminal controls as text without changing saved content."""
+    return "".join(char if char.isprintable() else ascii(char)[1:-1] for char in text)

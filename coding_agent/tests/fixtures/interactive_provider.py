@@ -126,6 +126,9 @@ def stream_fn(model, context, options):
     if summary:
         emit_text(stream, output, "summary of the conversation")
         return stream
+    if SCENARIO == "controls":
+        emit_text(stream, output, "before\x1b]52;c;dGVzdA==\x07after\x1b[2J")
+        return stream
     if SCENARIO == "hang":
         block = TextContent(text="")
         output.content.append(block)
@@ -206,6 +209,14 @@ def stream_fn(model, context, options):
 
 
 class ControlledHost(cli.CodingAgentHost):
+    async def readiness(self, selection):
+        if SCENARIO == "startup":
+            import asyncio
+            from pathlib import Path
+            Path(os.environ["INTERACTIVE_READY"]).write_text("ready")
+            await asyncio.Event().wait()
+        return await super().readiness(selection)
+
     def build_options(self, selection, *, session_file=None, agent_options=None):
         options = super().build_options(
             selection, session_file=session_file, agent_options=agent_options,
@@ -220,3 +231,9 @@ class ControlledHost(cli.CodingAgentHost):
 
 
 cli.CodingAgentHost = ControlledHost
+
+if SCENARIO == "rename-failure":
+    def fail_replace(source, destination):
+        raise OSError("controlled rename failure")
+
+    os.replace = fail_replace

@@ -586,3 +586,120 @@ def test_memory_mode_is_labeled_and_print_does_not_use_the_screen(home: Path, tm
     assert result.stdout == "reply:hello"
     assert "phase input" not in result.stdout
     assert "theme " not in result.stdout
+
+
+@pytest.mark.parametrize("theme", ["dark", "plain"])
+def test_terminal_controls_are_visible_text_and_history_stays_original(
+    home: Path, tmp_path: Path, theme: str,
+) -> None:
+    from omh.llm.types import AssistantMessage, TextContent
+
+    from coding_agent import decode_history
+
+    project = tmp_path / "project"
+    project.mkdir()
+    sessions = home / "sessions"
+    env = provider_env(home, "controls", **({"NO_COLOR": "1"} if theme == "plain" else {}))
+    first = InteractiveSession(
+        "--no-approve", "--api-key", "offline", "--session-dir", str(sessions),
+        home=home, cwd=project, env=env, cols=200,
+    )
+    try:
+        first.wait_for("phase input")
+        first.send(b"hello\r")
+        first.wait_for(r"before\x1b]52;c;dGVzdA==\x07after")
+        first.wait_for("save saved")
+        assert b"\x1b]52" not in first.output
+        assert b"\x1b[2J" not in first.output
+        first.send(b"\x04")
+        assert first.finish() == 0
+        assert first.restored()
+    finally:
+        first.close()
+    saved = next(sessions.glob("*.jsonl"))
+    history = decode_history(saved.read_bytes()).history
+    answer = next(
+        e.message for e in reversed(history.entries)
+        if hasattr(e, "message") and isinstance(e.message, AssistantMessage)
+    )
+    assert any(isinstance(block, TextContent) and "\x1b]52" in block.text for block in answer.content)
+    second = InteractiveSession(
+        "--no-approve", "--api-key", "offline", "--session", str(saved),
+        home=home, cwd=project, env=env, cols=200,
+    )
+    try:
+        second.wait_for(r"before\x1b]52;c;dGVzdA==\x07after")
+        assert b"\x1b]52" not in second.output
+        assert b"\x1b[2J" not in second.output
+        second.send(b"\x04")
+        assert second.finish() == 0
+        assert second.restored()
+    finally:
+        second.close()
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_signal_during_startup_restores_terminal(home: Path, tmp_path: Path, signum: int) -> None:
+    ready = home / "startup-ready"
+    session = InteractiveSession(
+        "--no-approve", "--api-key", "offline", home=home, cwd=tmp_path,
+        env=provider_env(home, "startup", INTERACTIVE_READY=str(ready)),
+    )
+    try:
+        deadline = time.monotonic() + 8
+        while not ready.exists() and time.monotonic() < deadline:
+            session._pump(0.05)
+        assert ready.exists()
+        session.process.send_signal(signum)
+        assert session.finish() == 128 + signum
+        assert session.restored()
+        assert sends(home) == []
+    finally:
+        if session.process.poll() is None:
+            session.process.kill()
+            session.process.wait()
+        session.close()
+
+
+def test_failed_startup_rename_keeps_runtime_owned_and_closes_it(home: Path, tmp_path: Path) -> None:
+    sessions = home / "sessions"
+    first = InteractiveSession(
+        "--no-approve", "--api-key", "offline", "--session-dir", str(sessions),
+        home=home, cwd=tmp_path, env=provider_env(home, "echo"),
+    )
+    try:
+        first.wait_for("phase input")
+        first.send(b"first\r")
+        first.wait_for("reply:first")
+        first.wait_for("save saved")
+        first.send(b"\x04")
+        assert first.finish() == 0
+    finally:
+        first.close()
+    saved = next(sessions.glob("*.jsonl"))
+    second = InteractiveSession(
+        "--no-approve", "--api-key", "offline", "--session", str(saved), "--name", "new name",
+        home=home, cwd=tmp_path, env=provider_env(home, "rename-failure"),
+    )
+    try:
+        second.wait_for("controlled rename failure")
+        second.wait_for("save unsaved")
+        second.wait_for("reply:first")
+        second.wait_for("phase input")
+        second.send(b"\x04")
+        assert second.finish() == 0
+        assert second.restored()
+    finally:
+        second.close()
+    reopened = InteractiveSession(
+        "--no-approve", "--api-key", "offline", "--session", str(saved),
+        home=home, cwd=tmp_path, env=provider_env(home, "echo"),
+    )
+    try:
+        reopened.wait_for("reply:first")
+        reopened.send(b"again\r")
+        reopened.wait_for("reply:again")
+        reopened.send(b"\x04")
+        assert reopened.finish() == 0
+    finally:
+        reopened.close()

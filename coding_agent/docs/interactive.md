@@ -55,6 +55,9 @@ Expanding a tool shows only the output the tool recorded. When that output is
 bounded, the line says `recorded bounded` and includes the tool's own truncation
 note; the screen does not add the omitted bytes.
 
+Terminal control characters in model, tool and saved text are displayed as
+escapes; the original history stays intact.
+
 Markdown and fenced code stay readable: a fence is labeled `code <language>`
 and closed with `code end`.
 
@@ -97,5 +100,6 @@ theme falls back to dark and says so.
 | SIGINT, SIGTERM, SIGHUP | Abort a busy Agent through its public cancel and close path, then exit 130, 143 or 129 |
 
 Keyboard Ctrl+C is not the operating-system signal. Exit restores the terminal
-mode captured at start, including echo and line discipline. A second process
+mode captured at start, including echo and line discipline. Process signals
+are handled during startup as well as during turns. A second process
 signal can leave the save incomplete and exits with the same signal code.
