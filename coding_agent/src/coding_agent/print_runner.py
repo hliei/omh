@@ -10,7 +10,10 @@ failure is fed back to the model instead of failing the process.
 The runner never builds a second Agent loop, retry policy or history state
 machine; it consumes ``AgentSessionRuntime`` and the SDK's public settled
 outcome. ``compose_tasks`` is the pure input boundary and
-:func:`run_print_text` is the observable execution boundary.
+:func:`run_print_text` is the observable execution boundary. Both modes write
+through one :class:`~coding_agent.stdout_writer.StdoutWriter`, so a slow
+consumer applies backpressure to the producer and a permanent stdout failure
+ends print with exit 1 without waiting for cooperative cleanup or saving.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from coding_agent.attachments import (
 from coding_agent.cancellation import PrintCancellation
 from coding_agent.host import CodingAgentHost, SessionSelection
 from coding_agent.json_wire import project_event
+from coding_agent.stdout_writer import StdoutWriteError, StdoutWriter
 from coding_agent.terminal import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, write_diagnostic
 
 
@@ -147,6 +151,7 @@ async def _run_print(
     cancellation = PrintCancellation(stderr) if handle_signals else None
     if cancellation is not None:
         cancellation.install(loop, lambda: _abort_current(runtime))
+    writer = StdoutWriter(stdout)
     outcome = _RunOutcome()
     input_rejected = False
     close_failed = False
@@ -158,16 +163,17 @@ async def _run_print(
                 session = runtime.current_session
                 assert session is not None
                 history = session.agent.history
-                _write_json(stdout, {"type": "session", "version": 3,
-                                     "id": history.conversation_id,
-                                     "timestamp": history.created_at.isoformat(), "cwd": str(session.cwd)})
+                await asyncio.to_thread(writer.write, _json_line({"type": "session", "version": 3,
+                                         "id": history.conversation_id,
+                                         "timestamp": history.created_at.isoformat(),
+                                         "cwd": str(session.cwd)}))
                 if session.save_mode == "memory":
                     write_diagnostic(stderr, "in-memory session; history will not be saved")
 
-                def on_event(event: AgentEvent, signal: AbortSignal) -> None:
+                async def on_event(event: AgentEvent, signal: AbortSignal) -> None:
                     projected = project_event(event)
                     if projected is not None:
-                        _write_json(stdout, projected)
+                        await asyncio.to_thread(writer.write, _json_line(projected))
 
                 runtime.subscribe(on_event)
         except Exception as error:
@@ -185,16 +191,20 @@ async def _run_print(
                 write_diagnostic(stderr, error)
                 outcome = _RunOutcome()
     finally:
-        try:
-            await runtime.close()
-        except Exception as error:
-            write_diagnostic(stderr, error)
-            outcome = _RunOutcome()
-            close_failed = True
-        await _rescue_unsaved(runtime, stderr)
+        # Permanent stdout errors take precedence over cooperative cancellation.
+        if not writer.failed:
+            try:
+                await runtime.close()
+            except Exception as error:
+                write_diagnostic(stderr, error)
+                outcome = _RunOutcome()
+                close_failed = True
+            await _rescue_unsaved(runtime, stderr)
         if cancellation is not None:
             cancellation.uninstall(loop)
 
+    if writer.failed:
+        return EXIT_FAILURE
     if _cancel_requested(cancellation):
         assert cancellation is not None
         return cancellation.exit_code
@@ -203,8 +213,13 @@ async def _run_print(
     if input_rejected:
         return EXIT_USAGE
     if outcome.text is not None:
-        if not json_mode:
-            stdout.write(outcome.text)
+        try:
+            if not json_mode:
+                await asyncio.to_thread(writer.write, outcome.text)
+            await asyncio.to_thread(writer.flush)
+        except StdoutWriteError as error:
+            write_diagnostic(stderr, error)
+            return EXIT_FAILURE
         return EXIT_OK
     return EXIT_FAILURE
 
@@ -301,6 +316,6 @@ def _final_assistant(messages: Sequence[object]) -> tuple[str, str | None, str |
     return "", None, None
 
 
-def _write_json(stdout: TextIO, value: dict[str, object]) -> None:
-    stdout.write(json.dumps(value, ensure_ascii=False, allow_nan=False) + "\n")
-    stdout.flush()
+def _json_line(value: dict[str, object]) -> str:
+    """Render one strict JSON wire record as a single newline-terminated line."""
+    return json.dumps(value, ensure_ascii=False, allow_nan=False) + "\n"

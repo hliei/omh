@@ -170,6 +170,27 @@ Reopen emits new events only. Memory/saving diagnostics stay on stderr; stdout
 cannot be used as the independent version 1 history file. See the
 [complete schema, fixed examples and consumer](print-json.md).
 
+## Print stdout writes
+
+Text and JSON share one serial stdout writer. Each record is written in order,
+and a write returns only after the operating system accepted every byte, so a
+slow consumer applies backpressure to the producer instead of letting an
+unbounded buffer or a second writer build up. Records are never dropped,
+duplicated or reordered; stderr stays a separate stream. A normal finish waits
+for all output before exiting.
+
+`ENOBUFS`, `EAGAIN` and `EWOULDBLOCK` are temporary: the same pending bytes are
+retried after 10 ms in the same writer, so no data is lost and no concurrent
+writer appears. Any other write error, including `EPIPE`, is permanent and ends
+the process directly with exit `1` (never a broken-pipe `141`), without waiting
+for cooperative cleanup, a complete save or a rescue attempt. A request that
+was already in flight is still just one model response: a stdout failure is not
+a retryable model failure and adds no JSON `result`, `cancelled` or private
+wire event. JSON failures during the event stream skip the normal close; text
+writes its final answer only after a normal close, so a failure there surfaces
+after that save. Signal cooperation and automatic save rescue remain owned by
+the signals delivery.
+
 ## Options
 
 Single-value options cannot be repeated. Repeatable options keep command-line

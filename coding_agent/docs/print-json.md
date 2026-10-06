@@ -117,6 +117,7 @@ identical complete traces.
 | Normal activity and successful saving/close | 0 | Header and events |
 | Final assistant error/aborted, prompt returns normally | 0 | Failure is in the final message; remaining prompts stop |
 | Exception propagated by prompt, notification, saving or close | 1 | Already emitted prefix; no synthetic result |
+| Permanent stdout write error (`EPIPE` and other non-temporary errors) | 1 | Already emitted prefix; no result, `cancelled` event or rescue |
 | Invalid CLI, input or configuration | 2 | May be empty, or a header if input is rejected after session preparation |
 | First `SIGINT`/`SIGTERM`/`SIGHUP` | 130/143/129 | Only already-emitted compatible header/event lines; no cancellation marker or result |
 | Second termination signal | 128 + signal | A prefix, possibly a partial line; saving may be incomplete |
@@ -135,9 +136,16 @@ The first `SIGINT`/`SIGTERM`/`SIGHUP` stops the remaining tasks, cooperatively
 aborts the current activity and exits 130/143/129 after cleanup and saving; a
 second signal stops the process with a stderr warning that saving may be
 incomplete. A failed default auto save exits `1` and reports a rescue path (or
-that no complete history was saved) only on stderr. Permanent stdout write
-failures and backpressure are owned by the output contract and exit `1`
-directly. See [signals and save rescue](cli.md#signals-and-save-rescue).
+that no complete history was saved) only on stderr. See
+[signals and save rescue](cli.md#signals-and-save-rescue).
+
+Print awaits each serial stdout write outside the event-loop thread, preserving
+backpressure while allowing termination signals to be handled. Normal completion
+flushes all output. `ENOBUFS`, `EAGAIN` and `EWOULDBLOCK` retry pending bytes after
+10 ms. Other write errors, including `EPIPE`, take precedence over cancellation
+and exit `1` without waiting for cooperative cleanup, full saving or rescue.
+They add no wire event and do not trigger model response retry.
+
 
 The runnable [consumer](../examples/consume_print_json.py) checks both the
 last authoritative assistant and the subprocess exit, and treats a missing
