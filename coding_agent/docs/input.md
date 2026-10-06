@@ -11,8 +11,11 @@ sends a request, and both keep the source file byte-for-byte.
 ## File arguments and the first task
 
 `read_file_attachment(argument, cwd=...)` resolves one file argument against the
-session working directory, `~` included, and returns a `FileAttachment` with the
-resolved path, the boundary text and an optional processed image.
+supplied working directory, `~` included, and returns a `FileAttachment` with
+the resolved path, the boundary text and an optional processed image. The
+installed command passes its startup directory (an explicit `--cwd` when given,
+otherwise the invocation directory), so a relative `@file` follows the CLI path
+rule rather than a reopened session's saved cwd.
 `compose_first_task(stdin_text=..., attachments=..., first_prompt=...)` orders
 piped stdin, the attachments in argument order, then the first prompt. Every
 part keeps its exact text and the next part starts after a blank line, so piped

@@ -438,10 +438,11 @@ def _run_print(args: CliArgs, *, stdin: TextIO, stdout: TextIO, stderr: TextIO) 
     try:
         return asyncio.run(_print_text(args, stdin=stdin, stdout=stdout, stderr=stderr))
     except KeyboardInterrupt:
-        # First-signal cooperative cancellation is delivered by the print
-        # signals delivery; this only keeps a bare interrupt traceback-free.
+        # Cooperative first-signal cancellation and the 130/143/129 exits are
+        # delivered by the print signals delivery; this only keeps a bare
+        # interrupt fatal instead of printing a traceback.
         write_diagnostic(stderr, "cancelled")
-        return 130
+        return EXIT_FAILURE
     except Exception as error:
         write_diagnostic(stderr, error)
         return EXIT_FAILURE
@@ -451,10 +452,10 @@ async def _print_text(
     args: CliArgs, *, stdin: TextIO, stdout: TextIO, stderr: TextIO,
 ) -> int:
     """Resolve the common host, compose the task chain and execute it."""
-    cwd = Path(args.cwd or Path.cwd()).expanduser().resolve()
+    startup_cwd = Path(args.cwd or Path.cwd()).expanduser().resolve()
     try:
         host = CodingAgentHost(
-            startup_dir=cwd,
+            startup_dir=startup_cwd,
             approve=args.approve,
             no_approve=args.no_approve,
             explicit_skills=tuple(args.skills),
@@ -483,15 +484,17 @@ async def _print_text(
     if selection.cwd is None:
         return EXIT_USAGE
     try:
+        # Relative @file arguments follow the CLI startup directory (explicit
+        # --cwd if given), not a reopened session's saved cwd.
         attachments = tuple(
-            read_file_attachment(argument, cwd=selection.cwd) for argument in args.file_args
+            read_file_attachment(argument, cwd=startup_cwd) for argument in args.file_args
         )
         tasks = compose_tasks(
             stdin_text=_read_stdin(stdin),
             attachments=attachments,
             prompts=tuple(args.messages),
         )
-    except (AttachmentError, PrintInputError) as error:
+    except (AttachmentError, PrintInputError, OSError, UnicodeError) as error:
         write_diagnostic(stderr, error)
         return EXIT_USAGE
     return await run_print_text(

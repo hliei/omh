@@ -91,14 +91,16 @@ a usable terminal fails before any request with exit `2`. `-p` combined with
 
 ## Print text
 
-Print text reads a non-TTY stdin to EOF and keeps its exact bytes; a TTY stdin
+Print text reads a non-TTY stdin to EOF and keeps its exact text; a TTY stdin
 supplies no task. A pure-whitespace stdin is no task. `@path` arguments are read
 in argument order and contribute a `<file name="...">...</file>` boundary; an
-image becomes real image content. The first task places stdin, then the
-attachments, then the first positional prompt, separated so no part runs into
-the next. Every later positional prompt runs on its own in the same session,
-after the previous task has completed normally. `--` ends flag and `@`
-interpretation, so every later token is literal task text.
+image becomes real image content. Relative `@path` and other CLI paths resolve
+against the startup directory (an explicit `--cwd` when given, otherwise the
+invocation directory), not a reopened session's saved cwd. The first task places
+stdin, then the attachments, then the first positional prompt, separated so no
+part runs into the next. Every later positional prompt runs on its own in the
+same session, after the previous task has completed normally. `--` ends flag and
+`@` interpretation, so every later token is literal task text.
 
 Only the final executed task's assistant text reaches stdout; intermediate
 answers, thinking, tool progress and welcome text never mix in. Diagnostics stay
@@ -108,20 +110,20 @@ not written to history. An error the SDK retries resolves to the retried
 outcome, not to the transient error. A recoverable tool failure is fed back to
 the model and does not by itself fail the process.
 
-Print expands `skill` and prompt-template input only. It never executes an
-interactive builtin or `!`/`!!` shell syntax; an unknown slash command or a
-leading `!` stays ordinary task text. The four model tools follow the SDK's
-existing execution, truncation and cleanup contract.
+Print expands `/skill:` commands and prompt-template input only. It never
+executes an interactive builtin or `!`/`!!` shell syntax; an unknown slash
+command or a leading `!` stays ordinary task text. The four model tools follow
+the SDK's existing execution, truncation and cleanup contract.
 
 A new session saves by default; `--session-dir` replaces the root,
 `--no-session` keeps it in memory, `-c`/`--continue` continues the effective
 cwd's newest session, `--session <path|id>` reopens one, and `--name` sets or
 updates the display name. A normal finish waits for the complete activity and
-the selected saving mode before printing, so a later print run outside the
-repository can continue the same conversation identity with `-c` or
-`--session`. A request, notification, saving or close failure is reported on
-stderr and exits `1`; the final answer text is only written after a fully
-successful finish.
+the selected saving mode before printing. A later print run in the same project
+directory continues the same conversation identity with `-c`; `--session
+<path|id>` continues it from any cwd. A request, notification, saving or close
+failure is reported on stderr and exits `1`; the final answer text is only
+written after a fully successful finish.
 
 ## Options
 

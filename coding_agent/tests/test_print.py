@@ -270,7 +270,13 @@ async def test_print_expands_skill_but_keeps_unknown_slash_and_bang_literal(tmp_
 
 
 class CliHarness:
-    """Run the installed command in-process with a controlled provider."""
+    """Run the installed command in-process with a controlled provider.
+
+    The harness only injects the host's documented ``fetch`` HTTP boundary into
+    the command's own host construction; parsing, selection, task execution,
+    saving and exit mapping all run unchanged. Real-process stdout/exit evidence
+    for the same paths lives in the ``sitecustomize`` subprocess tests.
+    """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
         self.home = home
@@ -324,6 +330,35 @@ def test_cli_reads_non_tty_stdin_with_attachment_and_prompt(
     assert code == EXIT_OK and stdout == "ok"
     body = json.dumps(fetch.bodies[0])
     assert body.index("piped body") < body.index("file body") < body.index("explain")
+
+
+def test_relative_attachment_follows_the_startup_directory_on_reopen(
+    tmp_path: Path, cli_harness: CliHarness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved_project = tmp_path / "saved"
+    saved_project.mkdir()
+    (saved_project / "notes.txt").write_text("saved project file")
+    directory = tmp_path / "history"
+    first = RecordingFetch(text_stream("one"))
+    assert cli_harness.run(
+        ["-p", "--cwd", str(saved_project), "--session-dir", str(directory),
+         "--api-key", "k", "start"],
+        fetch=first,
+    )[0] == EXIT_OK
+    path = next(directory.glob("*.jsonl"))
+
+    startup_project = tmp_path / "startup"
+    startup_project.mkdir()
+    (startup_project / "notes.txt").write_text("startup directory file")
+    monkeypatch.chdir(startup_project)
+    second = RecordingFetch(text_stream("two"))
+    code, stdout, _ = cli_harness.run(
+        ["-p", "--session", str(path), "--api-key", "k", "@notes.txt", "explain"],
+        fetch=second,
+    )
+    assert code == EXIT_OK and stdout == "two"
+    body = json.dumps(second.bodies[0])
+    assert "startup directory file" in body and "saved project file" not in body
 
 
 def test_missing_key_is_rejected_before_any_request(tmp_path: Path, cli_harness: CliHarness) -> None:
