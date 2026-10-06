@@ -134,8 +134,6 @@ def run_cli_tty(
         )
     finally:
         os.close(slave)
-    if keys and stdin_tty:
-        os.write(master, keys)
     captured = b""
     if stdout_tty:
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -161,6 +159,9 @@ def run_cli_tty(
             if not chunk:
                 break
             captured += chunk
+            if keys and stdin_tty and b"phase input" in captured:
+                os.write(master, keys)
+                keys = None
     os.close(master)
     if not stdout_tty:
         assert process.stdout is not None
