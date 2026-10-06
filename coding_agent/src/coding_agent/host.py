@@ -90,6 +90,7 @@ from coding_agent.resources import (
     automatic_template_sources,
     project_skill_directories,
 )
+from coding_agent.session_paths import cwd_session_directory, sessions_root
 from coding_agent.trust import TrustDecision, TrustStore
 
 #: The product's default model when neither history nor configuration selects one.
@@ -157,6 +158,7 @@ class CodingAgentHost:
         no_skills: bool = False, no_prompt_templates: bool = False,
         no_context_files: bool = False,
         api_key: str | None = None, fetch: FetchFunction | None = None,
+        session_dir: str | Path | None = None, no_session: bool = False,
     ) -> None:
         self.startup_dir = Path(startup_dir).expanduser().resolve()
         self.home = Path(home).expanduser().resolve() if home is not None else Path.home()
@@ -178,6 +180,8 @@ class CodingAgentHost:
         self._no_prompt_templates = no_prompt_templates
         self._no_context_files = no_context_files
         self._settings_cwd = self.startup_dir
+        self._no_session = no_session
+        self._session_dir = self._resolve_path(session_dir) if session_dir is not None else None
         self._trusted = False
         self._trust_unknown = False
         self._custom_prompt: str | None = None
@@ -231,6 +235,30 @@ class CodingAgentHost:
         self._trust_store.remember(target, decision)
         if target == self._settings_cwd:
             self._refresh_settings(target, [])
+
+    @property
+    def session_root(self) -> Path | None:
+        """Return the top-level storage root; ``None`` means an in-memory session.
+
+        An explicit ``--session-dir`` replaces the root; otherwise the root is
+        ``<agent_dir>/sessions``.
+        """
+        if self._no_session:
+            return None
+        return self._session_dir if self._session_dir is not None else sessions_root(self.agent_dir)
+
+    def session_directory(self, cwd: Path) -> Path | None:
+        """Return the directory that holds a new conversation file.
+
+        An explicit ``--session-dir`` is used as given. The default root groups
+        conversations by effective cwd so different projects stay separate.
+        """
+        root = self.session_root
+        if root is None:
+            return None
+        if self._session_dir is not None:
+            return root
+        return cwd_session_directory(root, cwd)
 
     @property
     def models(self) -> ModelsImpl:
@@ -362,6 +390,8 @@ class CodingAgentHost:
         """Assemble host dependencies for a ready selection."""
         if not selection.ready or selection.model is None or selection.cwd is None:
             raise ConfigError("Cannot assemble a session from an unresolved selection")
+        if self._no_session and session_file is not None:
+            raise ConfigError("--no-session cannot reopen or bind a session file")
         base = agent_options or AgentOptions()
         compaction = self.compaction
         retry = self.retry
@@ -379,6 +409,7 @@ class CodingAgentHost:
             available_models=tuple(entry.model for entry in self.directory.listings()),
             tools=selection.tools,
             session_file=session_file,
+            session_dir=self.session_directory(selection.cwd),
             agent_options=assembled,
             agent_dir=self.agent_dir,
             skill_sources=self._skill_sources(),

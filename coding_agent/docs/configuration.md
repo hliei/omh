@@ -22,7 +22,7 @@ actual user task surfaces authentication failure.
 | `~/.omh/agent/prompts` | Global automatic prompt-template directory |
 | `~/.omh/agent/auth.json` | Global API keys, mode `0600` |
 | `~/.omh/agent/models.json` | Global model metadata overrides |
-| `~/.omh/agent/sessions` | Default session storage root |
+| `~/.omh/agent/sessions` | Default session storage root, grouped by effective cwd |
 | `<cwd>/.omh/settings.json` | Project settings, loaded only for a trusted project |
 | `<cwd>/.omh/SYSTEM.md` | Project base system prompt, loaded only for a trusted project |
 | `<cwd>/.omh/APPEND_SYSTEM.md` | Project system addendum, loaded only for a trusted project |

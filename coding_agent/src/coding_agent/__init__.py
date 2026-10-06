@@ -42,7 +42,7 @@ from coding_agent.images import (
 )
 from coding_agent.model_directory import ModelDirectory, ModelListing
 from coding_agent.resources import ApplicationDiagnostic, ApplicationResources
-from coding_agent.session_manager import SaveState, SessionManager
+from coding_agent.session_manager import SaveMode, SaveState, SessionManager
 from coding_agent.trust import TrustDecision, TrustStore
 
 __all__ = [
@@ -50,7 +50,7 @@ __all__ = [
     "AttachmentError", "CodingAgentHost", "CodingAgentOptions", "ConfigDiagnostic", "ConfigError",
     "DecodedHistory", "FileAttachment", "FileCredentialStore", "IMAGE_MAX_BASE64_BYTES",
     "IMAGE_MAX_DIMENSION", "ImageInputError", "ImageLimits", "ModelDirectory", "ModelListing",
-    "ProcessedImage", "SaveState", "SessionManager", "SessionSelection", "SettingsSnapshot",
+    "ProcessedImage", "SaveMode", "SaveState", "SessionManager", "SessionSelection", "SettingsSnapshot",
     "ToolName", "TrustDecision", "TrustStore", "UnsupportedImageModelError", "attachment_images", "compose_first_task",
     "count_history_images", "create_read_image_processor", "decode_history", "degradation_notice",
     "encode_history", "load_settings", "merge_settings", "process_image",
