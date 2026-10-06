@@ -7,9 +7,12 @@ does not install this application or its command. Python 3.14 on macOS or
 Linux is required.
 
 This delivery provides the installed command, read-only model and session
-listing, shared session selection, persistent names and JSONL/HTML export.
-Print and interactive task execution arrive in later deliveries; until then those paths report a
-diagnostic and exit non-zero rather than pretending to run. See the
+listing, shared session selection, persistent names, JSONL/HTML export, and
+print text execution. Print text composes piped stdin, file attachments and the
+first prompt into one task, runs every later prompt serially in the same saved
+session, and writes only the final task's assistant text to stdout. Interactive
+and JSON task execution arrive in later deliveries; until then those paths
+report a diagnostic and exit non-zero rather than pretending to run. See the
 [command line entry](docs/cli.md).
 
 From the repository root, install both projects for development:
@@ -43,7 +46,7 @@ repository. The root SDK checks run separately.
 
 | Contract | Responsibility |
 | --- | --- |
-| [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands and argument validation |
+| [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands, argument validation and print text |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
 | [Input and attachments](docs/input.md) | File argument boundaries, image conversion and limits, model modality and read images |

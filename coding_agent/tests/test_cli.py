@@ -53,6 +53,70 @@ def run_cli(
     )
 
 
+#: Injected into the installed process through ``sitecustomize`` so the real
+#: console script runs offline against the host's public HTTP boundary.
+CONTROLLED_FETCH = '''\
+import json
+
+_count = 0
+
+async def _fetch(request):
+    global _count
+    from omh.llm.types import FetchResponse
+    _count += 1
+    chunk = {"choices": [{"delta": {"content": "answer-%d" % _count}, "finish_reason": "stop"}]}
+    body = "data: " + json.dumps(chunk) + chr(10) + chr(10) + "data: [DONE]" + chr(10)
+    return FetchResponse(status=200, headers={"content-type": "text/event-stream"}, text=body)
+
+import coding_agent.cli as cli
+_real = cli.CodingAgentHost
+
+def _host(*args, **kwargs):
+    kwargs["fetch"] = _fetch
+    return _real(*args, **kwargs)
+
+cli.CodingAgentHost = _host
+'''
+
+#: A controlled provider that always fails, for the process-boundary exit code.
+CONTROLLED_ERROR_FETCH = '''\
+import json
+
+async def _fetch(request):
+    from omh.llm.types import FetchResponse
+    body = json.dumps({"error": {"message": "bad key"}})
+    return FetchResponse(status=401, headers={"content-type": "application/json"}, text=body)
+
+import coding_agent.cli as cli
+_real = cli.CodingAgentHost
+
+def _host(*args, **kwargs):
+    kwargs["fetch"] = _fetch
+    return _real(*args, **kwargs)
+
+cli.CodingAgentHost = _host
+'''
+
+
+def run_cli_controlled(
+    *args: str, home: Path, cwd: Path, stdin: str = "", script: str = CONTROLLED_FETCH,
+) -> subprocess.CompletedProcess[str]:
+    """Run the installed command in a real process with a controlled provider."""
+    site = home / "site"
+    site.mkdir(exist_ok=True)
+    (site / "sitecustomize.py").write_text(script)
+    env = clean_env(home)
+    env["PYTHONPATH"] = str(site)
+    return subprocess.run(
+        [*cli_command(), *args],
+        cwd=cwd,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
 def run_cli_tty(
     *args: str, home: Path, stdin_tty: bool = True, stdout_tty: bool = True,
 ) -> tuple[int, str, str]:
@@ -351,6 +415,7 @@ def test_repeatable_options_are_accepted(home: Path, tmp_path: Path) -> None:
     appended = tmp_path / "appended.md"
     appended.write_text("literal append")
     result = run_cli(
+        "--no-approve",
         "--append-system-prompt", "a",
         "--append-system-prompt-file", str(appended),
         "--skill", str(resources[0]),
@@ -358,8 +423,11 @@ def test_repeatable_options_are_accepted(home: Path, tmp_path: Path) -> None:
         "--prompt-template", str(resources[2]),
         home=home,
     )
-    assert result.returncode == EXIT_FAILURE
-    assert "text mode" in result.stderr
+    # Every repeatable option was accepted; print then stops before any request
+    # because no credential is configured.
+    assert result.returncode == EXIT_USAGE
+    assert "No API key" in result.stderr
+    assert "cannot be repeated" not in result.stderr
 
 
 def test_equals_form_and_existing_resource_paths_are_accepted(home: Path, tmp_path: Path) -> None:
@@ -388,15 +456,20 @@ def test_missing_value_before_another_option_is_rejected(home: Path) -> None:
 
 
 def test_double_dash_ends_options_and_file_arguments(home: Path) -> None:
-    for arguments in (("--", "--unknown-option"), ("--", "-c"), ("--", "@not-a-file")):
-        result = run_cli(*arguments, home=home)
-        assert result.returncode == EXIT_FAILURE, arguments
-        assert "text mode" in result.stderr, arguments
+    for arguments in (("--unknown-option",), ("-c",), ("@not-a-file",)):
+        result = run_cli("--no-approve", "--", *arguments, home=home)
+        # After -- every token is literal task text, so no flag, option or
+        # attachment interpretation error appears; print stops at the missing key.
+        assert result.returncode == EXIT_USAGE, arguments
+        assert "No API key" in result.stderr, arguments
+        assert "unknown option" not in result.stderr, arguments
+        assert "attachment" not in result.stderr, arguments
 
 
 def test_thinking_is_validated_against_the_selected_model(home: Path) -> None:
-    supported = run_cli("--model", "deepseek/deepseek-v4-pro", "--thinking", "off", home=home)
-    assert supported.returncode == EXIT_FAILURE
+    supported = run_cli("--no-approve", "--model", "deepseek/deepseek-v4-pro", "--thinking", "off", home=home)
+    assert supported.returncode == EXIT_USAGE
+    assert "not supported" not in supported.stderr
     unsupported = run_cli("--model", "deepseek/deepseek-v4-pro", "--thinking", "xhigh", home=home)
     assert unsupported.returncode == EXIT_USAGE
     assert "not supported" in unsupported.stderr
@@ -427,28 +500,29 @@ def test_go_thinking_is_validated_against_each_models_real_levels(home: Path, mo
     ],
 )
 def test_go_supported_thinking_passes_selection(home: Path, model: str, level: str) -> None:
-    result = run_cli("--model", model, "--thinking", level, "prompt", home=home)
-    assert result.returncode == EXIT_FAILURE
-    assert "text mode" in result.stderr
+    result = run_cli("--no-approve", "--model", model, "--thinking", level, "prompt", home=home)
+    assert result.returncode == EXIT_USAGE
+    assert "No API key" in result.stderr
+    assert "not supported" not in result.stderr
 
 
 @pytest.mark.parametrize("provider_args", [(), ("--provider", "deepseek")])
 def test_bare_model_id_is_accepted(home: Path, provider_args: tuple[str, ...]) -> None:
-    result = run_cli(*provider_args, "--model", "deepseek-flash", "prompt", home=home)
-    assert result.returncode == EXIT_FAILURE
-    assert "text mode" in result.stderr
+    result = run_cli("--no-approve", *provider_args, "--model", "deepseek-flash", "prompt", home=home)
+    assert result.returncode == EXIT_USAGE
+    assert "No API key" in result.stderr
 
 
 def test_default_mode_needs_both_streams_to_be_ttys(home: Path) -> None:
     assert "interactive mode" in run_cli_tty(home=home)[2]
-    assert "text mode" in run_cli(home=home).stderr
-    assert "text mode" in run_cli_tty(home=home, stdout_tty=False)[2]
-    assert "text mode" in run_cli_tty(home=home, stdin_tty=False)[2]
+    assert "No API key" in run_cli("--no-approve", home=home).stderr
+    assert "No API key" in run_cli_tty("--no-approve", home=home, stdout_tty=False)[2]
+    assert "No API key" in run_cli_tty("--no-approve", home=home, stdin_tty=False)[2]
 
 
 def test_explicit_modes_override_tty_inference(home: Path) -> None:
-    assert "text mode" in run_cli_tty("--mode", "text", home=home)[2]
-    assert "text mode" in run_cli_tty("--print", home=home)[2]
+    assert "No API key" in run_cli_tty("--no-approve", "--mode", "text", home=home)[2]
+    assert "No API key" in run_cli_tty("--no-approve", "--print", home=home)[2]
     assert "json mode" in run_cli_tty("--mode", "json", home=home)[2]
     code, _, errors = run_cli_tty("--mode", "interactive", home=home)
     assert code == EXIT_FAILURE
@@ -462,16 +536,63 @@ def test_explicit_interactive_without_a_terminal_fails_clearly(home: Path) -> No
     assert result.stdout == ""
 
 
+def test_print_whitespace_stdin_is_no_task_without_a_request(home: Path) -> None:
+    result = run_cli(
+        "--no-approve", "-p", home=home, stdin="  \n\t\n", env={"OPENCODE_API_KEY": "test-key"},
+    )
+    assert result.returncode == EXIT_USAGE
+    assert result.stdout == ""
+    assert "no task" in result.stderr
+
+
+def test_print_missing_key_is_rejected_before_a_request(home: Path) -> None:
+    result = run_cli("--no-approve", "-p", "hello", home=home)
+    assert result.returncode == EXIT_USAGE
+    assert result.stdout == ""
+    assert "No API key" in result.stderr
+
+
+def test_installed_print_outputs_only_the_final_answer(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    result = run_cli_controlled(
+        "--no-approve", "-p", "--cwd", str(project), "--api-key", "k", "first task", "second task",
+        home=home, cwd=project,
+    )
+    assert result.returncode == 0
+    assert result.stdout == "answer-2"
+    assert result.stderr == ""
+    assert_no_terminal_noise(result.stdout)
+    saved = list((home / ".omh" / "agent" / "sessions").rglob("*.jsonl"))
+    assert len(saved) == 1
+    content = saved[0].read_text()
+    assert "first task" in content and "second task" in content
+
+
+def test_installed_print_model_error_exits_one_without_stdout(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    result = run_cli_controlled(
+        "--no-approve", "-p", "--cwd", str(project), "--api-key", "k", "hello",
+        home=home, cwd=project, script=CONTROLLED_ERROR_FETCH,
+    )
+    assert result.returncode == EXIT_FAILURE
+    assert result.stdout == ""
+    assert "401" in result.stderr
+    assert_no_terminal_noise(result.stderr)
+
+
 def test_credentials_never_appear_in_diagnostics(home: Path) -> None:
     result = run_cli("--api-key", "super-secret-value", "--unknown-option", home=home)
     assert result.returncode == EXIT_USAGE
     assert "super-secret-value" not in result.stderr
     assert "super-secret-value" not in result.stdout
 
-    inline = run_cli("--api-key=super-secret-value", home=home)
-    assert inline.returncode == EXIT_FAILURE
+    inline = run_cli("--no-approve", "--api-key=super-secret-value", home=home)
+    assert inline.returncode == EXIT_USAGE
     assert "super-secret-value" not in inline.stderr
     assert "super-secret-value" not in inline.stdout
+    assert "no task" in inline.stderr
 
 
 def test_product_distribution_installs_the_omh_script() -> None:

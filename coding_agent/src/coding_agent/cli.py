@@ -1,13 +1,15 @@
 """The installed ``omh`` command: mode dispatch, read-only commands and arguments.
 
 The command parses and validates its complete option surface before any
-request. Read-only commands run without credentials. Print and interactive
-task execution are delivered by later deliveries; this module reports those
-modes as unavailable instead of pretending to run them.
+request. Read-only commands run without credentials. Print text resolves the
+common host and runs the composed task chain; interactive and JSON task
+execution are delivered by later deliveries and report themselves as
+unavailable instead of pretending to run.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -19,8 +21,15 @@ from omh.llm.models import EXTENDED_THINKING_LEVELS
 from omh.llm.types import ModelThinkingLevel
 
 from coding_agent.agent_session import ToolName
+from coding_agent.attachments import AttachmentError, read_file_attachment
 from coding_agent.config import AppendKind, resolve_agent_dir
+from coding_agent.host import CodingAgentHost, SessionSelection
 from coding_agent.model_directory import ModelDirectory, ModelListing
+from coding_agent.print_runner import (
+    PrintInputError,
+    compose_tasks,
+    run_print_text,
+)
 from coding_agent.session_directory import (
     SESSION_SORTS,
     SessionDirectory,
@@ -28,6 +37,13 @@ from coding_agent.session_directory import (
     SessionSort,
 )
 from coding_agent.session_paths import sessions_root
+from coding_agent.terminal import (
+    EXIT_FAILURE,
+    EXIT_OK,
+    EXIT_USAGE,
+    plain_text,
+    write_diagnostic,
+)
 
 Mode = Literal["interactive", "text", "json"]
 
@@ -45,10 +61,6 @@ _VALUE_FLAGS = frozenset({
     "--list-models", "--list-sessions", "--sort",
 })
 
-EXIT_OK = 0
-EXIT_FAILURE = 1
-EXIT_USAGE = 2
-
 HELP_TEXT = """omh - coding agent
 
 Usage:
@@ -64,14 +76,19 @@ Read-only commands (no API key, no model request, no configuration change):
   --sort <field>                 mtime (default), created, name, id, cwd
   --reverse                      Reverse the default sort order
 
-Execution modes (task execution is not available in this release):
+Execution modes:
   --mode <mode>                  interactive, text, or json; text and json are print
   -p, --print                    Force print mode
   (no mode)                      interactive only when stdin and stdout are both TTYs, else text
 
+Print text reads piped stdin to EOF, runs the first composed task and each later
+prompt serially in one session, and writes only the last task's assistant text to
+stdout. Diagnostics go to stderr; the final assistant ending in error or abort
+exits 1, and a recoverable tool failure is fed back to the model.
+
 Options:
   -c, --continue                 Continue the most recent session for the working directory
-  -r, --resume                   Select a saved session to reopen; print never prompts
+  -r, --resume                   Select a saved session to reopen; print lists sessions, never prompts
   --session <path|id>            Reopen a session file or a unique ID prefix
   --session-dir <dir>            Replace the session storage root
   --no-session                   Run an in-memory session without automatic reopen or save
@@ -100,6 +117,10 @@ Options:
 Literal text options never reinterpret file-looking values; use the matching
 -file option to read a file. Repeatable options keep command-line order, and
 single-value options cannot be repeated.
+
+Print text understands ``/skill:`` and prompt-template input expansion only; it
+never executes interactive builtins or ``!``/``!!`` control syntax. An unknown
+slash command or a leading ``!`` stays ordinary task text.
 """
 
 
@@ -364,14 +385,14 @@ def run(
     try:
         args = parse_args(argv)
     except CliUsageError as error:
-        _diagnostic(stderr, error)
+        write_diagnostic(stderr, error)
         return EXIT_USAGE
 
     directory = ModelDirectory(agent_dir=resolve_agent_dir())
     try:
         validate_args(args, directory)
     except CliUsageError as error:
-        _diagnostic(stderr, error)
+        write_diagnostic(stderr, error)
         return EXIT_USAGE
 
     if args.help:
@@ -383,7 +404,7 @@ def run(
 
     if args.list_models:
         for diagnostic in directory.diagnostics:
-            _diagnostic(stderr, f"{diagnostic.source}: {diagnostic.message}")
+            write_diagnostic(stderr, f"{diagnostic.source}: {diagnostic.message}")
         _write_listings(stdout, directory.listings(args.list_models_search))
         return EXIT_OK
     mode = resolve_mode(args, stdin_tty=stdin.isatty(), stdout_tty=stdout.isatty())
@@ -397,25 +418,111 @@ def run(
             sort=sort, reverse=reverse,
         )
         for session_diagnostic in sessions.diagnostics:
-            _diagnostic(stderr, session_diagnostic)
+            write_diagnostic(stderr, session_diagnostic)
         _write_sessions(stdout, listings)
         return EXIT_OK
-    if mode == "interactive" and not (stdin.isatty() and stdout.isatty()):
-        _diagnostic(stderr, "interactive mode requires a terminal (stdin and stdout must be TTYs)")
+    if mode == "interactive":
+        if not (stdin.isatty() and stdout.isatty()):
+            write_diagnostic(stderr, "interactive mode requires a terminal (stdin and stdout must be TTYs)")
+            return EXIT_USAGE
+        write_diagnostic(stderr, "interactive mode is not available in this release")
+        return EXIT_FAILURE
+    if mode == "json":
+        write_diagnostic(stderr, "json mode is not available in this release")
+        return EXIT_FAILURE
+    return _run_print(args, stdin=stdin, stdout=stdout, stderr=stderr)
+
+
+def _run_print(args: CliArgs, *, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
+    """Run print text in one event loop and map its outcome to a process code."""
+    try:
+        return asyncio.run(_print_text(args, stdin=stdin, stdout=stdout, stderr=stderr))
+    except KeyboardInterrupt:
+        # First-signal cooperative cancellation is delivered by the print
+        # signals delivery; this only keeps a bare interrupt traceback-free.
+        write_diagnostic(stderr, "cancelled")
+        return 130
+    except Exception as error:
+        write_diagnostic(stderr, error)
+        return EXIT_FAILURE
+
+
+async def _print_text(
+    args: CliArgs, *, stdin: TextIO, stdout: TextIO, stderr: TextIO,
+) -> int:
+    """Resolve the common host, compose the task chain and execute it."""
+    cwd = Path(args.cwd or Path.cwd()).expanduser().resolve()
+    try:
+        host = CodingAgentHost(
+            startup_dir=cwd,
+            approve=args.approve,
+            no_approve=args.no_approve,
+            explicit_skills=tuple(args.skills),
+            explicit_templates=tuple(args.prompt_templates),
+            explicit_system_prompt=args.system_prompt,
+            explicit_system_prompt_file=args.system_prompt_file,
+            append_system=tuple(args.append_system),
+            no_skills=args.no_skills,
+            no_prompt_templates=args.no_prompt_templates,
+            no_context_files=args.no_context_files,
+            api_key=args.api_key,
+            session_dir=args.session_dir,
+            no_session=args.no_session,
+        )
+    except Exception as error:
+        write_diagnostic(stderr, error)
+        return EXIT_USAGE
+    selection = _select_session(host, args)
+    if selection.session_path is not None:
+        write_diagnostic(stderr, f"Selected session: {selection.session_path}")
+    diagnostics = await host.readiness(selection)
+    for diagnostic in diagnostics:
+        write_diagnostic(stderr, diagnostic.message)
+    if not selection.ready or any(diagnostic.blocking for diagnostic in diagnostics):
+        return EXIT_USAGE
+    if selection.cwd is None:
         return EXIT_USAGE
     try:
-        path = sessions.resolve(args.session) if args.session is not None else (
-            sessions.recent(cwd) if args.continue_session else None
+        attachments = tuple(
+            read_file_attachment(argument, cwd=selection.cwd) for argument in args.file_args
         )
-    except (OSError, ValueError) as error:
-        _diagnostic(stderr, error)
+        tasks = compose_tasks(
+            stdin_text=_read_stdin(stdin),
+            attachments=attachments,
+            prompts=tuple(args.messages),
+        )
+    except (AttachmentError, PrintInputError) as error:
+        write_diagnostic(stderr, error)
         return EXIT_USAGE
-    if path is not None:
-        _diagnostic(stderr, f"Selected session: {path}")
-    elif args.continue_session:
-        _diagnostic(stderr, f"No saved session for {cwd}; starting a new session")
-    _diagnostic(stderr, f"{mode} mode is not available in this release")
-    return EXIT_FAILURE
+    return await run_print_text(
+        host, selection, tasks, display_name=args.name, stdout=stdout, stderr=stderr,
+    )
+
+
+def _select_session(host: CodingAgentHost, args: CliArgs) -> SessionSelection:
+    """Route the explicit reopen, continue or new-session choice through the host."""
+    tools = () if args.no_tools else args.tools
+    if args.session is not None:
+        return host.select_open(
+            args.session, provider=args.provider, model=args.model,
+            thinking=args.thinking, tools=tools, cwd=args.cwd,
+        )
+    if args.continue_session:
+        return host.select_continue(
+            provider=args.provider, model=args.model,
+            thinking=args.thinking, tools=tools, cwd=args.cwd,
+        )
+    return host.select_new(
+        provider=args.provider, model=args.model,
+        thinking=args.thinking, tools=tools, cwd=args.cwd,
+    )
+
+
+def _read_stdin(stdin: TextIO) -> str | None:
+    """Read a piped stdin to EOF; a terminal supplies no print input."""
+    if stdin.isatty():
+        return None
+    return stdin.read()
 
 
 def _write_sessions(stream: TextIO, listings: Sequence[SessionInfo]) -> None:
@@ -425,7 +532,7 @@ def _write_sessions(stream: TextIO, listings: Sequence[SessionInfo]) -> None:
     for item in listings:
         values = (item.conversation_id, item.display_name or "", str(item.cwd),
                   item.created_at.isoformat(), item.modified_at.isoformat(), str(item.path))
-        stream.write("\t".join(_plain_text(value) for value in values) + "\n")
+        stream.write("\t".join(plain_text(value) for value in values) + "\n")
 
 
 def _option_label(token: str) -> str:
@@ -540,16 +647,6 @@ def _write_listings(stream: TextIO, listings: Sequence[ModelListing]) -> None:
     stream.write("  ".join(header.ljust(widths[column]) for column, header in enumerate(headers)).rstrip() + "\n")
     for row in rows:
         stream.write("  ".join(cell.ljust(widths[column]) for column, cell in enumerate(row)).rstrip() + "\n")
-
-
-def _diagnostic(stream: TextIO, error: Exception | str) -> None:
-    stream.write(f"omh: {_plain_text(str(error))}\n")
-
-
-def _plain_text(value: str) -> str:
-    """Keep each terminal field on one line, with controls shown as escapes."""
-    return "".join(char if char.isprintable() and char != "\\" else ascii(char)[1:-1]
-                   for char in value)
 
 
 def _product_version() -> str:

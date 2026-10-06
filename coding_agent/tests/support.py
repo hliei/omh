@@ -55,6 +55,13 @@ def text_stream(text: str = "done") -> FetchResponse:
     return sse_response({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
 
 
+def json_error_response(status: int, body: Mapping[str, Any]) -> FetchResponse:
+    """One non-streaming HTTP error response as the provider surfaces it."""
+    return FetchResponse(
+        status=status, headers={"content-type": "application/json"}, text=json.dumps(body),
+    )
+
+
 def tool_call_stream(tool_call_id: str, name: str, arguments: Mapping[str, Any]) -> FetchResponse:
     """One SSE response that requests a tool call."""
     return sse_response(
@@ -116,3 +123,7 @@ class RecordingFetch:
     async def __call__(self, request: FetchRequest) -> FetchResponse:
         self.requests.append(request)
         return self.response
+
+    @property
+    def bodies(self) -> list[dict[str, Any]]:
+        return [request.json_body for request in self.requests]

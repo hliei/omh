@@ -32,9 +32,11 @@ boundary text instead of being silently dropped.
 
 The installed command interprets `@path` before `--` as a file argument; that
 interpretation is part of [the command line entry](cli.md). A path typed inside
-prompt text is ordinary text and never becomes an attachment. Pending
-interactive attachments and the print input composition are later deliveries
-(the attach/draft UI and the print task chain respectively).
+prompt text is ordinary text and never becomes an attachment. Print composes
+the accepted attachments, piped stdin and the first prompt into its first task
+through `compose_first_task`, then runs each later prompt serially; see
+[print text](cli.md#print-text). Pending interactive attachments and their
+draft management remain a later delivery.
 
 ## Image processing and limits
 
