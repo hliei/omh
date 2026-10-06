@@ -425,9 +425,7 @@ def _write_sessions(stream: TextIO, listings: Sequence[SessionInfo]) -> None:
     for item in listings:
         values = (item.conversation_id, item.display_name or "", str(item.cwd),
                   item.created_at.isoformat(), item.modified_at.isoformat(), str(item.path))
-        stream.write("\t".join(value.replace("\\", "\\\\").replace("\t", "\\t")
-                               .replace("\n", "\\n").replace("\r", "\\r")
-                               for value in values) + "\n")
+        stream.write("\t".join(_plain_text(value) for value in values) + "\n")
 
 
 def _option_label(token: str) -> str:
@@ -545,7 +543,13 @@ def _write_listings(stream: TextIO, listings: Sequence[ModelListing]) -> None:
 
 
 def _diagnostic(stream: TextIO, error: Exception | str) -> None:
-    stream.write(f"omh: {error}\n")
+    stream.write(f"omh: {_plain_text(str(error))}\n")
+
+
+def _plain_text(value: str) -> str:
+    """Keep each terminal field on one line, with controls shown as escapes."""
+    return "".join(char if char.isprintable() and char != "\\" else ascii(char)[1:-1]
+                   for char in value)
 
 
 def _product_version() -> str:

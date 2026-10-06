@@ -170,7 +170,7 @@ def test_continue_and_ambiguous_session_diagnostics_without_writes(home, tmp_pat
     assert "No saved session" in result.stderr and "new session" in result.stderr
     assert not root.exists() and list(home.iterdir()) == []
     a, b = root / "a.jsonl", root / "b.jsonl"
-    write_history(a, project, "abc-one", "one", "older")
+    write_history(a, project, "abc-one", "one\n\x1b[31m", "older")
     write_history(b, project, "abc-two", "two", "newer")
     os.utime(a, (10, 10))
     os.utime(b, (20, 20))
@@ -179,6 +179,13 @@ def test_continue_and_ambiguous_session_diagnostics_without_writes(home, tmp_pat
     result = run_cli("--session", "abc", "--session-dir", str(root), home=home)
     assert result.returncode == EXIT_USAGE
     assert "Ambiguous" in result.stderr and str(a) in result.stderr and str(b) in result.stderr
+    assert len(result.stderr.splitlines()) == 1
+    assert "one\\n\\x1b[31m" in result.stderr
+    assert_no_terminal_noise(result.stderr)
+    listed = run_cli("--list-sessions", "--all-projects", "--session-dir", str(root), home=home)
+    assert len(listed.stdout.splitlines()) == 3
+    assert "one\\n\\x1b[31m" in listed.stdout
+    assert_no_terminal_noise(listed.stdout)
 
 
 @pytest.mark.parametrize("args", [
