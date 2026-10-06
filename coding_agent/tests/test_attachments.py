@@ -105,12 +105,15 @@ def test_missing_and_non_text_files_are_rejected_before_the_request(tmp_path: Pa
         read_file_attachment("binary.dat", cwd=tmp_path)
 
 
-def test_text_attachment_strips_only_a_leading_bom(tmp_path: Path) -> None:
+def test_text_attachment_preserves_a_leading_bom(tmp_path: Path) -> None:
     source = tmp_path / "bom.txt"
     source.write_bytes(b"\xef\xbb\xbfkept \n")
     attachment = read_file_attachment("bom.txt", cwd=tmp_path)
     assert attachment is not None
-    assert attachment.text == "kept \n"
+    assert attachment.text == "\ufeffkept \n"
+    task = compose_first_task(attachments=[attachment], first_prompt="explain")
+    assert task == f'<file name="{source}">\n\ufeffkept \n\n</file>\n\nexplain'
+    assert source.read_bytes() == b"\xef\xbb\xbfkept \n"
 
 
 def test_empty_files_keep_their_path_boundary(tmp_path: Path) -> None:

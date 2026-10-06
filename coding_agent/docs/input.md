@@ -21,8 +21,8 @@ already ends with a newline gains only the newlines needed for one separating
 blank line; nothing is trimmed.
 
 Text attachments keep the original file content inside a
-`<file name="...">...</file>` boundary. A leading UTF-8 BOM is removed when
-decoding, and every other byte is preserved. An empty file keeps its boundary
+`<file name="...">...</file>` boundary. UTF-8 decoding preserves a leading BOM
+and the rest of the text. An empty file keeps its boundary
 with an empty body. Image attachments contribute a boundary and real image content; a
 converted image lists its conversion and resize hints in the boundary text. A
 file that cannot be read, or whose bytes are neither a supported image nor valid

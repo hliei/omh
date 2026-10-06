@@ -16,6 +16,7 @@ from omh.agent import (
     AgentQueueSnapshot,
     AgentTool,
     CompactionResult,
+    CompactionSummaryMessage,
     HistoryCommitEvent,
     PromptTemplateSource,
     ReadToolOptions,
@@ -162,13 +163,24 @@ class AgentSession:
         """Whether the current model declares image input."""
         return "image" in self.agent.state.model.input
 
-    def _ensure_images_supported(self, images: list[ImageContent] | None) -> None:
+    def _ensure_images_supported(
+        self, message: str | AgentMessage | list[AgentMessage], images: list[ImageContent] | None,
+    ) -> None:
         """Reject new image attachments for a text-only model before accepting work.
 
         The product never switches provider to make an image fit. Saved history
         images are not rejected here; the SDK projects those as placeholders.
         """
-        if not images or self.supports_images:
+        if self.supports_images:
+            return
+        messages = message if isinstance(message, list) else [message]
+        has_images = bool(images) or any(
+            not isinstance(item, (str, CompactionSummaryMessage))
+            and isinstance(item.content, list)
+            and any(isinstance(block, ImageContent) for block in item.content)
+            for item in messages
+        )
+        if not has_images:
             return
         model = self.agent.state.model
         caption = f"{model.provider}/{model.id}"
@@ -193,7 +205,7 @@ class AgentSession:
         images: list[ImageContent] | None = None,
     ) -> None:
         self._ensure_can_accept_work()
-        self._ensure_images_supported(images)
+        self._ensure_images_supported(message, images)
         if isinstance(message, str):
             message = self._expand_input(message)
         await self.agent.prompt(message, images)
@@ -219,12 +231,12 @@ class AgentSession:
 
     def steer(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
         self._ensure_can_accept_work()
-        self._ensure_images_supported(images)
+        self._ensure_images_supported(message, images)
         self.agent.steer(self._queued_input(message, images))
 
     def follow_up(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
         self._ensure_can_accept_work()
-        self._ensure_images_supported(images)
+        self._ensure_images_supported(message, images)
         self.agent.follow_up(self._queued_input(message, images))
 
     async def reload_resources(self) -> ApplicationResources:

@@ -65,9 +65,6 @@ def read_file_attachment(
         raise AttachmentError(
             f"{path} is not a supported image or UTF-8 text file: {error}"
         ) from error
-    if text.startswith("\ufeff"):
-        # A leading UTF-8 BOM is a decode artifact, not file content.
-        text = text[1:]
     return FileAttachment(path=path, text=text)
 
 

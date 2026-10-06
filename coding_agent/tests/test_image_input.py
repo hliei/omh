@@ -122,6 +122,31 @@ async def test_text_only_model_rejects_new_images_with_manual_model_guidance(tmp
     assert session.supports_images is False
 
 
+@pytest.mark.parametrize("entry", ["prompt", "prompt-batch", "steer", "follow_up"])
+async def test_text_only_model_rejects_images_inside_typed_input(tmp_path: Path, entry: str) -> None:
+    stream = OfflineStream()
+    session = await AgentSessionRuntime(CodingAgentOptions(
+        cwd=tmp_path, model=non_vision_model(), stream_fn=stream, tools=(),
+    )).new_session()
+    initial = session.agent.history
+    message = UserMessage(content=[TextContent(text="describe"), user_image()], timestamp=1)
+
+    with pytest.raises(UnsupportedImageModelError):
+        if entry == "prompt":
+            await session.prompt(message)
+        elif entry == "prompt-batch":
+            await session.prompt([UserMessage(content="text first", timestamp=0), message])
+        elif entry == "steer":
+            session.steer(message)
+        else:
+            session.follow_up(message)
+
+    assert stream.requests == []
+    assert session.agent.history == initial
+    assert session.queued_messages.steering == ()
+    assert session.queued_messages.follow_up == ()
+
+
 async def test_read_tool_sends_a_real_image_and_converts_bmp(tmp_path: Path) -> None:
     original = image_file(tmp_path / "picture.bmp", "BMP")
     stream = OfflineStream([[ToolCall(id="r", name="read", arguments={"path": "picture.bmp"})]])

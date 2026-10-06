@@ -59,9 +59,9 @@ The [configuration decision](docs/adr/0003-configuration-and-credentials-boundar
 records the configuration, credential and selection boundary.
 The [resource trust decision](docs/adr/0004-resource-trust-and-tiers.md)
 records the project-loading authorization and the five-tier composition.
-The [image processing decision](docs/adr/0004-product-image-processing.md)
+The [image processing decision](docs/adr/0005-product-image-processing.md)
 records the product-owned conversion and its Pillow dependency.
-The [session storage decision](docs/adr/0004-session-storage-layout.md) records
+The [session storage decision](docs/adr/0006-session-storage-layout.md) records
 the default auto-save root, cwd grouping and in-memory mode.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
