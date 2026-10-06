@@ -31,7 +31,6 @@ class StdoutWriteError(Exception):
 
     def __init__(self, cause: BaseException) -> None:
         super().__init__(f"stdout write failed: {cause}")
-        self.cause = cause
 
 
 def _file_descriptor(stream: TextIO) -> int | None:
@@ -60,7 +59,7 @@ class StdoutWriter:
 
     def write(self, text: str) -> None:
         """Write one text record, blocking until the OS accepted every byte."""
-        if not text:
+        if self.failed or not text:
             return
         fd = self._fd
         if fd is None:
@@ -70,6 +69,8 @@ class StdoutWriter:
 
     def flush(self) -> None:
         """Wait for any buffered stream state after the final record."""
+        if self.failed:
+            return
         while True:
             try:
                 self._stream.flush()

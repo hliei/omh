@@ -158,9 +158,6 @@ async def _run_print(
                         writer.write(_json_line(projected))
 
                 runtime.subscribe(on_event)
-        except StdoutWriteError as error:
-            write_diagnostic(stderr, error)
-            return EXIT_FAILURE
         except Exception as error:
             write_diagnostic(stderr, error)
             return EXIT_FAILURE
@@ -169,9 +166,6 @@ async def _run_print(
         except UnsupportedImageModelError as error:
             write_diagnostic(stderr, error)
             input_rejected = True
-        except StdoutWriteError as error:
-            write_diagnostic(stderr, error)
-            outcome = _RunOutcome()
         except Exception as error:
             write_diagnostic(stderr, error)
             outcome = _RunOutcome()

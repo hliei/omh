@@ -49,10 +49,12 @@ import coding_agent.print_runner as runner
 from coding_agent.agent_session_runtime import AgentSessionRuntime
 
 _INJECT = int(os.environ.get("OMH_STDOUT_INJECT", "0"))
+_INJECT_ERRNO = getattr(errno, os.environ.get("OMH_STDOUT_ERRNO", "EAGAIN"))
 _FAIL_AFTER = int(os.environ.get("OMH_STDOUT_FAIL_AFTER", "-1"))
 _LOG = os.environ.get("OMH_STDOUT_LOG")
 _INJECT_LOG = os.environ.get("OMH_STDOUT_INJECT_LOG")
 _DELTAS = int(os.environ.get("OMH_PROVIDER_DELTAS", "1"))
+_TEXT_SIZE = int(os.environ.get("OMH_PROVIDER_TEXT_SIZE", "0"))
 _RELEASE = os.environ.get("OMH_RELEASE")
 _SLOW_CLOSE = float(os.environ.get("OMH_SLOW_CLOSE", "0"))
 _SEND_LOG = os.environ.get("OMH_SEND_LOG")
@@ -73,7 +75,7 @@ def _write(fd, data):
             if _INJECT_LOG:
                 with open(_INJECT_LOG, "a") as handle:
                     handle.write("injected\\n")
-            raise BlockingIOError(errno.EAGAIN, "controlled temporary stdout rejection")
+            raise OSError(_INJECT_ERRNO, "controlled temporary stdout rejection")
         _accepted += 1
     written = _real_write(fd, data)
     if fd == 1 and _LOG:
@@ -100,9 +102,13 @@ def stream_fn(model, context, options):
     text = TextContent(text="")
     output.content.append(text)
     stream.push(TextStartEvent(content_index=0, partial=output))
-    for _ in range(_DELTAS):
-        text.text += "x"
-        stream.push(TextDeltaEvent(content_index=0, delta="x", partial=output))
+    if _TEXT_SIZE:
+        text.text = "y" * _TEXT_SIZE
+        stream.push(TextDeltaEvent(content_index=0, delta=text.text, partial=output))
+    else:
+        for _ in range(_DELTAS):
+            text.text += "x"
+            stream.push(TextDeltaEvent(content_index=0, delta="x", partial=output))
     stream.push(TextEndEvent(content_index=0, content=text.text, partial=output))
     output.stop_reason = "stop"
     stream.push(DoneEvent(reason="stop", message=output))
@@ -162,14 +168,18 @@ def final_assistant_text(stdout: bytes) -> str:
     )
 
 
-def test_json_retries_temporary_stdout_rejections(tmp_path: Path, home: Path) -> None:
+@pytest.mark.parametrize("errno_name", ["EAGAIN", "ENOBUFS", "EWOULDBLOCK"])
+def test_json_retries_temporary_stdout_rejections(
+    tmp_path: Path, home: Path, errno_name: str,
+) -> None:
     write_log = tmp_path / "writes.bin"
     injection_log = tmp_path / "injections.txt"
     send_log = tmp_path / "sends.txt"
     result = run_installed(
         home, tmp_path, "--mode=json", "hello",
         extra_env={
-            "OMH_STDOUT_INJECT": "3", "OMH_STDOUT_LOG": str(write_log),
+            "OMH_STDOUT_INJECT": "3", "OMH_STDOUT_ERRNO": errno_name,
+            "OMH_STDOUT_LOG": str(write_log),
             "OMH_STDOUT_INJECT_LOG": str(injection_log), "OMH_PROVIDER_DELTAS": "5",
             "OMH_SEND_LOG": str(send_log),
         },
@@ -205,6 +215,28 @@ def test_json_slow_reader_sees_complete_ordered_stream(tmp_path: Path, home: Pat
     assert values[0]["type"] == "session"
     assert values[-1] == {"type": "agent_settled"}
     assert final_assistant_text(b"".join(lines)) == "x" * 1500
+
+
+def test_text_slow_reader_sees_the_complete_answer(tmp_path: Path, home: Path) -> None:
+    size = 200_000
+    command, env = installed_command(home, tmp_path, "--mode=text", "hello")
+    env["OMH_PROVIDER_TEXT_SIZE"] = str(size)
+    process = subprocess.Popen(
+        command, cwd=tmp_path, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=env,
+    )
+    assert process.stdout is not None
+    chunks: list[bytes] = []
+    with process.stdout:
+        while True:
+            chunk = process.stdout.read(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            time.sleep(0.002)
+    code = process.wait(timeout=40)
+    assert code == 0, process.stderr.read() if process.stderr else b""
+    assert b"".join(chunks) == b"y" * size
 
 
 def test_json_closed_stdout_pipe_exits_one_without_slow_cleanup(
