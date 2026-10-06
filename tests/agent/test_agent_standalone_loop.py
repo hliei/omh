@@ -220,13 +220,15 @@ def assert_no_terminal_end(events: list[AgentEvent]) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_direct_prompt_returns_accepted_messages_and_copies_inputs() -> None:
-    stream = ScriptedStreamFn([lambda: text_message("hi back")])
+@pytest.mark.parametrize("stop_reason", ["stop", "error"])
+async def test_direct_prompt_returns_accepted_messages_and_copies_inputs(stop_reason: StopReason) -> None:
+    stream = ScriptedStreamFn([lambda: text_message("hi back", stop_reason, "503 overloaded")])
     prompts = [user_message("hello")]
     context = AgentContext(messages=[], tools=[])
     config = AgentLoopConfig(model=make_model())
 
-    result = await run_agent_loop(prompts, context, config, lambda event: None, None, stream)
+    events = []
+    result = await run_agent_loop(prompts, context, config, events.append, None, stream)
 
     assert [message.role for message in result] == ["user", "assistant"]
     assert result[0] is prompts[0]
@@ -234,6 +236,8 @@ async def test_direct_prompt_returns_accepted_messages_and_copies_inputs() -> No
     # The prompt list and the passed context are not mutated by a new prompt.
     assert prompts == [result[0]]
     assert context.messages == []
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [False]
+    assert stream.calls == 1
 
 
 async def test_direct_prompt_includes_needed_tool_declaration() -> None:

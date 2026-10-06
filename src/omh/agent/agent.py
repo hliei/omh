@@ -1103,6 +1103,7 @@ class Agent:
                             raise
                         await self._handle_run_failure(error, signal.aborted)
                 except (Exception, asyncio.CancelledError) as error:
+                    run.stop = True
                     reported_error = error if run.notification_error is None else run.notification_error
                     if run.notification_error is not None:
                         if not run.ending:
@@ -1177,6 +1178,16 @@ class Agent:
         finally:
             self._finish_run(run, first_error)
 
+    def _should_retry_dialogue(self, run: _ActiveRun) -> bool:
+        message = run.last_assistant
+        policy = self._retry_policy
+        return bool(
+            not run.abort_controller.signal.aborted and not run.stop
+            and run.notification_error is None
+            and message is not None and is_retryable_assistant_error(message)
+            and policy.enabled and run.retry_attempt < policy.max_retries
+        )
+
     async def _run_dialogue(
         self, executor: Callable[[AbortSignal], Awaitable[None]], run: _ActiveRun,
     ) -> None:
@@ -1186,10 +1197,8 @@ class Agent:
             message = run.last_assistant
             policy = self._retry_policy
             attempt = run.retry_attempt
-            if (
-                message is not None and is_retryable_assistant_error(message)
-                and policy.enabled and attempt < policy.max_retries
-            ):
+            if self._should_retry_dialogue(run):
+                assert message is not None
                 run.retry_attempt = attempt + 1
                 run.retry = RetryStartEvent(
                     scope="dialogue", attempt=attempt + 1, max_retries=policy.max_retries,
@@ -1464,6 +1473,10 @@ class Agent:
         )
 
     async def _handle_run_failure(self, error: BaseException, aborted: bool) -> None:
+        run = self._current_run.get()
+        assert run is not None
+        # Host failures end execution; their synthetic response is not retryable.
+        run.stop = True
         model = self._state.model
         failure_message = AssistantMessage(
             api=model.api,
@@ -1485,6 +1498,7 @@ class Agent:
         assert run is not None
         if isinstance(event, AgentEndEvent):
             run.ending = True
+            event = replace(event, will_retry=self._should_retry_dialogue(run))
         if isinstance(event, MessageEndEvent):
             message = snapshot_messages([event.message])[0]
             entry = self._history.append_message(message)

@@ -4,6 +4,7 @@ import asyncio
 
 from omh.agent import (
     Agent,
+    AgentEndEvent,
     AgentInitialState,
     AgentOptions,
     ContextEditHistoryEntry,
@@ -60,7 +61,9 @@ async def main() -> None:
     agent = Agent(options)
 
     def listener(event, signal):
-        if isinstance(event, RetryStartEvent):
+        if isinstance(event, AgentEndEvent):
+            print(f"loop ended: response retry intended={event.will_retry}")
+        elif isinstance(event, RetryStartEvent):
             print(f"{event.scope} retry {event.attempt}/{event.max_retries}, delay={event.delay_ms}ms")
         elif isinstance(event, RetryEndEvent):
             print(f"retry chain: {event.result}")

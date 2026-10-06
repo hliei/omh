@@ -394,6 +394,43 @@ Request overrides are single-use; base sections keep the current prompt's
 snapshot. Custom messages accepted during backoff are committed at the safe
 boundary before the next request.
 
+At each loop's `agent_end` notification, `AgentEndEvent.will_retry` reports
+the Agent's dialogue response-retry intent before any listener runs. It is
+true only for a selected transient error with retry enabled and budget remaining,
+when the activity has not been aborted or stopped by an effective end or a host
+failure. Success, aborted/length responses, permanent errors, disabled retry and
+exhaustion report false. This field describes response retry, not compaction
+recovery or queued-input continuation.
+
+The intent is an observation, not a reservation or a promise that a request will
+occur. All listeners receive the same boundary value in isolated snapshots.
+Abort, an awaited listener or saving failure, or a live policy change after that
+boundary can prevent the retry without changing the reported intent. The Agent
+rechecks its live policy after `agent_end` listeners and custom-message flushing;
+changing policy in a listener can also enable a retry after a false intent.
+Do not await a future `retry_start` inside an awaited `agent_end` listener:
+the Agent cannot advance until that listener returns.
+
+For example, a host can cancel a transient response at this boundary:
+
+```python
+from omh.agent import AgentEndEvent
+
+def stop_on_retry_intent(event, signal):
+    if isinstance(event, AgentEndEvent) and event.will_retry:
+        print("Response retry intended; cancelling before scheduling it.")
+        agent.abort()
+
+unsubscribe = agent.subscribe(stop_on_retry_intent)
+await agent.prompt("Try this task.")
+unsubscribe()
+```
+
+If the response is transient, that `agent_end` still carries
+`will_retry=True`, but this cancellation prevents `retry_start` and another
+model request. `agent_settled` then reports the activity as aborted, retaining
+the failed response in history and any unconsumed inputs in their queues.
+
 Each scheduled attempt emits `RetryStartEvent` (`type="retry_start"`) with
 `scope="dialogue"`, `attempt` (starting at 1), `max_retries`, `delay_ms`, and
 `error_message`. The error chain emits one `RetryEndEvent`
@@ -931,13 +968,18 @@ state, then awaits listeners individually in subscription order. Each receives
 an independent event snapshot and the current activity's cancellation signal.
 A failure skips that event's remaining listeners.
 
-`agent_end` ends one loop. `AgentSettledEvent` (`type="agent_settled"`) ends the
+`AgentEndEvent` (`type="agent_end"`) ends one loop. It contains `messages`
+and the keyword-only boolean `will_retry` (default `False`), captured before
+the Agent dispatches the notification. See [dialogue retries](#dialogue-retries)
+for the intent boundary and the ways subsequent work can be blocked.
+`AgentSettledEvent` (`type="agent_settled"`) ends the
 whole dialogue activity after its loops and execution cleanup. It contains
 `messages`, an isolated snapshot of messages committed during this activity
 (excluding earlier history), `aborted`, and `error_message`, the final activity
 error text or `None`. History and effective context already include those
 commits. `is_busy` and `is_streaming` stay true throughout its awaited listeners.
-The standalone loop emits `agent_end` and does not emit `agent_settled`.
+The standalone loop emits `agent_end` with `will_retry=False` and does not emit
+`agent_settled`; it has no automatic response-retry policy.
 
 Inside an awaited `agent_settled` listener, `await agent.prompt(...)` validates
 and copies the input, confirms acceptance, and immediately returns `None`.
