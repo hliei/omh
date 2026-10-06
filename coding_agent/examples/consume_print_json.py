@@ -21,6 +21,8 @@ def main() -> int:
                 final = event["message"]
     code = process.wait()
     if code != 0:
+        # A permanent stdout write failure exits 1 without a final message;
+        # there is no synthetic result or rescue to consume.
         return code
     if final is None:
         print("No authoritative final assistant message; output is incomplete.", file=sys.stderr)

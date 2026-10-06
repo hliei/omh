@@ -21,6 +21,7 @@ from omh.llm.types import ModelThinkingLevel
 
 from coding_agent.agent_session import ToolName
 from coding_agent.attachments import AttachmentError, read_file_attachment
+from coding_agent.cancellation import PrintCancellation, PrintPreparationCancelled
 from coding_agent.config import AppendKind, resolve_agent_dir
 from coding_agent.host import CodingAgentHost, SessionSelection
 from coding_agent.model_directory import ModelDirectory, ModelListing
@@ -85,7 +86,10 @@ Execution modes:
 Print text reads piped stdin to EOF, runs the first composed task and each later
 prompt serially in one session, and writes only the last task's assistant text to
 stdout. Diagnostics go to stderr; the final assistant ending in error or abort
-exits 1, and a recoverable tool failure is fed back to the model.
+exits 1, and a recoverable tool failure is fed back to the model. The first
+SIGINT/SIGTERM/SIGHUP stops the remaining tasks, cleans up and exits 130/143/129;
+a second signal exits immediately with a saving warning. A failed automatic save
+exits 1 and reports a rescue path or the lack of a complete save on stderr.
 
 Interactive mode scrolls the conversation and keeps an editor and status line
 at the bottom. Enter submits the editor. Ctrl+T expands or collapses thinking.
@@ -453,17 +457,26 @@ def run(
 
 def _run_print(args: CliArgs, *, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
     """Run print tasks in one event loop and map the process outcome."""
+    preparation = PrintCancellation(stderr)
+
+    def cancel_preparation() -> None:
+        raise PrintPreparationCancelled(preparation.exit_code)
+
+    preparation.install(cancel_preparation)
     try:
         return asyncio.run(_print_text(args, stdin=stdin, stdout=stdout, stderr=stderr))
+    except PrintPreparationCancelled as error:
+        return error.exit_code
     except KeyboardInterrupt:
-        # Cooperative first-signal cancellation and the 130/143/129 exits are
-        # delivered by the print signals delivery; this only keeps a bare
-        # interrupt fatal instead of printing a traceback.
+        # Keep an explicitly raised KeyboardInterrupt fatal without a traceback;
+        # process signals use PrintCancellation and their own exit codes.
         write_diagnostic(stderr, "cancelled")
         return EXIT_FAILURE
     except Exception as error:
         write_diagnostic(stderr, error)
         return EXIT_FAILURE
+    finally:
+        preparation.uninstall()
 
 
 async def _print_text(
@@ -518,6 +531,7 @@ async def _print_text(
     runner = run_print_json if args.mode == "json" else run_print_text
     return await runner(
         host, selection, tasks, display_name=args.name, stdout=stdout, stderr=stderr,
+        handle_signals=True,
     )
 
 

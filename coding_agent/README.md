@@ -11,7 +11,9 @@ listing, shared session selection, persistent names, JSONL/HTML export, and
 print text and JSON execution. Print text composes piped stdin, file attachments
 and the first prompt into one task, runs every later prompt serially in the same saved
 session, and writes only the final task's assistant text to stdout. JSON streams the
-session header and incremental events; consumers inspect final messages as well as the process exit. See the [JSON wire contract](docs/print-json.md)
+session header and incremental events; consumers inspect final messages as well as the process exit. Print writes stdout
+serially with slow-consumer backpressure, retries temporary buffer errors and exits `1`
+on a permanent write error without a synthetic result. See the [JSON wire contract](docs/print-json.md)
 and [consumer example](examples/consume_print_json.py). Interactive mode scrolls
 the conversation above an editor and status line; see
 [Interactive session](docs/interactive.md). See the [command line entry](docs/cli.md).
@@ -71,6 +73,8 @@ The [image processing decision](docs/adr/0005-product-image-processing.md)
 records the product-owned conversion and its Pillow dependency.
 The [session storage decision](docs/adr/0006-session-storage-layout.md) records
 the default auto-save root, cwd grouping and in-memory mode.
+The [print signals and rescue decision](docs/adr/0008-print-signals-and-rescue.md)
+records cooperative termination signals and complete-history rescue.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen
@@ -185,5 +189,7 @@ Full saves and repairs replace a finished same-directory temporary snapshot;
 failed replacement preserves the old file. `export(backup_path)` writes an
 independent complete backup and preserves the original unsaved state. Ordinary
 append can partially fail; saving does not promise fsync or power-loss durability.
+The installed print command's cooperative signals and failed-save rescue are in
+[signals and save rescue](docs/cli.md#signals-and-save-rescue).
 See [writer ownership and closing](docs/session-manager.md#single-writer-and-closing)
 and the runnable [save repair example](examples/save_repair.py).
