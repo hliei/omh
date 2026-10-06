@@ -287,6 +287,28 @@ async def test_abort_before_agent_end_has_no_retry_intent() -> None:
     assert stream.calls == 1
 
 
+async def test_cancelled_retry_execution_has_no_intent_at_terminal_cleanup() -> None:
+    def cancelled_response() -> AssistantMessage:
+        raise asyncio.CancelledError("provider task cancelled")
+
+    stream = ScriptedStreamFn([error, cancelled_response])
+    agent = make_agent(stream)
+    events = []
+    agent.subscribe(lambda event, signal: events.append(event))
+    with pytest.raises(asyncio.CancelledError):
+        await agent.prompt("go")
+    await agent.wait_for_idle()
+
+    assert [event.will_retry for event in events if isinstance(event, AgentEndEvent)] == [True, False]
+    assert stream.calls == 2
+    assert sum(event.type == "retry_start" for event in events) == 1
+    assert events[-1].type == "agent_settled"
+    assert not agent.state.is_busy
+    assistants = [entry.message for entry in agent.history.entries if isinstance(entry, MessageHistoryEntry)
+                  and isinstance(entry.message, AssistantMessage)]
+    assert len(assistants) == 1 and assistants[0].error_message == "503 overloaded"
+
+
 async def test_start_listener_abort_does_not_wait_or_admit_another_request(clock: Clock) -> None:
     stream = ScriptedStreamFn([error])
     agent = make_agent(stream)

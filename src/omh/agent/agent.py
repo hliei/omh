@@ -1103,6 +1103,7 @@ class Agent:
                             raise
                         await self._handle_run_failure(error, signal.aborted)
                 except (Exception, asyncio.CancelledError) as error:
+                    run.stop = True
                     reported_error = error if run.notification_error is None else run.notification_error
                     if run.notification_error is not None:
                         if not run.ending:
