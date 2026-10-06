@@ -85,7 +85,10 @@ Execution modes:
 Print text reads piped stdin to EOF, runs the first composed task and each later
 prompt serially in one session, and writes only the last task's assistant text to
 stdout. Diagnostics go to stderr; the final assistant ending in error or abort
-exits 1, and a recoverable tool failure is fed back to the model.
+exits 1, and a recoverable tool failure is fed back to the model. The first
+SIGINT/SIGTERM/SIGHUP stops the remaining tasks, cleans up and exits 130/143/129;
+a second signal exits immediately with a saving warning. A failed automatic save
+exits 1 and reports a rescue path or the lack of a complete save on stderr.
 
 Options:
   -c, --continue                 Continue the most recent session for the working directory
@@ -498,6 +501,7 @@ async def _print_text(
     runner = run_print_json if args.mode == "json" else run_print_text
     return await runner(
         host, selection, tasks, display_name=args.name, stdout=stdout, stderr=stderr,
+        handle_signals=True,
     )
 
 

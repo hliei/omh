@@ -125,6 +125,39 @@ directory continues the same conversation identity with `-c`; `--session
 failure is reported on stderr and exits `1`; the final answer text is only
 written after a fully successful finish.
 
+## Signals and save rescue
+
+The installed print command handles the first `SIGINT`, `SIGTERM` or `SIGHUP`
+cooperatively. It stops admitting and sending the remaining tasks, aborts the
+current Agent activity through the SDK's public `abort` boundary, and then waits
+for Agent, tool, retry and summary cleanup, the existing history save and the
+ordinary close path. It exits `130` for `SIGINT`, `143` for `SIGTERM` and `129`
+for `SIGHUP`; the code is kept even when that cleanup or saving then fails.
+Cancelling an awaited prompt is not a way to stop the work it owns, so the
+command never cancels the prompt waiter, never waits for idle/close from inside
+an awaited callback handled by the signal path, sets no automatic hard timeout
+and does not roll back completed side effects. A second termination signal stops
+the process immediately and says on stderr that saving may be incomplete; it no
+longer promises cooperative cleanup or a complete save. This contract begins
+when print execution starts: a signal during argument, stdin or host
+preparation is not covered, `SIGINT` there keeps the existing `omh: cancelled`
+diagnostic and exits `1`, and `SIGTERM`/`SIGHUP` keep the process default.
+
+JSON output during cancellation keeps only the ordinary header and event lines;
+no `cancelled` marker or final result is added. A normally returned assistant
+`error`/`aborted` message and thrown cleanup or saving failures keep the
+ordinary exit branches described above.
+
+When the default automatic save fails, print still exits `1` and writes the
+complete in-memory history to an independent `omh-rescue-*` temporary
+directory. On success, stderr names the reopenable JSONL path; on failure it
+states that no complete history was saved. Rescue keeps the complete history,
+selected leaf and image content, does not rebind or repair the original target,
+does not turn the failed call into a success and sends no additional model
+request. `--no-session` never rescues automatically. A permanent stdout write
+failure is owned by the output and backpressure contract and exits `1` directly
+without promising this signal or rescue cleanup.
+
 ## Print JSON
 
 `--mode=json` runs the same composed tasks and session selection, writing a
@@ -236,3 +269,4 @@ or traceback. Credentials never appear in stdout or stderr.
 | `0` | Read-only command completed, or print text finished normally |
 | `1` | The final assistant ended in `error`/`aborted`, or a run, notification, saving or close failure |
 | `2` | Invalid command line, input or configuration rejected before any request |
+| `129`/`130`/`143` | The first `SIGHUP`/`SIGINT`/`SIGTERM` stopped the remaining print tasks; retained even if cleanup or saving then fails |
