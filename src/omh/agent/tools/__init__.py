@@ -2,6 +2,7 @@
 
 from omh.agent.tools.bash import BashToolOptions, create_bash_tool
 from omh.agent.tools.edit import create_edit_tool
+from omh.agent.tools.image import detect_supported_image_mime_type
 from omh.agent.tools.read import (
     ReadImageProcessor,
     ReadImageProcessorFailure,
@@ -16,6 +17,7 @@ from omh.agent.tools.write import create_write_tool
 __all__ = [
     "BashToolOptions",
     "create_bash_tool",
+    "detect_supported_image_mime_type",
     "ReadImageProcessor",
     "ReadImageProcessorFailure",
     "ReadImageProcessorOptions",

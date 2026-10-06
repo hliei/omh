@@ -144,7 +144,7 @@ class AgentSessionRuntime:
             raise ValueError("No executable model configured; provide model or fallback_model")
         if fallback_message is not None:
             fallback_message += f"; using {selected.provider}/{selected.id}"
-        tools = _create_tools(options.tools, cwd)
+        tools = _create_tools(options.tools, cwd, image_limits=options.image_limits)
         assembled = replace(
             options.agent_options,
             stream_fn=options.stream_fn or options.agent_options.stream_fn,

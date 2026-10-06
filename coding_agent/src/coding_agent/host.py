@@ -82,6 +82,7 @@ from coding_agent.config import (
     validate_tools,
 )
 from coding_agent.history import DecodedHistory, decode_history
+from coding_agent.images import count_history_images, degradation_notice
 from coding_agent.model_directory import ModelDirectory
 from coding_agent.resources import (
     RESOURCE_TIERS,
@@ -348,6 +349,7 @@ class CodingAgentHost:
             thinking, history=settings, model=resolved_model, diagnostics=diagnostics,
         )
         effective_tools = self._resolve_tools(tools, diagnostics)
+        _diagnose_saved_images(destination, decoded, resolved_model, diagnostics)
         return SessionSelection(
             cwd=effective_cwd, model=resolved_model, thinking_level=effective_thinking,
             tools=effective_tools, history=decoded, diagnostics=(*self.diagnostics, *diagnostics),
@@ -755,3 +757,19 @@ class CodingAgentHost:
     def _configured_tier(self, key: str) -> str:
         """Map the effective settings scope for a resource array onto its tier."""
         return _TIER_FOR_SCOPE.get(self.settings.source_of(key), "global-config")
+
+
+def _diagnose_saved_images(
+    destination: Path, decoded: DecodedHistory, model: Model | None,
+    diagnostics: list[ConfigDiagnostic],
+) -> None:
+    """Explain saved images that a text-only model will project as placeholders."""
+    if model is None or "image" in model.input:
+        return
+    count = count_history_images(decoded.history)
+    if not count:
+        return
+    diagnostics.append(ConfigDiagnostic(
+        str(destination), "history", "adjusted",
+        degradation_notice(model.provider, model.id, count),
+    ))

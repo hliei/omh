@@ -116,6 +116,16 @@ at acceptance, including their images. Retries reuse accepted expanded messages.
 Typed SDK messages and message lists retain their data semantics; direct
 `session.agent` calls use only the SDK input contract.
 
+The `images` argument of `prompt`, `steer` and `follow_up` carries real image
+content. A text-only selected model rejects a new attachment with
+`UnsupportedImageModelError` before anything is accepted, and nothing switches
+provider. `supports_images` reports the current model's image capability, and
+`CodingAgentOptions.image_limits` passes stricter send limits. Saved history
+images are not rejected; resolving them with a text-only model adds a
+non-blocking diagnostic that explains the SDK placeholder projection. File
+argument boundaries, conversion and the read-tool image processor are described
+in [input and attachments](input.md).
+
 `await session.reload_resources()` (or the runtime wrapper) loads a complete
 batch from the current options before replacing the resource snapshot, expected
 sections and executable tools. It does not run a model or commit history by

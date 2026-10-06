@@ -142,6 +142,15 @@ Before `--`, a `@path` argument is a file attachment and every other non-option
 argument is a prompt. After `--`, every remaining argument is a literal prompt,
 including values that start with `-` or `@`.
 
+A text attachment keeps the file's original content inside a
+`<file name="...">...</file>` boundary; an image attachment is converted and
+sent as real image content. The first task combines piped stdin, the
+attachments in argument order and the first prompt, separated so that no part
+runs into the next. A missing file, or bytes that are neither a supported image
+nor UTF-8 text, is rejected before the request. Formats, limits and the model
+modality rule are in [input and attachments](input.md); print task execution
+delivers this composition in a later delivery.
+
 ## Conflicts and rejection
 
 The command exits `2` before any request for:
