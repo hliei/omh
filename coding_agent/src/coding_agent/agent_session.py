@@ -44,7 +44,11 @@ from omh.llm.types import (
 from coding_agent.config import ToolName as ToolName
 from coding_agent.history import ConversationSource
 from coding_agent.images import ImageLimits, create_read_image_processor
-from coding_agent.resources import ApplicationResources, load_resources
+from coding_agent.resources import (
+    ApplicationResources,
+    load_resources,
+    resource_sections,
+)
 from coding_agent.session_manager import (
     ExportFormat,
     SaveMode,
@@ -268,6 +272,17 @@ class AgentSession:
         self.ensure_can_accept_work()
         self._ensure_images_supported(message, images)
         self.agent.follow_up(self._queued_input(message, images))
+
+    async def set_tools(self, names: tuple[ToolName, ...]) -> None:
+        """Change live model tools without rereading resources or accepted inputs."""
+        self.ensure_can_accept_work()
+        if self._resource_options is None:
+            raise ValueError("Tool selection requires application options")
+        tools = _create_tools(names, self.cwd, image_limits=self._resource_options.image_limits)
+        sections = resource_sections(self._resource_options, self.cwd, tools, self.resources)
+        await self.agent.set_tools(tools)
+        await self.agent.set_system_sections(sections)
+        self._resource_options.tools = names
 
     async def reload_resources(self) -> ApplicationResources:
         """Load current options before publishing next-prompt sections and live tools."""

@@ -175,20 +175,28 @@ def load_resources(
     )
     skills = load_skills(_ordered(options.skill_sources, options.resource_tiers), cwd=cwd)
     templates = load_prompt_templates(_ordered(options.template_sources, options.resource_tiers), cwd=cwd)
-    sections = build_system_sections(
-        cwd=cwd, context_files=context.files if context is not None else (),
-        custom_prompt=options.custom_prompt, append_system_prompt=options.append_system_prompt,
-        selected_tools=[tool.name for tool in tools],
-        tool_snippets={tool.name: tool.description for tool in tools},
-    )
-    catalog = format_skills_for_prompt(skills.skills, tools=tools)
-    if catalog:
-        sections["skills"] = catalog
-    return ApplicationResources(
+    resources = ApplicationResources(
         tuple(context.files) if context is not None else (),
         tuple(skills.skills), tuple(templates.templates),
         (
             *(context.diagnostics if context is not None else ()),
             *skills.diagnostics, *templates.diagnostics, *_builtin_conflicts(templates.templates),
         ),
-    ), sections
+    )
+    return resources, resource_sections(options, cwd, tools, resources)
+
+
+def resource_sections(
+    options: "CodingAgentOptions", cwd: Path, tools: list[AgentTool], resources: ApplicationResources,
+) -> dict[str, str]:
+    """Build next-prompt sections from an already accepted resource snapshot."""
+    sections = build_system_sections(
+        cwd=cwd, context_files=resources.context_files,
+        custom_prompt=options.custom_prompt, append_system_prompt=options.append_system_prompt,
+        selected_tools=[tool.name for tool in tools],
+        tool_snippets={tool.name: tool.description for tool in tools},
+    )
+    catalog = format_skills_for_prompt(resources.skills, tools=tools)
+    if catalog:
+        sections["skills"] = catalog
+    return sections

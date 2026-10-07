@@ -165,6 +165,15 @@ def stream_fn(model, context, options):
     global CALLS, SUMMARY_CALLS
     CALLS += 1
     summary = is_summary(context)
+    selection_path = os.environ.get("INTERACTIVE_SELECTIONS")
+    if selection_path:
+        from omh.llm.utils.transcript import get_current_tools
+        with open(selection_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "model": f"{model.provider}/{model.id}",
+                "thinking": options.reasoning,
+                "tools": [tool.name for tool in get_current_tools(context.messages)],
+            }) + "\n")
     payload_path = os.environ.get("INTERACTIVE_PAYLOADS")
     if payload_path:
         with open(payload_path, "a", encoding="utf-8") as handle:
@@ -189,6 +198,9 @@ def stream_fn(model, context, options):
             return stream
         emit_text(stream, output, "summary of the conversation")
         return stream
+    if SCENARIO == "settings-retry" and CALLS <= 2:
+        emit_error(stream, output, "kept visible", "503 service unavailable")
+        return stream
     if SCENARIO == "controls":
         emit_text(stream, output, "before\x1b]52;c;dGVzdA==\x07after\x1b[2J")
         return stream
@@ -211,6 +223,28 @@ def stream_fn(model, context, options):
     user = last_user(context).strip()
     tool = latest_tool(context)
     record_request(user)
+    if SCENARIO == "settings-batch":
+        if CALLS == 1:
+            emit_tools(stream, output, [
+                ToolCall(id="call-a", name="bash", arguments={"command": (
+                    "printf settings-ready; while [ ! -f release-settings ]; do sleep 0.02; done; "
+                    "printf a > first.txt"
+                )}),
+                ToolCall(id="call-b", name="bash", arguments={"command": "printf b > second.txt"}),
+            ])
+        else:
+            emit_text(stream, output, "settings batch done")
+        return stream
+    if SCENARIO == "settings-request" and CALLS == 1:
+        import asyncio
+        stream.push(StartEvent(partial=output))
+        async def finish_later():
+            from pathlib import Path
+            while not Path("release-settings").exists():
+                await asyncio.sleep(0.02)
+            emit_tool(stream, output, "write", {"path": "first.txt", "content": "old snapshot"}, "old-request")
+        asyncio.create_task(finish_later())
+        return stream
     if SCENARIO == "shell-tools":
         if tool is None and CALLS == 1:
             emit_tool(stream, output, "bash", {"command": (
@@ -361,9 +395,10 @@ class ControlledHost(cli.CodingAgentHost):
             options.agent_options.finish_turn = lambda context, signal: "end"
         # The retry-cancel scenario holds the retry wait open long enough to
         # cancel it deliberately; the rest retry without a timer.
-        options.agent_options.retry = RetryPolicy(
-            base_delay_ms=8000 if SCENARIO == "retry-cancel" else 0,
-        )
+        if SCENARIO not in {"settings-retry", "settings-compaction"}:
+            options.agent_options.retry = RetryPolicy(
+                base_delay_ms=8000 if SCENARIO == "retry-cancel" else 0,
+            )
         if SCENARIO in {"compact", "compact-cancel"}:
             options.agent_options.compaction = CompactionSettings(
                 reserve_tokens=999_999, keep_recent_tokens=0,
@@ -422,3 +457,12 @@ if SCENARIO in {"handoff", "handoff-error"}:
                 prompt.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
     interactive.AgentSessionRuntime = ControlledRuntime
+
+
+if SCENARIO == "settings-write-failure":
+    real_replace = os.replace
+    def fail_settings_replace(source, destination):
+        real_replace(source, destination)
+        if str(destination).endswith("settings.json"):
+            raise OSError("controlled failure after replacement")
+    os.replace = fail_settings_replace

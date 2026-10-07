@@ -41,6 +41,28 @@ class CommandSpec:
 
     def argument_items(self, prefix: str, sources: CompletionSources) -> Sequence[CompletionItem]:
         """Return valid arguments for this command before the cursor."""
+        if self.argument_source in {"model", "thinking", "tools", "settings"}:
+            source = self.argument_source
+            base, fragment = "", prefix
+            if source == "settings":
+                scope, space, tail = prefix.partition(" ")
+                if not space:
+                    values: tuple[str, ...] = ("current", "global", "project")
+                    return tuple(CompletionItem(value=value, label=value) for value in values if value.startswith(prefix))
+                field, field_space, fragment = tail.partition(" ")
+                if not field_space:
+                    values = ("model", "thinking", "tools", "theme", "hideThinking", "collapseTools")
+                    if scope in {"global", "project"}:
+                        values += ("models", "compaction", "retry", "skills", "prompts")
+                    return tuple(CompletionItem(value=scope + " " + value, label=value) for value in values if value.startswith(tail))
+                base, source = scope + " " + field + " ", field
+            candidates = {
+                "model": sources.models, "thinking": sources.thinking_levels,
+                "tools": ("read,bash,edit,write", "read", "bash", "edit", "write", "none"),
+                "theme": ("dark", "light"), "hideThinking": ("true", "false"),
+                "collapseTools": ("true", "false"),
+            }.get(source, ())
+            return tuple(CompletionItem(value=base + value, label=value) for value in candidates if value.startswith(fragment))
         if self.argument_source == "attachments":
             if prefix.startswith("remove "):
                 return tuple(
@@ -107,6 +129,11 @@ AVAILABLE_COMMANDS: tuple[CommandSpec, ...] = (
         "/help [command]", max_arguments=1, argument_help="optional command name",
         argument_source="commands",
     ),
+    CommandSpec("model", "Select the current model without writing defaults", "/model [provider/model]", max_arguments=1, argument_help="exact model, or selector", argument_source="model"),
+    CommandSpec("thinking", "Choose an effective thinking level for the next request", "/thinking [level]", max_arguments=1, argument_help="one of the selected model's effective levels", argument_source="thinking"),
+    CommandSpec("tools", "Choose current model tools; user shell stays available", "/tools [read,bash,edit,write | none]", max_arguments=1, argument_help="distinct tool subset, or none", argument_source="tools"),
+    CommandSpec("settings", "View or edit current choices or explicit scoped defaults", "/settings [current | global | project] [field value]", max_arguments=None, argument_help="default current; persistent edits name a scope and target; see configuration guide", argument_source="settings"),
+    CommandSpec("reload", "Accept resource defaults for the next new prompt when idle", "/reload"),
     CommandSpec("hotkeys", "Show the default keyboard shortcuts", "/hotkeys"),
     CommandSpec("copy", "Copy the last assistant answer", "/copy"),
     CommandSpec(
@@ -217,6 +244,10 @@ HOTKEYS: tuple[tuple[str, str], ...] = (
     ("Ctrl+G", "Edit the current input in an external editor"),
     ("Ctrl+X, /copy", "Copy the last assistant answer"),
     ("Ctrl+V", "Add a clipboard screenshot to the pending images"),
+    ("Ctrl+L", "Open the model selector"),
+    ("Ctrl+P / Shift+Ctrl+P", "Cycle configured models forward / backward"),
+    ("Shift+Tab", "Cycle only effective thinking levels"),
+    ("Ctrl+S", "Save current thinking as a global default; show the target"),
     ("Ctrl+T", "Show or hide recorded thinking"),
     ("Ctrl+O", "Expand or collapse recorded tool output"),
     ("Ctrl+C", "Clear the editor; a second Ctrl+C within 500ms starts an exit"),
