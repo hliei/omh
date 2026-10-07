@@ -507,6 +507,8 @@ def test_a_new_image_is_rejected_before_a_text_only_model_and_the_draft_survives
         session.send(b"/attach clear\r")
         session.wait_for("attachments cleared")
         session.send(b"\x04")
+        session.wait_for("unsubmitted content remains: cleared editor text")
+        session.send(b"\r")
         assert session.finish() == 0
         assert session.restored()
     finally:

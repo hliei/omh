@@ -509,7 +509,9 @@ def test_unsaved_history_refuses_new_work_and_keeps_the_screen(home: Path, tmp_p
         time.sleep(0.4)
         session._pump(0.1)
         assert len(sends(home)) == before
-        session.send(b"\x04")
+        session.send(b"\x03/quit --discard-unsaved\r")
+        session.wait_for("unsubmitted content remains")
+        session.send(b"\r")
         assert session.finish() == 0
         assert session.restored()
     finally:
@@ -565,9 +567,11 @@ def test_resume_without_a_session_does_not_start_one(home: Path, tmp_path: Path)
         "--cwd", str(project), home=home, cwd=project, env=provider_env(home, "echo"),
     )
     try:
-        session.wait_for("Pass --session")
-        session.send(b"hello\r")
-        session.wait_for("No request was sent")
+        session.wait_for("No saved sessions match")
+        session.send(b"hello")
+        session.wait_for("No saved sessions match")
+        session.send(b"\x1b")
+        session.wait_for("session selector canceled")
         assert "reply:hello" not in session.visible()
         session.send(b"\x04")
         assert session.finish() == 0
@@ -707,6 +711,8 @@ def test_failed_startup_rename_keeps_runtime_owned_and_closes_it(home: Path, tmp
         second.wait_for("reply:first")
         second.wait_for("phase input")
         second.send(b"\x04")
+        second.wait_for("exit blocked")
+        second.send(b"/quit --discard-unsaved\r")
         assert second.finish() == 0
         assert second.restored()
     finally:
@@ -1062,7 +1068,7 @@ def test_builtin_arguments_reserved_names_and_unknown_slash(home: Path, tmp_path
         session.wait_for("phase input")
         session.send(b"/copy extra\r")
         session.wait_for("takes no arguments")
-        session.send(b"/new\r")
+        session.send(b"/fork\r")
         session.wait_for("reserved for a later delivery")
         time.sleep(0.3)
         session._pump(0.1)

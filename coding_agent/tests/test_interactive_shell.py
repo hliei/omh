@@ -292,6 +292,8 @@ def test_unsaved_session_refuses_a_second_shell_without_side_effects(
         session.send(b"\x03\x03")
         session.wait_for("unsubmitted content remains")
         session.send(b"\r")
+        session.wait_for("exit blocked")
+        session.send(b"/quit --discard-unsaved\r")
         assert session.finish() == 0
     finally:
         session.close()

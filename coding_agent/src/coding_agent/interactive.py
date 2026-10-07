@@ -13,6 +13,7 @@ import asyncio
 import fcntl
 import os
 import select
+import shlex
 import signal
 import struct
 import termios
@@ -22,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO, cast
 
-from omh.agent import AgentEvent, CustomAgentMessage
+from omh.agent import AgentEvent, AgentHistory, CustomAgentMessage
 from omh.agent.execution.events import (
     AgentSettledEvent,
     AgentStartEvent,
@@ -90,6 +91,13 @@ from coding_agent.pending import (
     read_pending_image,
 )
 from coding_agent.resources import ApplicationResources
+from coding_agent.session_directory import (
+    SESSION_SORTS,
+    SessionDirectory,
+    SessionInfo,
+    SessionSort,
+)
+from coding_agent.session_manager import ExportFormat
 from coding_agent.terminal import EXIT_OK
 from coding_agent.theme import resolve_theme
 from coding_agent.user_shell import UserShell
@@ -141,6 +149,13 @@ class _Tool:
 
 
 _Item = _Note | _You | _Assistant | _Tool | UserShell
+
+
+@dataclass(slots=True)
+class _ConversationDraft:
+    editor: Editor
+    images: PendingAttachments
+
 
 
 def run_interactive(
@@ -210,6 +225,17 @@ class _Session:
         #: Draft attachments captured into queued inputs, paired with the sent
         #: image data so a recall can restore the full original identity.
         self._queued_images: list[tuple[str, PendingAttachment]] = []
+        self._drafts: dict[str, _ConversationDraft] = {}
+        self._management_task: asyncio.Task[None] | None = None
+        self._selector: tuple[SessionInfo, ...] | None = None
+        self._selector_source: Editor | None = None
+        self._selector_index = 0
+        self._selector_all = False
+        self._selector_sort: SessionSort = "mtime"
+        self._selector_reverse: bool | None = None
+        self._exit_backups: dict[AgentSession, AgentHistory] = {}
+        self._exit_discard_unsaved = False
+        self._pending_exit_code = EXIT_OK
         #: Whether the run's first user message event is the prompt the editor
         #: already displayed; queued steering and follow-ups display on arrival.
         self._prompt_first_user = False
@@ -337,9 +363,7 @@ class _Session:
             return
         self._prepare_theme(settings_theme(self.host.settings))
         if self.args.resume:
-            self._request_block = "Pass --session <path or id> to reopen one saved session."
-            self._add(f"notice {self._request_block}")
-            self._add(f"notice {_NO_REQUEST}")
+            self._resume_command("")
             return
         try:
             await self._apply_selection(self._select(self.args.cwd))
@@ -405,16 +429,22 @@ class _Session:
     async def _open_runtime(self, selection: SessionSelection) -> None:
         assert self.host is not None
         options = self.host.build_options(selection)
-        runtime = AgentSessionRuntime(options)
-        self.runtime = runtime
+        runtime = self.runtime
+        if runtime is None:
+            runtime = AgentSessionRuntime(options)
+            runtime.subscribe(self._on_event)
+            self.runtime = runtime
+        else:
+            runtime.options = options
+        old = runtime.current_session
         if selection.session_path is None:
-            await runtime.new_session(display_name=self.args.name)
+            await runtime.new_session(display_name=self.args.name if old is None else None)
         else:
             await runtime.open_session(selection.session_path)
-        runtime.subscribe(self._on_event)
         self._chooser = "prompt"
-        self._load_history()
-        if selection.session_path is not None and self.args.name is not None:
+        if old is None:
+            self._load_history()
+        if old is None and selection.session_path is not None and self.args.name is not None:
             await runtime.set_session_name(self.args.name)
 
     def _current_session(self) -> AgentSession | None:
@@ -453,7 +483,8 @@ class _Session:
                 )
                 self._tools[item.tool_id] = item
                 self._items.append(item)
-        self.editor.seed_history(sent)
+        if not self.editor.history:
+            self.editor.seed_history(sent)
 
     # ------------------------------------------------------------------ #
     # Terminal input
@@ -518,6 +549,9 @@ class _Session:
         self._redraw()
 
     def _handle_key(self, key: Key) -> None:
+        if self._selector is not None:
+            self._selector_key(key)
+            return
         if key.name != "ctrl_c":
             # Only consecutive Ctrl+C presses form the exit double-press; any
             # other key starts a fresh pair.
@@ -661,7 +695,10 @@ class _Session:
 
     def _forget_cleared_line(self) -> None:
         """Resolve the Ctrl+C-cleared line once real editing replaces it."""
-        self._cleared_text = None
+        # A slash command operates on the conversation while its cleared draft
+        # stays available for switching, selector cancellation or exit.
+        if not self.editor.text.startswith("/"):
+            self._cleared_text = None
 
     # ------------------------------------------------------------------ #
     # Completion
@@ -695,6 +732,9 @@ class _Session:
     # ------------------------------------------------------------------ #
 
     def _submit(self, *, follow_up: bool = False) -> None:
+        if self._exit_task is not None or self._closing:
+            self._add("notice exit is in progress; no new work was accepted")
+            return
         text = self.editor.text
         self._completion = None
         if self._chooser == "cwd":
@@ -726,6 +766,9 @@ class _Session:
             if self._prompt_task is not None and not self._prompt_task.done():
                 self._queue_input(text, follow_up=follow_up)
             return
+        if self._management_task is not None and not self._management_task.done():
+            self._add("notice session management is in progress; input stays in the editor")
+            return
         if self._attachment_task is not None and not self._attachment_task.done():
             self._add("notice an attachment is still being prepared; press Enter again")
             return
@@ -739,7 +782,6 @@ class _Session:
             )
             return
         if session.save_state == "unsaved":
-            self._keep_refused_submission(text, None)
             self._show_unsaved()
             return
         warning = session.unsupported_image_message() if len(self._draft) else None
@@ -759,6 +801,9 @@ class _Session:
         self._prompt_task = asyncio.create_task(self._prompt(text, pending))
 
     def _start_shell(self, text: str) -> None:
+        if self._management_task is not None and not self._management_task.done():
+            self._add("notice session management is in progress; no shell was started")
+            return
         if self._shell_task is not None and not self._shell_task.done():
             self._add("notice a user shell is already running; cancel it before starting another")
             return
@@ -802,6 +847,8 @@ class _Session:
             if session.save_state == "unsaved":
                 self._show_unsaved()
         finally:
+            self._shell_task = None
+            self._add("shell settled")
             self._redraw()
 
     def _queue_input(self, text: str, *, follow_up: bool) -> None:
@@ -919,6 +966,12 @@ class _Session:
 
     def _escape_action(self) -> None:
         """Recall queues and cancel the model first, then a still-running shell."""
+        if self._management_task is not None and not self._management_task.done():
+            if not self._management_task.cancelling():
+                self._management_task.cancel()
+            else:
+                self._add("notice handoff continues; waiting for actual current")
+            return
         session = self._current_session()
         if session is not None and self._has_queued_inputs(session):
             self._recall_queued()
@@ -948,6 +1001,14 @@ class _Session:
             waiting = len(snapshot.steering) + len(snapshot.follow_up)
             if waiting:
                 parts.append(f"{waiting} queued input(s)")
+        current_id = session.agent.history.conversation_id if session is not None else None
+        for identity, draft in self._drafts.items():
+            if identity != current_id and (draft.editor.text.strip() or len(draft.images)):
+                parts.append(f"draft for {identity}")
+        if self.runtime is not None:
+            for number, old in enumerate(self.runtime.retained_sessions, 1):
+                if self._has_queued_inputs(old):
+                    parts.append(f"queued input(s) for retained {number}")
         return parts
 
     def _has_queued_inputs(self, session: AgentSession) -> bool:
@@ -967,6 +1028,7 @@ class _Session:
         """Resolve the exit confirmation: explicit discard or return to editing."""
         self._exit_confirm = False
         if not accept:
+            self._exit_discard_unsaved = False
             if self._cleared_text is not None:
                 self.editor.set_text(self._cleared_text)
                 self._cleared_text = None
@@ -978,6 +1040,7 @@ class _Session:
         if self._attachment_task is not None and not self._attachment_task.done():
             self._attachment_task.cancel()
         self._draft.clear()
+        self._drafts.clear()
         self._cleared_text = None
         self._add("notice discarding the unsubmitted content; it will not be saved")
         self._request_exit(EXIT_OK)
@@ -1156,6 +1219,285 @@ class _Session:
             self._start_copy()
         elif spec.name == "attach":
             self._attach_command(argument)
+        elif spec.name == "session":
+            self._session_info()
+        elif spec.name == "quit":
+            if argument not in {"", "--discard-unsaved"}:
+                self._add("notice /quit accepts only --discard-unsaved; nothing was sent")
+                return
+            self._request_exit(EXIT_OK, confirm=True, discard_unsaved=bool(argument))
+        elif spec.name in {"new", "resume"}:
+            if spec.name == "resume":
+                self._resume_command(argument)
+            elif self._management_idle():
+                self._busy = True
+                self._management_task = asyncio.create_task(self._replace_current(spec.name, argument))
+        elif spec.name == "name" and not argument:
+            session = self._current_session()
+            self._add(f"name {session.display_name or '(unnamed)' if session else '(no session)'}")
+        elif spec.name in {"name", "save", "export"}:
+            if self._management_task is not None and not self._management_task.done():
+                self._add("notice session management is already in progress")
+                return
+            self._management_task = asyncio.create_task(self._save_command(spec.name, argument))
+
+    def _resume_command(self, argument: str) -> None:
+        try:
+            tokens = shlex.split(argument)
+            reference: str | None = None
+            listing = all_projects = False
+            reverse_requested = False
+            search = ""
+            sort: SessionSort = "mtime"
+            reverse: bool | None = None
+            while tokens:
+                token = tokens.pop(0)
+                if token == "--list":
+                    listing = True
+                elif token == "--all-projects":
+                    all_projects = True
+                elif token == "--reverse":
+                    reverse_requested = True
+                elif token in {"--search", "--sort"}:
+                    if not tokens:
+                        raise ValueError(f"{token} needs a value")
+                    value = tokens.pop(0)
+                    if token == "--search":
+                        search = value
+                    elif value in SESSION_SORTS:
+                        sort = value
+                    else:
+                        raise ValueError(f"Unknown session sort: {value}")
+                elif token.startswith("--") or reference is not None:
+                    raise ValueError("Invalid /resume arguments; see /help resume")
+                else:
+                    reference = token
+            reverse = (sort not in {"mtime", "created"}) if reverse_requested else None
+            if reference is not None:
+                if listing or all_projects or search or sort != "mtime" or reverse is not None:
+                    raise ValueError("Use a path/ID alone, or selector/list options")
+                if self._management_idle():
+                    self._busy = True
+                    self._management_task = asyncio.create_task(self._replace_current("resume", shlex.quote(reference)))
+                return
+            if self.host is None or self.host.session_root is None:
+                raise ValueError("Session discovery needs a storage root; --no-session cannot resume")
+            directory = SessionDirectory(self.host.session_root)
+            entries = directory.list(cwd=None if all_projects else self._cwd(), search=search, sort=sort, reverse=reverse)
+            for diagnostic in directory.diagnostics:
+                self._print(f"notice {diagnostic}")
+            if listing:
+                self._print(f"Sessions ({'all projects' if all_projects else 'current project'}, sort {sort}):")
+                for item in entries:
+                    self._print(f"{item.conversation_id} {item.display_name or '(unnamed)'} {item.cwd} {item.modified_at.isoformat()} {item.path}")
+                if not entries:
+                    self._print("No saved sessions match")
+                return
+            self._selector_source = self.editor
+            self.editor = Editor()
+            self.editor.set_text(search)
+            self._selector_all, self._selector_sort, self._selector_reverse = all_projects, sort, reverse
+            self._selector, self._selector_index = entries, 0
+            self._add("Select session: type to search; Up/Down choose; Enter opens; Tab toggles current/all projects; Escape returns to draft")
+        except ValueError as error:
+            self._add(f"notice {error}; nothing was sent")
+
+    def _refresh_selector(self) -> None:
+        assert self.host is not None and self.host.session_root is not None
+        self._selector = SessionDirectory(self.host.session_root).list(
+            cwd=None if self._selector_all else self._cwd(), search=self.editor.text,
+            sort=self._selector_sort, reverse=self._selector_reverse,
+        )
+        self._selector_index = 0
+
+    def _leave_selector(self) -> None:
+        assert self._selector_source is not None
+        self.editor = self._selector_source
+        self._selector_source = None
+        self._selector = None
+
+    def _selector_key(self, key: Key) -> None:
+        assert self._selector is not None
+        if key.name in {"escape", "ctrl_c"}:
+            self._leave_selector()
+            if self._cleared_text is not None:
+                self.editor.set_text(self._cleared_text)
+                self._cleared_text = None
+            self._add("notice session selector canceled; source draft kept")
+        elif key.name in {"up", "down"}:
+            if self._selector:
+                self._selector_index = (self._selector_index + (1 if key.name == "down" else -1)) % len(self._selector)
+        elif key.name == "tab":
+            self._selector_all = not self._selector_all
+            self._refresh_selector()
+        elif key.name == "enter":
+            if self._selector and self._management_idle():
+                path = self._selector[self._selector_index].path
+                self._leave_selector()
+                self._busy = True
+                self._management_task = asyncio.create_task(self._replace_current("resume", shlex.quote(str(path))))
+        elif key.name == "ctrl_d":
+            self._leave_selector()
+            self._request_exit(EXIT_OK, confirm=True)
+        elif key.name == "backspace":
+            self.editor.backspace()
+            self._refresh_selector()
+        elif key.value:
+            self.editor.insert(key.value)
+            self._refresh_selector()
+
+    def _management_idle(self) -> bool:
+        session = self._current_session()
+        if (self._busy or (session is not None and session.agent.state.is_busy)
+                or (self._shell_task is not None and not self._shell_task.done())
+                or (self._management_task is not None and not self._management_task.done())
+                or (self._attachment_task is not None and not self._attachment_task.done())):
+            self._add("notice model, shell or session preparation is busy; wait or cancel with Escape")
+            return False
+        return True
+
+    def _session_info(self) -> None:
+        session = self._current_session()
+        if session is None:
+            self._add("notice no current session")
+            return
+        self._print(f"current {session.agent.history.conversation_id} name {session.display_name or '(unnamed)'}")
+        self._print(self._status())
+        if session.save_error is not None:
+            self._print(f"save error {session.save_error}")
+        self._print("usage unknown")
+        for diagnostic in session.resources.diagnostics:
+            self._print(f"resource {diagnostic}")
+        assert self.runtime is not None
+        for number, old in enumerate(self.runtime.retained_sessions, 1):
+            waiting = old.queued_messages
+            self._print(
+                f"retained {number} {old.agent.history.conversation_id} name {old.display_name or '(unnamed)'} "
+                f"mode {old.save_mode} save {old.save_state} path {old.path or 'memory'} "
+                f"queued {len(waiting.steering) + len(waiting.follow_up)}"
+            )
+            if old.save_error is not None:
+                self._print(f"retained {number} save error {old.save_error}")
+        self._print("Recovery: /save --retained <n> [path] or /export --retained <n> jsonl <path>")
+
+    async def _save_command(self, command: str, argument: str) -> None:
+        session = self._current_session()
+        target = "current"
+        try:
+            if session is None:
+                raise ValueError("No current session")
+            if command == "name":
+                await session.set_name(None if argument == "--clear" else _strip_quotes(argument))
+                self._add(f"name {session.display_name or '(unnamed)'}")
+                return
+            tokens = shlex.split(argument)
+            if tokens[:1] == ["--retained"]:
+                assert self.runtime is not None
+                if len(tokens) < 2 or not tokens[1].isdigit():
+                    raise ValueError("--retained needs a session number from /session")
+                number = int(tokens[1])
+                if number < 1 or number > len(self.runtime.retained_sessions):
+                    raise ValueError("Unknown retained session number; see /session")
+                session = self.runtime.retained_sessions[number - 1]
+                target = f"retained {number}"
+                tokens = tokens[2:]
+            if command == "save":
+                if len(tokens) > 1 or any(token.startswith("--") for token in tokens):
+                    raise ValueError("Usage: /save [--retained n] [path]")
+                path = await session.save(tokens[0] if tokens else None)
+                self._add(f"saved {target} {path}")
+            else:
+                format: ExportFormat = "jsonl"
+                if tokens[:1] in (["jsonl"], ["html"]):
+                    format = cast(ExportFormat, tokens.pop(0))
+                if len(tokens) != 1 or tokens[0].startswith("--"):
+                    raise ValueError("Usage: /export [--retained n] [jsonl | html] <path>")
+                exported_history = session.agent.history
+                await session.export(tokens[0], format=format)
+                destination = Path(tokens[0]).expanduser()
+                destination = (session.cwd / destination).resolve()
+                if destination == session.path:
+                    self._add(f"saved {target} {destination} (bound export writes JSONL)")
+                else:
+                    self._add(f"exported {format} {target} {destination}; original save state {session.save_state}")
+                    if format == "jsonl":
+                        self._exit_backups[session] = exported_history
+                        self._add(f"complete backup covers {target} history for exit; new work still requires /save")
+        except Exception as error:
+            self._add(f"notice {command} {target}: {error}")
+            self._remember_save()
+        finally:
+            self._redraw()
+
+    async def _replace_current(self, command: str, argument: str) -> None:
+        old = self._current_session()
+        runtime = self.runtime
+        previous_options = runtime.options if runtime is not None else None
+        previous_block = self._request_block
+        notices: list[str] = []
+        try:
+            if self.host is None:
+                raise ValueError("The host is not ready")
+            tools = () if self.args.no_tools else self.args.tools
+            if command == "new":
+                selection = self.host.select_new(
+                    cwd=self._cwd(), provider=self.args.provider, model=self.args.model,
+                    thinking=self.args.thinking, tools=tools,
+                )
+            else:
+                tokens = shlex.split(argument)
+                if len(tokens) != 1:
+                    raise ValueError("Usage: /resume <path or unique id>")
+                selection = self.host.select_open(
+                    tokens[0], cwd=self.args.cwd, provider=self.args.provider,
+                    model=self.args.model, thinking=self.args.thinking, tools=tools,
+                )
+            if not selection.ready:
+                raise ValueError("; ".join(item.message for item in selection.diagnostics))
+            if old is not None:
+                if self._has_queued_inputs(old):
+                    self._recall_queued()
+                if self._cleared_text is not None:
+                    self.editor.set_text("\n\n".join(filter(None, (self.editor.text, self._cleared_text))))
+                    self._cleared_text = None
+                self._drafts[old.agent.history.conversation_id] = _ConversationDraft(
+                    self.editor, self._draft,
+                )
+            await self._apply_selection(selection)
+        except asyncio.CancelledError:
+            notices.append("notice session switch wait canceled; checking actual current")
+            self._add(notices[-1])
+            self._redraw()
+            if self.runtime is not None:
+                try:
+                    await self.runtime.wait_for_switch()
+                except Exception as error:
+                    notices.append(f"notice handoff: {error}")
+        except Exception as error:
+            notices.append(f"notice session switch: {error}")
+        finally:
+            current = self._current_session()
+            if current is not old and current is not None:
+                state = self._drafts.get(current.agent.history.conversation_id)
+                self.editor = state.editor if state else Editor()
+                self._draft = state.images if state else PendingAttachments()
+                self._cleared_text = None
+                self._queued_images.clear()
+                self._items.clear()
+                self._tools.clear()
+                self._live = self._pending_you = None
+                self._shell = None
+                self._load_history()
+                self._add(f"{'new' if command == 'new' else 'resumed'} current {current.agent.history.conversation_id}")
+                self._remember_save()
+            elif runtime is not None and previous_options is not None:
+                runtime.options = previous_options
+                self._request_block = previous_block
+            for notice in notices:
+                self._add(notice)
+            self._busy = False
+            self._phase = "input"
+            self._redraw()
 
     def _start_copy(self) -> None:
         if self._copy_task is None or self._copy_task.done():
@@ -1404,19 +1746,25 @@ class _Session:
         """Append one line of command or diagnostic output without deduplication."""
         self._items.append(_Note(text))
 
-    def _request_exit(self, code: int, *, confirm: bool = False) -> None:
+    def _request_exit(
+        self, code: int, *, confirm: bool = False, discard_unsaved: bool = False,
+    ) -> None:
         """Start the exit, or first ask when unsubmitted content would be lost.
 
         Editor-key exits ask for an explicit decision when text, images or
         queued inputs remain; process signals and a closed stdin exit directly.
         """
+        if discard_unsaved:
+            self._exit_discard_unsaved = True
+        if code != EXIT_OK:
+            self._pending_exit_code = code
         if confirm and self._exit_task is None:
             parts = self._unsubmitted_content()
             if parts:
                 self._begin_exit_confirm(parts)
                 return
         if self._exit_task is None:
-            self._exit_task = asyncio.create_task(self._shutdown(code))
+            self._exit_task = asyncio.create_task(self._shutdown(self._pending_exit_code))
 
     def _on_process_signal(self, code: int) -> None:
         self._signals += 1
@@ -1430,6 +1778,7 @@ class _Session:
             return
         self._closing = True
         self.exit_code = code
+        complete = False
         try:
             if self._startup_task is not None and not self._startup_task.done():
                 self._startup_task.cancel()
@@ -1449,6 +1798,15 @@ class _Session:
                     await self._external_task
                 except asyncio.CancelledError:
                     pass
+            if self._management_task is not None and not self._management_task.done():
+                if not self._management_task.cancelling():
+                    self._management_task.cancel()
+                try:
+                    await self._management_task
+                except asyncio.CancelledError:
+                    pass
+            if self._selector is not None:
+                self._leave_selector()
             if self._prompt_task is not None and not self._prompt_task.done():
                 session = self._current_session()
                 if session is not None and session.agent.state.is_busy:
@@ -1463,15 +1821,57 @@ class _Session:
                 await self._prompt_task
             if self._shell_task is not None:
                 await self._shell_task
+            unresolved: list[str] = []
+            for label, session in self._sessions_for_exit():
+                if session.save_state != "unsaved":
+                    continue
+                if self._exit_discard_unsaved:
+                    self._add(f"notice explicitly abandoning unsaved {label} {session.agent.history.conversation_id}")
+                    continue
+                if self._exit_backups.get(session) == session.agent.history:
+                    self._add(f"notice {label} full history has an independent JSONL backup; original save error remains")
+                    continue
+                try:
+                    await session.save()
+                except Exception as error:
+                    unresolved.append(label)
+                    self._add(f"notice {label} save error: {error}")
+            if unresolved:
+                self._add("notice exit blocked: unsaved history in " + ", ".join(unresolved))
+                self._add("notice use /session, /save [--retained n] [path], /export [--retained n] jsonl <path>, or /quit --discard-unsaved")
+                return
             if self.runtime is not None:
-                await self.runtime.close()
+                try:
+                    await self.runtime.close()
+                except Exception as error:
+                    # Runtime close still owns writer release after a failed
+                    # terminal notification. History decisions happened above.
+                    self._add(f"notice close: {error}")
+            complete = True
         except Exception as error:
             self._add(f"notice {error}")
         finally:
-            if self._read_future is not None and not self._read_future.done():
-                self._read_future.set_result(b"")
-            if self._done is not None:
-                self._done.set()
+            if complete:
+                if self._read_future is not None and not self._read_future.done():
+                    self._read_future.set_result(b"")
+                if self._done is not None:
+                    self._done.set()
+            else:
+                self._closing = False
+                self._exit_task = None
+                self._exit_discard_unsaved = False
+                self._phase = "input"
+                self._start_reader()
+            self._redraw()
+
+    def _sessions_for_exit(self) -> list[tuple[str, AgentSession]]:
+        if self.runtime is None:
+            return []
+        sessions = [(f"retained {number}", session)
+                    for number, session in enumerate(self.runtime.retained_sessions, 1)]
+        if self.runtime.current_session is not None:
+            sessions.insert(0, ("current", self.runtime.current_session))
+        return sessions
 
     # ------------------------------------------------------------------ #
     # Rendering
@@ -1491,6 +1891,15 @@ class _Session:
         self._paint_fancy(lines, status, candidates, entry, cursor_row, cursor_col, rows, cols)
 
     def _completion_lines(self, cols: int) -> list[str]:
+        if self._selector is not None:
+            index = self._selector_index
+            start = max(0, index - _COMPLETION_VISIBLE // 2)
+            lines = [f"Select session ({'all projects' if self._selector_all else 'current project'}, sort {self._selector_sort})"]
+            for number, item in enumerate(self._selector[start:start + _COMPLETION_VISIBLE], start):
+                lines.append(_wrap(f"{'>' if number == index else ' '} {item.display_name or '(unnamed)'} {item.conversation_id} {item.cwd} {item.modified_at.isoformat()}", cols)[0])
+            if not self._selector:
+                lines.append("No saved sessions match; Escape returns")
+            return lines
         completion = self._completion
         if completion is None or not completion.items:
             return []
@@ -1602,11 +2011,13 @@ class _Session:
         # established shape.
         queued = self._queued_status(session)
         shell = self._shell.status if self._shell is not None else "idle"
+        retained = sum(old.save_state == "unsaved" for old in self.runtime.retained_sessions) if self.runtime is not None else 0
         return (
             f"phase {self._phase} | {queued}"
             f"session {identity} | mode {mode} | save {save} | model {model} | "
             f"thinking {thinking} | theme {self.theme} | "
             f"cwd {cwd} | path {path} | pending {len(self._draft)} | shell {shell}"
+            + (f" | retained unsaved {retained} (/session)" if retained else "")
         )
 
     def _queued_status(self, session: AgentSession | None) -> str:

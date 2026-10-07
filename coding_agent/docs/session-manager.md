@@ -202,6 +202,11 @@ only a prefix before failing. Memory commits and disk writes are not atomic
 with each other; neither path promises fsync or power-loss durability. The
 retained in-memory history is the source for full repair.
 
+Interactive users can repair or back up current and retired histories through
+[/save, /export and retained recovery](session-management.md#repair-or-back-up-failed-saving).
+A complete independent JSONL backup can cover a snapshot for host exit without
+changing the manager's saving error or binding.
+
 `SessionManager` never rescues a failed save automatically; the print runner's
 failed-save rescue and cooperative signal behavior are in
 [signals and save rescue](cli.md#signals-and-save-rescue).

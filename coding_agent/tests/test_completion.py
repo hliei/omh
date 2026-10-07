@@ -43,8 +43,8 @@ def test_reserved_command_names_are_never_offered_as_templates(tmp_path: Path) -
     completion = complete("/", 1, sources(tmp_path, templates=("new", "resume", "notes")))
     found = values(completion)
     assert "/notes " in found
-    assert "/new " not in found
-    assert "/resume " not in found
+    assert found.count("/new ") == 1
+    assert found.count("/resume ") == 1
 
 
 def test_command_prefix_filters_candidates(tmp_path: Path) -> None:
@@ -131,3 +131,13 @@ def test_attach_completes_spaced_and_quoted_paths(tmp_path: Path) -> None:
     assert values(complete(text, len(text), sources(tmp_path))) == ["images dir/picture name.png"]
     text = '/attach "images dir/pic'
     assert values(complete(text, len(text), sources(tmp_path))) == ['"images dir/picture name.png"']
+
+
+def test_session_commands_complete_sort_formats_and_destinations(tmp_path: Path) -> None:
+    (tmp_path / "backup.jsonl").touch()
+    text = "/resume --sort cr"
+    assert values(complete(text, len(text), sources(tmp_path))) == ["--sort created"]
+    text = "/export --retained 1 h"
+    assert values(complete(text, len(text), sources(tmp_path))) == ["--retained 1 html "]
+    text = "/save --retained 1 back"
+    assert values(complete(text, len(text), sources(tmp_path))) == ["--retained 1 backup.jsonl"]

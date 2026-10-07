@@ -57,7 +57,38 @@ class CommandSpec:
                 items.extend(paths.items)
             return items
         if self.argument_source != "commands":
-            return ()
+            base = ""
+            fragment = prefix
+            path_only = False
+            if self.argument_source in {"save", "export"}:
+                retained = re.match(r"--retained\s+\d+\s+", fragment)
+                if retained is not None:
+                    base, fragment = retained.group(), fragment[retained.end():]
+                format = re.match(r"(?:jsonl|html)\s+", fragment) if self.argument_source == "export" else None
+                if format is not None:
+                    base += format.group()
+                    fragment = fragment[format.end():]
+                    path_only = True
+            if self.argument_source == "resume":
+                head, space, tail = prefix.rpartition(" ")
+                if space:
+                    base, fragment = head + space, tail
+            values = {
+                "resume": (("mtime", "created", "name", "id", "cwd") if base.rstrip().endswith("--sort")
+                           else ("--list", "--all-projects", "--search ", "--sort ", "--reverse")),
+                "name": ("--clear",),
+                "export": ("jsonl ", "html ", "--retained "),
+                "save": ("--retained ",),
+                "quit": ("--discard-unsaved",),
+            }.get(self.argument_source or "", ())
+            items = [CompletionItem(value=base + value, label=value.strip())
+                     for value in values if not path_only and value.startswith(fragment)]
+            if self.argument_source in {"save", "export", "resume"}:
+                paths = complete_path(fragment, len(fragment), sources, allow_bare=True)
+                if paths is not None:
+                    items.extend(CompletionItem(value=base + item.value, label=item.label,
+                                                description=item.description) for item in paths.items)
+            return items
         return tuple(
             CompletionItem(value=command.name, label=command.name, description=command.summary)
             for command in sources.commands
@@ -79,6 +110,23 @@ AVAILABLE_COMMANDS: tuple[CommandSpec, ...] = (
         "/attach [image-path | remove <n> | clear]", max_arguments=None,
         argument_help="optional image path, remove <n>, or clear", argument_source="attachments",
     ),
+    CommandSpec("new", "Start an empty conversation when model and shell are idle", "/new"),
+    CommandSpec(
+        "resume", "Select or reopen a saved conversation",
+        "/resume [path-or-id | --list] [--all-projects] [--search text] [--sort field] [--reverse]",
+        max_arguments=None, argument_source="resume",
+        argument_help="path or unique ID; list/select current or all projects, search, sort mtime/created/name/id/cwd",
+    ),
+    CommandSpec("name", "Show, change or clear the persistent name", "/name [text | --clear]",
+                max_arguments=None, argument_source="name", argument_help="name text, or --clear"),
+    CommandSpec("session", "Show current identity, configuration and retained recovery", "/session"),
+    CommandSpec("save", "Repair or bind a complete history file", "/save [--retained n] [path]",
+                max_arguments=None, argument_source="save", argument_help="optional retained number and destination"),
+    CommandSpec("export", "Back up full JSONL or active-path HTML",
+                "/export [--retained n] [jsonl | html] <path>", max_arguments=None,
+                argument_source="export", argument_help="optional retained number and format, then destination"),
+    CommandSpec("quit", "Exit with history and draft protection", "/quit [--discard-unsaved]",
+                max_arguments=1, argument_source="quit", argument_help="explicitly abandon histories still needing saving"),
 )
 
 COMMANDS_BY_NAME: dict[str, CommandSpec] = {spec.name: spec for spec in AVAILABLE_COMMANDS}
