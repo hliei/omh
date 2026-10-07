@@ -77,6 +77,9 @@ request: nothing is submitted until Enter with editor text, and typing or
 pasting a path stays ordinary text. An empty editor does not send a pending
 image on its own, and Enter while an attachment is still being prepared asks for
 another press once it is ready.
+While an image is being prepared, another image load is refused. `/attach clear`
+cancels the pending load as well as clearing accepted images; extra arguments
+are rejected without changing the draft.
 
 ```text
 > /attach picture.png

@@ -639,8 +639,16 @@ class _Session:
                 self._add("notice /attach remove needs a pending number")
             return
         if keyword == "clear":
+            if rest.strip():
+                self._add("notice /attach clear takes no arguments; attachments unchanged")
+                return
+            if self._attachment_task is not None and not self._attachment_task.done():
+                self._attachment_task.cancel()
             self._draft.clear()
             self._add("attachments cleared")
+            return
+        if self._attachment_task is not None and not self._attachment_task.done():
+            self._add("notice an attachment is still being prepared; wait or /attach clear")
             return
         self._attachment_task = asyncio.create_task(self._attach_path(_strip_quotes(argument)))
 

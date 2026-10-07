@@ -9,6 +9,7 @@ acceptance.
 from __future__ import annotations
 
 import base64
+import errno
 import os
 import sys
 import time
@@ -92,6 +93,79 @@ def no_clipboard_env(tmp_path: Path) -> dict[str, str]:
     empty = tmp_path / "empty-bin"
     empty.mkdir(exist_ok=True)
     return {"PATH": str(empty), "WAYLAND_DISPLAY": "", "DISPLAY": ""}
+
+
+def test_clear_rejects_extra_arguments_and_preserves_images(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    write_image(project / "picture.png")
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--cwd", str(project), home=home, cwd=project, env=images_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"/attach picture.png\r")
+        session.wait_for("attached #1 picture.png")
+        session.send(b"/attach clear unexpected\r")
+        session.wait_for("/attach clear takes no arguments")
+        session.send(b"/attach\r")
+        session.wait_for("attachments 1 pending")
+        assert sends(home) == []
+        session.send(b"/attach clear\r")
+        session.wait_for("attachments cleared")
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_pending_load_cannot_be_overwritten_or_reappear_after_clear(
+    home: Path, tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    slow = project / "slow.png"
+    os.mkfifo(slow)
+    payload = write_image(project / "fast.png")
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--cwd", str(project), home=home, cwd=project, env=images_env(home, "vision"),
+    )
+    writer: int | None = None
+    try:
+        session.wait_for("phase input")
+        session.send(b"/attach slow.png\r")
+        deadline = time.monotonic() + 5
+        while writer is None:
+            try:
+                writer = os.open(slow, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as error:
+                if error.errno != errno.ENXIO or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        session.send(b"/attach fast.png\r")
+        session.wait_for("an attachment is still being prepared; wait or /attach clear")
+        session.send(b"/attach clear\r")
+        session.wait_for("attachments cleared")
+        os.write(writer, payload)
+        os.close(writer)
+        writer = None
+        session.send(b"/attach fast.png\r")
+        session.wait_for("attached #1 fast.png")
+        session.send(b"with image\r")
+        session.wait_for("seen-image:1")
+        assert len(recorded_images(home)) == 1
+        assert "attached #2" not in session.visible()
+        assert "attached #1 slow.png" not in session.visible()
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        if writer is not None:
+            os.close(writer)
+        session.close()
 
 
 def test_attach_manages_the_pending_draft_without_touching_the_editor(

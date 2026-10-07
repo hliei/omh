@@ -7,6 +7,9 @@ two-platform acceptance, not here.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import signal
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -185,3 +188,41 @@ async def test_default_runner_stops_a_hanging_backend(monkeypatch: pytest.Monkey
     )
     assert code == 124
     assert b"timed out" in stderr
+
+
+async def test_cancelled_image_read_stops_the_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready = tmp_path / "ready"
+    backend = tmp_path / "wl-paste"
+    backend.write_text(
+        f"#!{sys.executable}\n"
+        "import os, pathlib, time\n"
+        f"pathlib.Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
+    backend.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    support = detect_clipboard(platform="linux", environ={"WAYLAND_DISPLAY": "test"})
+    task = asyncio.create_task(read_clipboard_image(support=support))
+    pid: int | None = None
+    try:
+        async with asyncio.timeout(5):
+            while not ready.exists():
+                await asyncio.sleep(0.01)
+        pid = int(ready.read_text())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task

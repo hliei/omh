@@ -209,4 +209,9 @@ async def _default_runner(command: Sequence[str]) -> tuple[int, bytes, bytes]:
         process.kill()
         await process.wait()
         return 124, b"", b"clipboard backend timed out"
+    except asyncio.CancelledError:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        raise
     return int(process.returncode or 0), stdout, stderr
