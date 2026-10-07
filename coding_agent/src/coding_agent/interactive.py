@@ -1003,7 +1003,7 @@ class _Session:
                 parts.append(f"{waiting} queued input(s)")
         current_id = session.agent.history.conversation_id if session is not None else None
         for identity, draft in self._drafts.items():
-            if identity != current_id and (draft.editor.text.strip() or len(draft.images)):
+            if (identity != current_id or draft.editor is not self.editor) and (draft.editor.text.strip() or len(draft.images)):
                 parts.append(f"draft for {identity}")
         if self.runtime is not None:
             for number, old in enumerate(self.runtime.retained_sessions, 1):
@@ -1040,6 +1040,8 @@ class _Session:
         if self._attachment_task is not None and not self._attachment_task.done():
             self._attachment_task.cancel()
         self._draft.clear()
+        for draft in self._drafts.values():
+            draft.editor.clear()
         self._drafts.clear()
         self._cleared_text = None
         self._add("notice discarding the unsubmitted content; it will not be saved")
@@ -1062,8 +1064,16 @@ class _Session:
         self._add(f"notice {reason}")
         self._add(f"notice {_NO_REQUEST}")
 
+    def _draft_edit_allowed(self) -> bool:
+        if self._management_task is not None and not self._management_task.done():
+            self._add("notice session switch in progress; wait before editing the draft")
+            return False
+        return True
+
     def _paste_clipboard(self) -> None:
         """Start reading a clipboard screenshot without submitting anything."""
+        if not self._draft_edit_allowed():
+            return
         if self._attachment_task is not None and not self._attachment_task.done():
             return
         self._attachment_task = asyncio.create_task(self._read_clipboard())
@@ -1128,6 +1138,8 @@ class _Session:
                 self._add(f"clipboard unavailable: {status.detail}")
             if len(self._draft):
                 self._add("use /attach remove <n> to remove a pending image")
+            return
+        if not self._draft_edit_allowed():
             return
         keyword, _separator, rest = argument.partition(" ")
         if keyword == "remove":
@@ -1293,6 +1305,9 @@ class _Session:
                 if not entries:
                     self._print("No saved sessions match")
                 return
+            if self._management_task is not None and not self._management_task.done():
+                self._add("notice session management is in progress; selector was not opened")
+                return
             self._selector_source = self.editor
             self.editor = Editor()
             self.editor.set_text(search)
@@ -1348,11 +1363,11 @@ class _Session:
 
     def _management_idle(self) -> bool:
         session = self._current_session()
-        if (self._busy or (session is not None and session.agent.state.is_busy)
+        if (self._busy or self._external_running or (session is not None and session.agent.state.is_busy)
                 or (self._shell_task is not None and not self._shell_task.done())
                 or (self._management_task is not None and not self._management_task.done())
                 or (self._attachment_task is not None and not self._attachment_task.done())):
-            self._add("notice model, shell or session preparation is busy; wait or cancel with Escape")
+            self._add("notice model, shell, editor or session preparation is busy; wait or cancel with Escape")
             return False
         return True
 
@@ -1434,6 +1449,7 @@ class _Session:
         runtime = self.runtime
         previous_options = runtime.options if runtime is not None else None
         previous_block = self._request_block
+        source_editor: Editor | None = None
         notices: list[str] = []
         try:
             if self.host is None:
@@ -1455,14 +1471,16 @@ class _Session:
             if not selection.ready:
                 raise ValueError("; ".join(item.message for item in selection.diagnostics))
             if old is not None:
-                if self._has_queued_inputs(old):
-                    self._recall_queued()
                 if self._cleared_text is not None:
                     self.editor.set_text("\n\n".join(filter(None, (self.editor.text, self._cleared_text))))
                     self._cleared_text = None
+                if self._has_queued_inputs(old):
+                    self._recall_queued()
                 self._drafts[old.agent.history.conversation_id] = _ConversationDraft(
                     self.editor, self._draft,
                 )
+                source_editor = self.editor
+                self.editor = Editor()
             await self._apply_selection(selection)
         except asyncio.CancelledError:
             notices.append("notice session switch wait canceled; checking actual current")
@@ -1476,6 +1494,13 @@ class _Session:
         except Exception as error:
             notices.append(f"notice session switch: {error}")
         finally:
+            if source_editor is not None:
+                if self.editor.text or self._cleared_text:
+                    source_editor.set_text("\n\n".join(filter(None, (
+                        source_editor.text, self.editor.text, self._cleared_text,
+                    ))))
+                self.editor = source_editor
+                self._cleared_text = None
             current = self._current_session()
             if current is not old and current is not None:
                 state = self._drafts.get(current.agent.history.conversation_id)
@@ -1594,6 +1619,8 @@ class _Session:
     # ------------------------------------------------------------------ #
 
     def _open_external_editor(self) -> None:
+        if not self._draft_edit_allowed():
+            return
         if self._external_running:
             return
         self._completion = None

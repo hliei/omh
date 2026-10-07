@@ -60,7 +60,11 @@ into the source editor, steering first, with blank lines between inputs and
 the existing draft. Captured images return to the same draft. `/new` starts
 with an empty target; reopening a known conversation restores its draft and
 editor history. Cancelling a selector keeps the source draft and attachments.
-Queues never transfer to a target. Drafts, attachments and queues are not saved
+During a switch, commands use a separate editor so clearing command text cannot
+erase the source draft. Any unsubmitted text typed during that wait stays with
+the source. Opening a selector, editing attachments, clipboard paste and the
+external editor wait until the switch finishes; read-only lists and info remain
+available. Queues never transfer to a target. Drafts, attachments and queues are not saved
 in JSONL and do not survive process exit.
 
 Preparation failure or cancellation keeps the old current. Once Runtime owns

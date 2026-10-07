@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from support import png_bytes
+from test_cli import run_cli
 from test_interactive import InteractiveSession, provider_env, sends
 from test_session_directory import write_history
 
@@ -274,14 +275,14 @@ def test_busy_management_refuses_without_abort_and_switch_recalls_complete_queue
         session.send(b"steer one\rsteer two\rfollow one\x1b\rfollow two\x1b\r")
         session.wait_for("queued follow-up (2 waiting): follow two")
         session.wait_for("phase input", after=session.visible().index("queued follow-up (2 waiting)"))
-        session.send(b"/new\r")
+        session.send(b"source remainder\x03/new\r")
         session.wait_for("new current")
         assert (tmp_path / "project" / "first.txt").read_text() == "a"
         assert (tmp_path / "project" / "second.txt").read_text() == "b"
         session.send(f"/resume {identity}\r".encode())
         session.wait_for(f"resumed current {identity}")
         offset = session.visible().index("resumed current")
-        for text in ("> steer one", "  steer two", "  follow one", "  follow two"):
+        for text in ("> steer one", "  steer two", "  follow one", "  follow two", "  source remainder"):
             session.wait_for(text, after=offset)
         # Every still-unconsumed input belongs to the source editor, not the new
         # Agent, and drafts/images never become committed history by switching.
@@ -443,6 +444,113 @@ def test_quit_stops_admission_before_processing_more_terminal_bytes(tmp_path: Pa
         assert sends(home) == []
         assert not (tmp_path / "project" / "forbidden.txt").exists()
         assert session.restored()
+    finally:
+        if session.process.poll() is None:
+            session.process.kill()
+            session.process.wait()
+        session.close()
+
+
+def test_print_and_interactive_continue_the_same_saved_conversation(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    result = run_cli(
+        "--print", "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--cwd", str(project), "--session-dir", str(home / "sessions"), "before",
+        home=home, env=provider_env(home, "echo"),
+    )
+    assert result.returncode == 0 and "reply:before" in result.stdout
+    saved = next((home / "sessions").glob("*.jsonl"))
+    original = decode_history(saved.read_bytes()).history
+    session, _ = start(tmp_path, "--session", str(saved))
+    try:
+        session.wait_for("reply:before")
+        session.send(b"during\r")
+        session.wait_for("reply:during")
+        session.send(b"/quit\r")
+        assert session.finish() == 0
+    finally:
+        if session.process.poll() is None:
+            session.process.kill()
+            session.process.wait()
+        session.close()
+    result = run_cli(
+        "--print", "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session", str(saved), "after", home=home, env=provider_env(home, "echo"),
+    )
+    assert result.returncode == 0 and "reply:after" in result.stdout
+    restored = decode_history(saved.read_bytes()).history
+    assert restored.conversation_id == original.conversation_id
+    assert restored.entries[:len(original.entries)] == original.entries
+    assert all(text in saved.read_text() for text in ("reply:before", "reply:during", "reply:after"))
+    assert sends(home) == ["dialogue", "dialogue", "dialogue"]
+
+
+def test_handoff_refuses_async_draft_edits(tmp_path: Path) -> None:
+    session, home = start(tmp_path, scenario="handoff")
+    (tmp_path / "project" / "shot.png").write_bytes(png_bytes())
+    try:
+        session.wait_for("phase input")
+        session.send(b"/name Source\r")
+        session.wait_for("name Source")
+        saved = next((home / "sessions").glob("*.jsonl"))
+        identity = decode_history(saved.read_bytes()).history.conversation_id
+        session.send(b"/new\r")
+        session.wait_for("handoff closing")
+        for key in (b"/attach shot.png\r", b"\x16", b"\x07"):
+            offset = len(session.visible())
+            session.send(key)
+            session.wait_for("session switch in progress; wait before editing the draft", after=offset)
+        (home / "release-handoff").touch()
+        session.wait_for("new current")
+        session.send(b"/attach\r")
+        session.wait_for("attachments none pending")
+        session.send(f"/resume {identity}\r".encode())
+        session.wait_for(f"resumed current {identity}")
+        session.send(b"/quit\r")
+        assert session.finish() == 0
+        assert session.restored()
+        assert sends(home) == ["dialogue"]
+    finally:
+        if session.process.poll() is None:
+            session.process.kill()
+            session.process.wait()
+        session.close()
+
+
+def test_handoff_keeps_source_editor_isolated_from_commands_and_selector(tmp_path: Path) -> None:
+    session, home = start(tmp_path, scenario="handoff")
+    try:
+        session.wait_for("phase input")
+        session.send(b"/name Source\r")
+        session.wait_for("name Source")
+        saved = next((home / "sessions").glob("*.jsonl"))
+        identity = decode_history(saved.read_bytes()).history.conversation_id
+        session.send(b"source draft\x03/new\r")
+        session.wait_for("handoff closing")
+        session.send(b"\x03/resume\r")
+        session.wait_for("session management is in progress; selector was not opened")
+        session.send(b"/resume --list\r/session\r")
+        session.wait_for("Sessions (current project")
+        session.wait_for("Recovery:")
+        (home / "release-handoff").touch()
+        session.wait_for("new current")
+        session.send(b"/quit\r")
+        session.wait_for("unsubmitted content remains")
+        # Cancel exit to continue inspecting the protected source draft.
+        session.send(b"\x1b")
+        session.wait_for("exit canceled")
+        session.send(f"/resume {identity}\r".encode())
+        session.wait_for(f"resumed current {identity}")
+        session.wait_for("> source draft", after=session.visible().index("resumed current"))
+        session.send(b"\x03/quit\r")
+        session.wait_for("unsubmitted content remains", after=session.visible().index("resumed current"))
+        session.send(b"\r")
+        assert session.finish() == 0
+        assert session.restored()
+        assert sends(home) == ["dialogue"]
     finally:
         if session.process.poll() is None:
             session.process.kill()
