@@ -1,6 +1,8 @@
 """Offline stream installed as sitecustomize for interactive PTY tests."""
 
+import json
 import os
+from dataclasses import asdict
 
 from omh.agent import CompactionSettings, RetryPolicy
 from omh.llm.types import (
@@ -163,6 +165,10 @@ def stream_fn(model, context, options):
     global CALLS, SUMMARY_CALLS
     CALLS += 1
     summary = is_summary(context)
+    payload_path = os.environ.get("INTERACTIVE_PAYLOADS")
+    if payload_path:
+        with open(payload_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps([asdict(item) for item in context.messages]) + "\n")
     counted("summary" if summary else "dialogue")
     stream = create_assistant_message_event_stream()
     output = message(model)
@@ -205,6 +211,15 @@ def stream_fn(model, context, options):
     user = last_user(context).strip()
     tool = latest_tool(context)
     record_request(user)
+    if SCENARIO == "shell-tools":
+        if tool is None and CALLS == 1:
+            emit_tool(stream, output, "bash", {"command": (
+                "printf model-ready; while [ ! -f release-model ]; do sleep 0.02; done; "
+                "printf model-done > model-done.txt"
+            )}, "parallel-model")
+        else:
+            emit_text(stream, output, "parallel done")
+        return stream
     if SCENARIO == "steer":
         if tool is None and CALLS == 1:
             emit_tools(stream, output, [

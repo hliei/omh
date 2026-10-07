@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -25,6 +26,7 @@ from coding_agent.history import DecodedHistory
 from coding_agent.resources import ApplicationResources, load_resources
 from coding_agent.session_manager import ExportFormat, SessionManager, _path
 from coding_agent.session_paths import session_file_path
+from coding_agent.user_shell import HIDDEN_SHELL_TYPE
 
 RuntimeListener = Callable[[AgentEvent, AbortSignal], Awaitable[None] | None]
 
@@ -162,8 +164,20 @@ class AgentSessionRuntime:
         if fallback_message is not None:
             fallback_message += f"; using {selected.provider}/{selected.id}"
         tools = _create_tools(options.tools, cwd, image_limits=options.image_limits)
+        transform = options.agent_options.transform_context
+
+        async def model_context(messages: list[AgentMessage], signal: AbortSignal | None) -> list[AgentMessage]:
+            visible = [message for message in messages if not (
+                isinstance(message, CustomAgentMessage) and message.custom_type == HIDDEN_SHELL_TYPE
+            )]
+            if transform is None:
+                return visible
+            result = transform(visible, signal)
+            return await result if inspect.isawaitable(result) else result
+
         assembled = replace(
             options.agent_options,
+            transform_context=model_context,
             stream_fn=options.stream_fn or options.agent_options.stream_fn,
             initial_state=replace(
                 initial, model=selected,

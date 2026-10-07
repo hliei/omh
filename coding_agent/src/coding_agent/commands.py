@@ -124,7 +124,10 @@ def help_lines() -> list[str]:
         "Invoke a skill with /skill:<name>, or a prompt template with /<name>.",
         "Enter submits, and while the model runs it queues steering. Alt+Enter queues a follow-up.",
         "Tab completes commands, skills, templates, arguments and paths.",
-        "Escape closes completion, then recalls queued inputs and cancels the model. /hotkeys lists the default keys.",
+        "!command runs a user shell; !!command also keeps its command/output out of model context.",
+        "One user shell can run alongside the model in the same workspace; --no-tools still allows it.",
+        "Escape closes completion, then recalls queued inputs and cancels the model; after it stops, Escape cancels the shell.",
+        "/hotkeys lists the default keys.",
     ])
     return lines
 
@@ -149,7 +152,7 @@ HOTKEYS: tuple[tuple[str, str], ...] = (
     ("Left / Right", "Move the cursor"),
     ("Backspace", "Delete the character before the cursor"),
     ("Tab", "Complete a command, skill, template, argument or path"),
-    ("Escape", "Close completion; else recall queued inputs and cancel the model"),
+    ("Escape", "Close completion; else recall queues and cancel the model; when it stops, cancel the shell"),
     ("Ctrl+G", "Edit the current input in an external editor"),
     ("Ctrl+X, /copy", "Copy the last assistant answer"),
     ("Ctrl+V", "Add a clipboard screenshot to the pending images"),
@@ -157,7 +160,7 @@ HOTKEYS: tuple[tuple[str, str], ...] = (
     ("Ctrl+O", "Expand or collapse recorded tool output"),
     ("Ctrl+C", "Clear the editor; a second Ctrl+C within 500ms starts an exit"),
     ("Ctrl+D", "Start an exit when the editor is strictly empty"),
-    ("SIGINT, SIGTERM, SIGHUP", "Cancel the turn and exit 130, 143 or 129"),
+    ("SIGINT, SIGTERM, SIGHUP", "Cancel and join model and shell, save, and exit 130, 143 or 129"),
 )
 
 
