@@ -85,6 +85,14 @@ records steering/follow-up acceptance, queued-input recall, cancel priority and
 exit protection.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
+Interactive current choices and explicit global/project defaults are described
+in [Configuration](docs/configuration.md#interactive-choices-and-scoped-defaults).
+Use `/model`, `/thinking` and `/tools` for the next request; use
+`/settings global|project <field> <value>` to save a future default. Ctrl+L opens
+the model selector, Shift+Tab cycles effective thinking and Ctrl+S explicitly
+saves global thinking. Busy status separates the captured request from the next
+selection; selecting a model never sends a verification request.
+
 ## Create, run, save and reopen
 
 `CodingAgentHost` resolves configuration, credentials and the effective

@@ -39,7 +39,7 @@ def test_help_lists_only_runnable_commands() -> None:
     assert "/copy" in text
     for spec in AVAILABLE_COMMANDS:
         assert spec.usage in text
-    for reserved in ("/model", "/login"):
+    for reserved in ("/trust", "/login"):
         assert reserved not in text
 
 
@@ -58,15 +58,15 @@ def test_hotkeys_describe_the_delivered_defaults() -> None:
     assert "Alt+Up" in text
     assert "Ctrl+G" in text
     assert "Ctrl+X, /copy" in text
-    assert "Ctrl+L" not in text
-    assert "Shift+Tab" not in text
+    assert "Ctrl+L" in text
+    assert "Shift+Tab" in text
 
 
 def test_help_argument_completion_uses_the_runnable_surface() -> None:
     spec = COMMANDS_BY_NAME["help"]
     sources = CompletionSources(cwd=Path("."), commands=AVAILABLE_COMMANDS)
     assert [item.value for item in spec.argument_items("he", sources)] == ["help"]
-    assert spec.argument_items("model", sources) == ()
+    assert [item.value for item in spec.argument_items("model", sources)] == ["model"]
     assert "help" in RESERVED_COMMANDS
 
 

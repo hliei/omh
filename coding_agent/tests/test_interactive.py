@@ -1068,7 +1068,7 @@ def test_builtin_arguments_reserved_names_and_unknown_slash(home: Path, tmp_path
         session.wait_for("phase input")
         session.send(b"/copy extra\r")
         session.wait_for("takes no arguments")
-        session.send(b"/model\r")
+        session.send(b"/login\r")
         session.wait_for("reserved for a later delivery")
         time.sleep(0.3)
         session._pump(0.1)

@@ -133,6 +133,10 @@ and never submits the draft by itself.
 | Ctrl+G | Edit the current draft in an external editor |
 | Ctrl+X, `/copy` | Copy the last assistant answer |
 | Ctrl+V | Add a clipboard screenshot to the pending images |
+| Ctrl+L | Open the model selector; Escape preserves the draft |
+| Ctrl+P / Shift+Ctrl+P | Cycle the configured model set forward / backward |
+| Shift+Tab | Cycle only effective thinking levels |
+| Ctrl+S | Write current thinking as the global default; display the target |
 | Ctrl+T | Show or hide recorded thinking |
 | Ctrl+O | Expand or collapse recorded tool output |
 
@@ -209,6 +213,12 @@ A leading `/token` is dispatched before any request:
 - `/help [command]` lists the commands that this delivery runs, or one command's
   usage. `/hotkeys` lists the default keys. `/copy` copies the last assistant
   answer, like Ctrl+X.
+- `/model`, `/thinking` and `/tools` change current choices, including while
+  busy. `/settings` views current choices; `/settings global|project` views
+  or explicitly edits defaults. See [scopes, values and effect points](configuration.md#interactive-choices-and-scoped-defaults).
+  The busy status shows the captured request separately from the next choice.
+- `/reload` accepts updated resource defaults when model and shell are idle;
+  the next new prompt uses the new sections, while accepted inputs stay intact.
 - `/attach [image-path | remove <n> | clear]` manages the pending image draft.
   Tab discovers paths and the available removal numbers.
 - `/new`, `/resume`, `/name`, `/session`, `/save`, `/export` and `/quit` provide

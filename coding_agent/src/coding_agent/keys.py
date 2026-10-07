@@ -28,6 +28,9 @@ _CONTROL_KEYS = {
     0x14: "ctrl_t",
     0x18: "ctrl_x",
     0x16: "ctrl_v",
+    0x0C: "ctrl_l",
+    0x10: "ctrl_p",
+    0x13: "ctrl_s",
 }
 _ARROWS = {"A": "up", "B": "down", "C": "right", "D": "left"}
 
@@ -130,9 +133,11 @@ def _escape_sequence(blob: bytes, index: int) -> tuple[str | None, int] | None:
     if not body and final_byte in _ARROWS:
         return (_ARROWS[final_byte], consumed)
     if final_byte == "Z":
-        return (None, consumed)
+        return ("shift_tab", consumed)
     parts = body.split(";")
     if final_byte in {"u", "~"}:
+        if body in {"80;6", "112;6", "27;6;80", "27;6;112"}:
+            return ("shift_ctrl_p", consumed)
         if parts[0] == "13" and "2" in parts[1:]:
             return ("newline", consumed)
         if parts[0] == "13" and "3" in parts[1:]:

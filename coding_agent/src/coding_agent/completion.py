@@ -71,6 +71,8 @@ class CompletionSources:
     templates: tuple[tuple[str, str], ...] = ()
     reserved: frozenset[str] = frozenset()
     pending_count: int = 0
+    models: tuple[str, ...] = ()
+    thinking_levels: tuple[str, ...] = ()
 
 
 def complete(text: str, cursor: int, sources: CompletionSources) -> Completion | None:

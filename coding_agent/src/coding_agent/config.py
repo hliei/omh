@@ -199,6 +199,8 @@ _SETTINGS_TYPES: dict[str, type] = {
     "skills": list,
     "prompts": list,
     "theme": str,
+    "hideThinking": bool,
+    "collapseTools": bool,
     "compaction": dict,
     "retry": dict,
     "sessionDir": str,
@@ -506,6 +508,15 @@ def update_settings(
     merged = merge_settings(current, changes)
     _atomic_write(destination, json.dumps(merged, indent=2, sort_keys=True) + "\n")
     return merged
+
+
+def validate_settings_changes(changes: Mapping[str, object]) -> None:
+    """Reject invalid or unknown fields before an explicit settings write."""
+    _, diagnostics = _validate_settings(changes, path="settings", source="settings")
+    if diagnostics:
+        raise ConfigError("; ".join(item.message for item in diagnostics))
+    if "theme" in changes and changes["theme"] not in {"dark", "light"}:
+        raise ConfigError("theme must be dark or light")
 
 
 # --------------------------------------------------------------------------- #

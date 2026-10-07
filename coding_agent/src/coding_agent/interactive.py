@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import fcntl
+import json
 import os
 import select
 import shlex
@@ -27,8 +28,10 @@ from typing import TextIO, cast
 from omh.agent import (
     AgentEvent,
     AgentHistory,
+    AgentOptions,
     CustomAgentMessage,
     MessageHistoryEntry,
+    PrepareRequestContext,
     validate_history,
 )
 from omh.agent.conversation.history import history_path
@@ -45,11 +48,13 @@ from omh.agent.execution.events import (
     ToolExecutionUpdateEvent,
     TurnStartEvent,
 )
+from omh.llm import get_supported_thinking_levels
 from omh.llm.types import (
     AbortController,
     AbortSignal,
     AssistantMessage,
     ImageContent,
+    Model,
     TextContent,
     ThinkingContent,
     ToolCall,
@@ -79,7 +84,13 @@ from coding_agent.commands import (
     hotkey_lines,
 )
 from coding_agent.completion import Completion, CompletionSources, complete
-from coding_agent.config import settings_theme
+from coding_agent.config import (
+    ConfigError,
+    load_settings,
+    project_settings_path,
+    settings_theme,
+    update_settings,
+)
 from coding_agent.editor import Editor
 from coding_agent.external_editor import editor_command, run_external_editor
 from coding_agent.host import CodingAgentHost, SessionSelection
@@ -98,6 +109,12 @@ from coding_agent.pending import (
     PendingAttachment,
     PendingAttachments,
     read_pending_image,
+)
+from coding_agent.preferences import (
+    default_change,
+    effect_of,
+    parse_tools,
+    resolve_model,
 )
 from coding_agent.resources import ApplicationResources
 from coding_agent.session_directory import (
@@ -219,6 +236,7 @@ class _Session:
         self._phase = "input"
         self._chooser = "prompt"
         self._request_block: str | None = None
+        self._unresolved_selection: SessionSelection | None = None
         self._thinking_open = False
         self._tools_open = False
         self._busy = False
@@ -245,6 +263,8 @@ class _Session:
         self._queued_images: list[tuple[str, PendingAttachment]] = []
         self._drafts: dict[str, _ConversationDraft] = {}
         self._management_task: asyncio.Task[None] | None = None
+        self._model_selector: tuple[Model, ...] | None = None
+        self._request_selection: str | None = None
         self._fork_selector: tuple[MessageHistoryEntry, ...] | None = None
         self._fork_request: _DerivationRequest | None = None
         self._escape_at = 0.0
@@ -383,6 +403,8 @@ class _Session:
             self._add(f"notice {_NO_REQUEST}")
             return
         self._prepare_theme(settings_theme(self.host.settings))
+        self._thinking_open = self.host.settings.values.get("hideThinking") is False
+        self._tools_open = self.host.settings.values.get("collapseTools") is False
         if self.args.resume:
             self._resume_command("")
             return
@@ -421,6 +443,7 @@ class _Session:
         self, selection: SessionSelection, *, derivation: _DerivationRequest | None = None,
     ) -> None:
         assert self.host is not None
+        self._unresolved_selection = selection
         diagnostics = await self.host.readiness(selection)
         for diagnostic in diagnostics:
             self._add(f"notice {diagnostic.message}")
@@ -448,12 +471,15 @@ class _Session:
         if credential is not None:
             self._add(f"notice {_NO_REQUEST}")
         await self._open_runtime(selection, derivation=derivation)
+        self._prepare_theme(settings_theme(self.host.settings))
+        self._thinking_open = self.host.settings.values.get("hideThinking") is False
+        self._tools_open = self.host.settings.values.get("collapseTools") is False
 
     async def _open_runtime(
         self, selection: SessionSelection, *, derivation: _DerivationRequest | None = None,
     ) -> None:
         assert self.host is not None
-        options = self.host.build_options(selection)
+        options = self.host.build_options(selection, agent_options=AgentOptions(prepare_request=self._capture_request))
         runtime = self.runtime
         if runtime is None:
             runtime = AgentSessionRuntime(options)
@@ -583,6 +609,9 @@ class _Session:
     def _handle_key(self, key: Key) -> None:
         if key.name != "escape":
             self._escape_at = 0.0
+        if self._model_selector is not None:
+            self._model_selector_key(key)
+            return
         if self._fork_selector is not None:
             self._fork_selector_key(key)
             return
@@ -597,6 +626,27 @@ class _Session:
             self._answer_exit_confirm(accept=key.name == "enter")
             return
         name = key.name
+        if name == "ctrl_l":
+            self._open_model_selector()
+            return
+        if name in {"ctrl_p", "shift_ctrl_p"}:
+            self._cycle_model(-1 if name == "shift_ctrl_p" else 1)
+            return
+        if name == "shift_tab":
+            session = self._current_session()
+            if session is not None:
+                levels = get_supported_thinking_levels(session.agent.state.model)
+                if len(levels) > 1:
+                    current = session.agent.state.thinking_level
+                    self._start_preference("thinking", levels[(levels.index(current) + 1) % len(levels)])
+                else:
+                    self._add(f"thinking {self._thinking_mode(session.agent.state.model, session.agent.state.thinking_level)}; no other effective level")
+            return
+        if name == "ctrl_s":
+            session = self._current_session()
+            if session is not None:
+                self._settings_command(f"global thinking {session.agent.state.thinking_level}")
+            return
         if name == "escape":
             if self._completion is not None:
                 self._completion = None
@@ -762,6 +812,8 @@ class _Session:
             templates=tuple((template.name, template.description) for template in resources.templates),
             reserved=RESERVED_COMMANDS,
             pending_count=len(self._draft),
+            models=tuple(f"{entry.provider}/{entry.model.id}" for entry in self.host.directory.listings()) if self.host else (),
+            thinking_levels=tuple(get_supported_thinking_levels(session.agent.state.model)) if session else (),
         )
 
     # ------------------------------------------------------------------ #
@@ -1156,6 +1208,8 @@ class _Session:
         session = self._current_session()
         if session is not None:
             return session.cwd
+        if self._unresolved_selection is not None and self._unresolved_selection.cwd is not None:
+            return self._unresolved_selection.cwd
         return Path(self.args.cwd or Path.cwd()).expanduser().resolve()
 
     def _add_pending(
@@ -1233,6 +1287,197 @@ class _Session:
             return
         self._add_pending(FILE_ORIGIN, name, source, image)
 
+    @staticmethod
+    def _thinking_mode(model: Model, level: str) -> str:
+        return "fixed-on" if model.reasoning and not get_supported_thinking_levels(model) else level
+
+    def _tool_names(self) -> str:
+        session = self._current_session()
+        return ",".join(tool.name for tool in session.agent.state.tools) if session and session.agent.state.tools else "none"
+
+    def _capture_request(self, request: PrepareRequestContext, signal: AbortSignal | None) -> None:
+        del signal
+        model = request.model
+        thinking = self._thinking_mode(model, request.thinking_level)
+        tools = ",".join(tool.name for tool in request.context.tools) or "none"
+        self._request_selection = f"{model.provider}/{model.id} thinking {thinking} tools {tools}"
+        self._redraw()
+
+    def _show_current_settings(self) -> None:
+        session = self._current_session()
+        if session is not None:
+            state = session.agent.state
+            self._add(f"current model {state.model.provider}/{state.model.id} thinking {self._thinking_mode(state.model, state.thinking_level)} tools {self._tool_names()}; next request, defaults unchanged")
+        self._add(f"current theme {self.theme} hideThinking {not self._thinking_open} collapseTools {not self._tools_open}")
+        self._add("/settings global|project <field> <value> writes only that default; /settings current <field> <value> changes this session")
+
+    def _settings_command(self, argument: str) -> None:
+        if self.host is None:
+            self._add("notice configuration is unavailable")
+            return
+        scope, _, rest = (argument or "current").partition(" ")
+        if scope not in {"current", "global", "project"}:
+            self._add("notice /settings needs current, global or project scope; nothing written")
+            return
+        field, _, raw = rest.strip().partition(" ")
+        if scope == "current":
+            if not field:
+                self._show_current_settings()
+            elif field in {"model", "thinking", "tools", "theme", "hideThinking", "collapseTools"} and raw:
+                self._start_preference(field, raw.strip())
+            else:
+                self._add("notice current fields: model, thinking, tools, theme, hideThinking, collapseTools; other defaults require global/project scope")
+            return
+        path = self.host.agent_dir / "settings.json" if scope == "global" else project_settings_path(self._cwd())
+        if not field:
+            snapshot = load_settings(agent_dir=self.host.agent_dir, cwd=self._cwd(), project_trusted=True)
+            values = snapshot.global_values if scope == "global" else snapshot.project_values
+            self._add(f"{scope} defaults target {path}: {json.dumps(dict(values), ensure_ascii=False)}")
+            for item in snapshot.diagnostics:
+                self._add(f"notice {item.message}")
+            if scope == "project" and not self.host.project_trusted:
+                self._add("notice project defaults are not loaded until project trust is granted")
+            return
+        try:
+            if not raw:
+                raise ConfigError("settings edit requires a value")
+            changes = default_change(self.host.directory, field, raw.strip())
+            update_settings(path, changes)
+        except (OSError, ValueError, ConfigError) as error:
+            self._add(f"notice {scope} write failed at {path}: {error}; no success reported, inspect target before retrying")
+            return
+        self._add(f"saved {scope} {path}: {field}; {effect_of(field)}")
+        if field == "thinking":
+            session = self._current_session()
+            if session is not None:
+                self._add(f"current thinking {self._thinking_mode(session.agent.state.model, session.agent.state.thinking_level)} unchanged")
+        if scope == "project" and not self.host.project_trusted:
+            self._add("notice project defaults require trust before loading")
+        # Refresh default-only state for cycling, future sessions and reload.
+        self.host.select_new(cwd=self._cwd())
+
+    def _start_preference(self, field: str, value: str) -> None:
+        if self._closing or (self._management_task is not None and not self._management_task.done()):
+            self._add("notice session management is in progress; selection unchanged")
+            return
+        self._management_task = asyncio.create_task(self._change_preference(field, value))
+
+    async def _change_preference(self, field: str, value: str) -> None:
+        try:
+            if self.host is None:
+                raise ConfigError("configuration is unavailable")
+            session = self._current_session()
+            if field == "theme":
+                default_change(self.host.directory, field, value)
+                self.theme, _ = resolve_theme(requested=value, configured=None, environ=os.environ)
+                self._add(f"current theme {self.theme}; defaults unchanged")
+            elif field in {"hideThinking", "collapseTools"}:
+                changes = default_change(self.host.directory, field, value)
+                if field == "hideThinking":
+                    self._thinking_open = not bool(changes[field])
+                else:
+                    self._tools_open = not bool(changes[field])
+                self._add(f"current {field} {value}; defaults unchanged")
+            elif field == "model":
+                model = resolve_model(self.host.directory, value)
+                if session is None:
+                    unresolved = self._unresolved_selection
+                    selection = (self.host.select_open(unresolved.session_path, model=value, thinking=self.args.thinking, tools=unresolved.tools, cwd=self._cwd())
+                                 if unresolved is not None and unresolved.history is not None and unresolved.session_path is not None
+                                 else self.host.select_new(model=value, thinking=self.args.thinking, tools=unresolved.tools if unresolved else None, cwd=self._cwd()))
+                    await self._apply_selection(selection)
+                    session = self._current_session()
+                    if session is None:
+                        return
+                else:
+                    session.ensure_can_accept_work()
+                    previous = session.agent.state.thinking_level
+                    previous_mode = self._thinking_mode(session.agent.state.model, previous)
+                    await session.agent.set_model(model)
+                    actual = session.agent.state.thinking_level
+                    if previous != actual:
+                        self._add(f"thinking adjusted from {previous_mode} to {self._thinking_mode(model, actual)}: selected model's effective capabilities")
+                readiness = await self.host.readiness(SessionSelection(cwd=session.cwd, model=model, thinking_level=session.agent.state.thinking_level))
+                self._request_block = next((item.message for item in readiness if item.blocking), None)
+                for item in readiness:
+                    self._add(f"notice {item.message}")
+                self._add(f"current model {model.provider}/{model.id} thinking {self._thinking_mode(model, session.agent.state.thinking_level)}; next request, defaults unchanged")
+            elif session is None:
+                raise ConfigError("choose a model first with /model")
+            elif field == "thinking":
+                session.ensure_can_accept_work()
+                levels = get_supported_thinking_levels(session.agent.state.model)
+                if value not in levels:
+                    raise ConfigError("valid thinking: " + (", ".join(levels) or "fixed-on (no adjustable level)"))
+                await session.agent.set_thinking_level(value)
+                self._add(f"current thinking {value}; next request, defaults unchanged")
+            elif field == "tools":
+                await session.set_tools(parse_tools(value))
+                self._add(f"current tools {self._tool_names()}; next request, defaults unchanged")
+            elif field == "reload":
+                assert self.runtime is not None
+                state = session.agent.state
+                selection = self.host.select_new(cwd=session.cwd, model=f"{state.model.provider}/{state.model.id}", tools=self.runtime.options.tools)
+                if not selection.ready:
+                    raise ConfigError("; ".join(item.message for item in selection.diagnostics if item.blocking))
+                prepared = self.host.build_options(selection)
+                options = self.runtime.options
+                previous_options = replace(options)
+                for name in ("skill_sources", "template_sources", "custom_prompt", "append_system_prompt", "resource_tiers", "load_context_files"):
+                    setattr(options, name, getattr(prepared, name))
+                try:
+                    resources = await session.reload_resources()
+                except BaseException:
+                    for name in ("skill_sources", "template_sources", "custom_prompt", "append_system_prompt", "resource_tiers", "load_context_files"):
+                        setattr(options, name, getattr(previous_options, name))
+                    raise
+                for diagnostic in resources.diagnostics:
+                    self._add(f"notice {diagnostic.message}")
+                self._add("resources reloaded; next new prompt; accepted inputs unchanged")
+        except Exception as error:
+            self._add(f"notice {error}; inspect current selection (/settings current)")
+        finally:
+            self._remember_save()
+            self._redraw()
+
+    def _open_model_selector(self) -> None:
+        if self.host is None:
+            return
+        self._completion = None
+        self._model_selector = tuple(entry.model for entry in self.host.directory.listings())
+        session = self._current_session()
+        selected = session.agent.state.model if session is not None else None
+        self._selector_index = next((index for index, model in enumerate(self._model_selector) if selected and (model.provider, model.id) == (selected.provider, selected.id)), 0)
+
+    def _model_selector_key(self, key: Key) -> None:
+        assert self._model_selector is not None
+        if key.name in {"escape", "ctrl_c"}:
+            self._model_selector = None
+            self._add("model selection cancelled; draft preserved")
+        elif key.name in {"up", "down", "ctrl_p", "shift_ctrl_p"}:
+            self._selector_index = (self._selector_index + (-1 if key.name in {"up", "shift_ctrl_p"} else 1)) % len(self._model_selector)
+        elif key.name == "enter":
+            model = self._model_selector[self._selector_index]
+            self._model_selector = None
+            self._start_preference("model", f"{model.provider}/{model.id}")
+
+    def _cycle_model(self, delta: int) -> None:
+        if self.host is None:
+            return
+        try:
+            configured = self.host.settings.values.get("enabledModels")
+            entries = (tuple(resolve_model(self.host.directory, reference) for reference in configured)
+                       if isinstance(configured, list) else tuple(entry.model for entry in self.host.directory.listings()))
+            if not entries:
+                raise ConfigError("model cycle is empty; configure enabledModels via /settings global models")
+            session = self._current_session()
+            current = session.agent.state.model if session else None
+            index = next((i for i, model in enumerate(entries) if current and (model.provider, model.id) == (current.provider, current.id)), -1 if delta > 0 else 0)
+            model = entries[(index + delta) % len(entries)]
+            self._start_preference("model", f"{model.provider}/{model.id}")
+        except (ValueError, ConfigError) as error:
+            self._add(f"notice {error}; no provider fallback")
+
     def _skill_names(self) -> tuple[str, ...]:
         session = self._current_session()
         if session is None:
@@ -1273,6 +1518,18 @@ class _Session:
                 self._print(line)
         elif spec.name == "copy":
             self._start_copy()
+        elif spec.name in {"model", "thinking", "tools"}:
+            if not argument and spec.name == "model":
+                self._open_model_selector()
+            elif not argument:
+                self._show_current_settings()
+            else:
+                self._start_preference(spec.name, argument)
+        elif spec.name == "settings":
+            self._settings_command(argument)
+        elif spec.name == "reload":
+            if self._management_idle():
+                self._start_preference("reload", "")
         elif spec.name == "attach":
             self._attach_command(argument)
         elif spec.name == "session":
@@ -2070,6 +2327,13 @@ class _Session:
         self._paint_fancy(lines, status, candidates, entry, cursor_row, cursor_col, rows, cols)
 
     def _completion_lines(self, cols: int) -> list[str]:
+        if self._model_selector is not None:
+            start = max(0, self._selector_index - _COMPLETION_VISIBLE // 2)
+            lines = ["Select model (Up/Down, Enter; Escape returns)"]
+            for number, model in enumerate(self._model_selector[start:start + _COMPLETION_VISIBLE], start):
+                levels = ",".join(get_supported_thinking_levels(model)) or "fixed-on"
+                lines.append(_fit(f"{'>' if number == self._selector_index else ' '} {model.provider}/{model.id} thinking {levels}", cols))
+            return lines
         if self._fork_selector is not None:
             start = max(0, self._selector_index - _COMPLETION_VISIBLE // 2)
             lines = ["Select fork (active user inputs, newest first)"]
@@ -2191,7 +2455,7 @@ class _Session:
             save = session.save_state
             selected = session.agent.state.model
             model = f"{selected.provider}/{selected.id}"
-            thinking = session.agent.state.thinking_level
+            thinking = self._thinking_mode(selected, session.agent.state.thinking_level)
             cwd = str(session.cwd)
             path = str(session.path) if session.path is not None else "memory"
         # Pending queued inputs stay visible next to the phase, with their text
@@ -2204,7 +2468,8 @@ class _Session:
             f"phase {self._phase} | {queued}"
             f"session {identity} | mode {mode} | save {save} | model {model} | "
             f"thinking {thinking} | theme {self.theme} | "
-            f"cwd {cwd} | path {path} | pending {len(self._draft)} | shell {shell}"
+            + (f"request {self._request_selection} | next {model} thinking {thinking} tools {self._tool_names()} | " if self._busy and self._request_selection else "")
+            +             f"cwd {cwd} | path {path} | pending {len(self._draft)} | shell {shell}"
             + (f" | retained unsaved {retained} (/session)" if retained else "")
         )
 

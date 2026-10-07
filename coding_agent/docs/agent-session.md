@@ -161,6 +161,13 @@ non-blocking diagnostic that explains the SDK placeholder projection. File
 argument boundaries, conversion and the read-tool image processor are described
 in [input and attachments](input.md).
 
+`await session.set_tools(("read", "bash"))` changes the current executable
+model tools through the SDK live boundary and updates next-prompt system
+sections from the already loaded resource snapshot. It does not reread resources,
+write default settings or re-expand accepted input. An empty tuple disables model
+tools. Existing requests and batches keep their captured tools. The application
+options track the new selection for a later resource reload.
+
 `await session.reload_resources()` (or the runtime wrapper) loads a complete
 batch from the current options before replacing the resource snapshot, expected
 sections and executable tools. It does not run a model or commit history by

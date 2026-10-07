@@ -47,11 +47,12 @@ therefore does not append to the global array.
 | `defaultProvider`, `defaultModel` | New-session model when no explicit or history selection exists |
 | `defaultThinkingLevel` | New-session thinking level for models that accept a choice |
 | `defaultTools` | Initial built-in tool selection; a subset of `read`, `bash`, `edit`, `write` |
-| `enabledModels` | Model cycle set used by the interactive selector |
+| `enabledModels` | Exact provider/model references for Ctrl+P cycling; selector always shows the directory |
 | `compaction` | `enabled`, `reserveTokens`, `keepRecentTokens`, mapped to the SDK's public compaction settings |
 | `retry` | `enabled`, `maxRetries`, `baseDelayMs`, `maxAgentDelayMs`, mapped to the SDK's public retry policy |
 | `skills`, `prompts` | Additional resource paths resolved against the effective session cwd |
 | `sessionDir` | Session storage root preference consumed by session discovery |
+| `hideThinking`, `collapseTools` | Initial display preferences, both true by default |
 | `theme` | Built-in `dark` or `light` preference for the [interactive session](interactive.md); `NO_COLOR` and `TERM=dumb` select the plain fallback |
 
 Unknown keys are reported with a hint and preserved; a known key with the wrong
@@ -65,6 +66,77 @@ session selection, and selecting a model or tool never writes a default.
 
 Persistent writes merge only the named fields, including nested objects, and
 preserve every other key already in the file.
+
+## Interactive choices and scoped defaults
+
+`/model [provider/model]`, `/thinking [level]` and `/tools [subset | none]`
+change the current conversation. Without a model argument, `/model` opens the
+same selector as Ctrl+L; without a thinking/tools argument, the current choices
+are shown. Model/thinking changes are saved in conversation history, rather
+than default settings. Tool choices last for the current session; reopening
+resolves tools from explicit flags and configured defaults.
+
+`/settings` and `/settings current` display current choices. An edit uses
+`/settings <scope> <field> <value>`. Always specify `global` or `project` to
+persist a default. The response names the scope, full target path and effect.
+The project target uses the actual current cwd; writing that file does not
+grant project trust. A scoped view reports diagnostics and unknown-key hints.
+
+| UI field | Value | Effect of a default write |
+| --- | --- | --- |
+| `model` | Exact `provider/model` | New/reopened sessions; history model wins on reopen |
+| `thinking` | SDK level, e.g. `high` | New/reopened sessions; history thinking wins on reopen |
+| `tools` | Comma-separated subset of `read,bash,edit,write`, or `none` | New/reopened sessions; user shell remains available |
+| `models` | JSON array of exact model references | Ctrl+P cycle set refreshes immediately; current model stays selected |
+| `theme` | `dark` or `light` | New/reopened sessions; terminal fallback takes precedence |
+| `hideThinking`, `collapseTools` | JSON `true` or `false` | Initial display preferences on new/reopened sessions |
+| `compaction`, `retry` | JSON object of documented fields | New/reopened sessions; current policies stay captured |
+| `skills`, `prompts` | JSON array of paths | Explicit `/reload`, then the next new prompt |
+
+Current scope accepts model, thinking, tools, theme and display preferences.
+Other fields require a persistent scope. Values are validated before writing;
+unknown edit fields and nested keys are rejected. Stored unrelated keys remain
+in the file. Nested objects merge only the selected fields; arrays replace.
+Each edit writes one target file atomically. On any write error, including an
+error after replacement, the UI reports failure and asks the user to inspect
+the target before retrying; it does not claim success or roll back filesystem
+side effects that may already have occurred.
+
+```text
+/model opencode-go/glm-5.3
+/thinking low
+/tools read,bash
+/settings current theme light
+/settings global thinking high
+/settings project model deepseek/deepseek-flash
+/settings global models ["opencode-go/glm-5.3", "opencode-go/kimi-k3"]
+/settings project retry {"enabled":false}
+/settings global prompts ["prompts"]
+/reload
+```
+
+Ctrl+P cycles forward and Shift+Ctrl+P backward through `enabledModels`, or the
+model directory order when the field is absent. An empty set or an unknown
+reference reports a diagnostic. A selected model with no key remains selected
+and blocks requests with repair guidance; selection never probes the service
+or falls back to another provider. Shift+Ctrl+P requires a terminal that emits
+CSI-u or modifyOtherKeys; `/model` and Ctrl+L remain available otherwise.
+
+Shift+Tab cycles only the selected model's effective levels. A single-level
+model stays at its level; a fixed model displays `fixed-on` with no adjustable
+level. A model switch shows the actual clamp and reason. Ctrl+S saves current
+thinking to the global default and names the target. For a fixed model, the
+SDK's internal `off` sentinel is persisted to omit adjustable effort; the UI
+continues to display `fixed-on`, and does not offer `off` as an option.
+
+Model/thinking/tools edits while busy affect the **next assistant request**,
+which can be the same prompt's tool continuation. The started request and tool
+batch keep their captured model, thinking and tools. Status distinguishes the
+captured request from the next selection. Tool edits update next-prompt system
+sections from the accepted resource snapshot without rereading resources.
+`/reload` requires an idle model and user shell; it accepts resource defaults
+without changing the live model, thinking, tools or policies. Fatal preparation
+failure retains the old resources. Accepted inputs are never expanded again.
 
 ## Project trust
 
