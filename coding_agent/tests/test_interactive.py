@@ -53,13 +53,14 @@ class InteractiveSession:
         assert self.process.pid is not None
         os.kill(self.process.pid, signal.SIGWINCH)
 
-    def wait_for(self, text: str, timeout: float = 8) -> None:
+    def wait_for(self, text: str, timeout: float = 8, *, after: int = 0) -> None:
+        """Wait for visible text after an optional captured output position."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if text in self.visible():
+            if text in self.visible()[after:]:
                 return
             self._pump(0.1)
-            if self.process.poll() is not None and text not in self.visible():
+            if self.process.poll() is not None and text not in self.visible()[after:]:
                 break
         raise AssertionError(f"missing {text!r} in {self.visible()!r}")
 

@@ -197,6 +197,7 @@ def test_escape_recalls_the_queue_cancels_and_keeps_tool_side_effects(
         session.send(b"redirect\r")
         session.wait_for("queued steering (1 waiting): redirect")
         session.wait_for("steering 1 (redirect)")
+        resumed_after = len(session.visible())
         session.send(b"\x1b")
         session.wait_for("phase cancel")
         session.wait_for("recalled 1 queued input(s) into the editor")
@@ -204,7 +205,7 @@ def test_escape_recalls_the_queue_cancels_and_keeps_tool_side_effects(
         # Cancel does not roll back the executed tool's side effect.
         assert (project / "kept.txt").read_text() == "kept"
         # The same session continues after the cancel.
-        session.wait_for("phase input")
+        session.wait_for("phase input", after=resumed_after)
         session.send(b"\x03")
         session.send(b"continue now\r")
         session.wait_for("reply:continue now")
@@ -345,9 +346,10 @@ def test_escape_cancels_a_pending_retry_and_keeps_the_session(
         session.wait_for("phase input")
         session.send(b"go\r")
         session.wait_for("phase retry")
+        resumed_after = len(session.visible())
         session.send(b"\x1b")
         session.wait_for("phase cancel")
-        session.wait_for("phase input")
+        session.wait_for("phase input", after=resumed_after)
         session.send(b"after\r")
         session.wait_for("reply:after")
         # The cancelled retry never reached the provider again.
@@ -390,6 +392,7 @@ def test_escape_cancels_automatic_compaction_recalls_and_keeps_the_session(
         session.wait_for("phase compact threshold")
         session.send(b"redirect\r")
         session.wait_for("queued steering (1 waiting): redirect")
+        resumed_after = len(session.visible())
         session.send(b"\x1b")
         session.wait_for("recalled 1 queued input(s) into the editor")
         session.wait_for("phase cancel")
@@ -397,6 +400,7 @@ def test_escape_cancels_automatic_compaction_recalls_and_keeps_the_session(
         # The summary provider saw cooperative cancellation, and the recalled
         # input never became a request or a committed compaction record.
         wait_sends(home, 3, session)
+        session.wait_for("phase input", after=resumed_after)
         assert sends(home) == ["dialogue", "summary", "summary-aborted"]
         assert requests(home) == ["go"]
         saved = next((home / "sessions").glob("*.jsonl"))
