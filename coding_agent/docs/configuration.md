@@ -61,6 +61,10 @@ the configuration is repaired. Unsupported nested keys such as
 `compaction.modelOverrides` and `retry.provider` produce unknown-key hints.
 Compaction and retry are passed to the existing
 SDK assembly; this product does not build a second retry or compaction loop.
+`/session` shows the effective policy captured by the current session, so a
+default written for a future session is visible as different from it. See
+[long conversations and usage](interactive.md#long-conversations-compaction-and-usage)
+for the automatic policy and the manual `/compact` command.
 Writing a default changes only the selected file: it never mutates the current
 session selection, and selecting a model or tool never writes a default.
 

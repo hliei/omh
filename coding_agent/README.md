@@ -19,6 +19,9 @@ the conversation above a multiline editor and status line, with session-scoped
 input history, command/path completion, an external editor, conversation
 switching with drafts, independent fork/clone, retained saving recovery and protected exit; see
 [Interactive session](docs/interactive.md). See the [command line entry](docs/cli.md).
+Interactive `/compact` summarizes older context on an idle session while keeping
+original history, and `/session` reports the current-context estimate, recorded
+usage and effective retry/compaction policy.
 
 From the repository root, install both projects for development:
 

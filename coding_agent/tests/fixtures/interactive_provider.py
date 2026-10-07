@@ -21,6 +21,8 @@ from omh.llm.types import (
     ToolCall,
     ToolCallEndEvent,
     ToolCallStartEvent,
+    Usage,
+    UsageCost,
     empty_usage,
 )
 from omh.llm.utils.event_stream import create_assistant_message_event_stream
@@ -183,7 +185,7 @@ def stream_fn(model, context, options):
     output = message(model)
     if summary:
         SUMMARY_CALLS += 1
-        if SCENARIO == "compact-cancel" and SUMMARY_CALLS == 1:
+        if SCENARIO in {"compact-cancel", "manual-compact-cancel"} and SUMMARY_CALLS == 1:
             stream.push(StartEvent(partial=output))
 
             def finish_summary() -> None:
@@ -368,6 +370,15 @@ def stream_fn(model, context, options):
         record_images(images)
         emit_text(stream, output, f"seen-image:{len(images)}")
         return stream
+    if SCENARIO == "usage":
+        output.usage = Usage(
+            input=1000, output=200, cache_read=50, cache_write=0, total_tokens=1250,
+            reported=True, reasoning=25,
+            cost=UsageCost(input=0.0003, output=0.00025, cache_read=0.000003,
+                           cache_write=0, total=0.000553),
+        )
+        emit_text(stream, output, f"reply:{user}")
+        return stream
     if user == "mark":
         if tool == "write":
             emit_text(stream, output, "marked")
@@ -408,6 +419,12 @@ class ControlledHost(cli.CodingAgentHost):
         if SCENARIO in {"compact", "compact-cancel"}:
             options.agent_options.compaction = CompactionSettings(
                 reserve_tokens=999_999, keep_recent_tokens=0,
+            )
+        elif SCENARIO in {"manual-compact", "manual-compact-cancel"}:
+            # Auto compaction off so only the explicit command summarizes; the
+            # manual path still uses the zero retention tail.
+            options.agent_options.compaction = CompactionSettings(
+                enabled=False, keep_recent_tokens=0,
             )
         return options
 

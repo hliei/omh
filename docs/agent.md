@@ -184,6 +184,16 @@ available through [`Agent.compact`](#manual-compaction); editing commands are
 not exposed. See the runnable offline
 [history example](../examples/history.py) for save-by-snapshot and restoration.
 
+### Context estimation
+
+`estimate_history_tokens(history)` returns the Agent's pure context budget: it
+projects canonical history, then uses the latest valid usage after the last
+compaction or context edit plus char-based estimates for the trailing messages.
+Images use a fixed estimate. Applications can reuse it for their own displays;
+the result is an estimate, not a provider count, and it never mutates the
+Agent. Because it derives from current history, callers recompute it after a
+commit such as a compaction or context edit rather than caching a stale number.
+
 Final messages first commit to complete history and effective context, then emit
 `HistoryCommitEvent` (`history_commit`) before `message_end`. The event contains
 `conversation_id`, the complete new `entries` tuple in commit order, and the
