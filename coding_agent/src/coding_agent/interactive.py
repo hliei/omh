@@ -2692,9 +2692,10 @@ class _Session:
         if session is None:
             return "context n/a"
         model = session.agent.state.model
-        key = (len(session.agent.history.entries), model.provider, model.id, model.context_window)
+        history = session.agent.history
+        key = (session, history.leaf_id, len(history.entries), model.provider, model.id, model.context_window)
         if self._context_cache is None or self._context_cache[0] != key:
-            label = context_short_label(context_estimate(session.agent.history, model))
+            label = context_short_label(context_estimate(history, model))
             self._context_cache = (key, label)
         return self._context_cache[1]
 

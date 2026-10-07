@@ -4,6 +4,7 @@ from pathlib import Path
 
 from test_interactive import sends, wait_sends
 from test_interactive_sessions import start
+from test_session_directory import write_history
 
 
 def _phase_input_after(session, marker: str) -> None:  # type: ignore[no-untyped-def]
@@ -143,6 +144,32 @@ def test_session_displays_context_recorded_usage_and_effective_policy(tmp_path: 
         session.wait_for("notice compact: Nothing to compact")
         session.send(b"/quit\r")
         assert session.finish() == 0
+    finally:
+        if session.process.poll() is None:
+            session.process.kill()
+            session.process.wait()
+        session.close()
+
+
+def test_context_status_refreshes_when_resuming_equal_length_histories(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    first = home / "sessions" / "first.jsonl"
+    second = home / "sessions" / "second.jsonl"
+    write_history(first, project, "first-context", None, "a" * 200_000)
+    write_history(second, project, "second-context", None, "short")
+    session, _ = start(tmp_path, "--session", str(first))
+    try:
+        session.wait_for("phase input")
+        session.wait_for("| context ~5%")
+        offset = len(session.visible())
+        session.send(f"/resume {second}\r".encode())
+        session.wait_for("resumed current second-context", after=offset)
+        session.wait_for("| context ~0%", after=offset)
+        session.send(b"/quit\r")
+        assert session.finish() == 0
+        assert sends(home) == []
     finally:
         if session.process.poll() is None:
             session.process.kill()
