@@ -92,16 +92,23 @@ a second signal exits immediately with a saving warning. A failed automatic save
 exits 1 and reports a rescue path or the lack of a complete save on stderr.
 
 Interactive mode scrolls the conversation and keeps an editor and status line
-at the bottom. Enter submits the editor. /attach <image-path> adds a local
-image to the pending draft; /attach alone lists, remove <n> removes and clear
-empties it; Ctrl+V adds a screenshot from a detected desktop clipboard backend.
-Ctrl+T expands or collapses thinking. Ctrl+O expands or collapses recorded tool
-output. The first Ctrl+C clears the editor; a second Ctrl+C within 500ms exits.
-Ctrl+D exits when the editor and the pending images are empty. OS SIGINT,
-SIGTERM and SIGHUP cancel through the Agent and exit 130, 143 and 129. A missing
-key, invalid configuration or a missing saved working directory keeps this
-screen and explains the repair; no verification request is sent. --use-theme
-selects dark or light. NO_COLOR or TERM=dumb uses the plain theme.
+at the bottom. Enter submits the editor; Shift+Enter or Ctrl+J inserts a newline,
+and a trailing backslash followed by Enter does the same for terminals without
+Shift+Enter. Up/Down browse this session's editor history and restore the
+unsubmitted draft. Tab completes commands, skills, templates, arguments and
+paths; Escape closes completion and keeps the text. /attach <image-path> adds
+a pending image; /attach lists images, remove <n> removes one and clear clears
+them. Ctrl+V adds a screenshot from a detected clipboard backend. Ctrl+G edits the draft in
+$VISUAL, $EDITOR or nano, and a successful exit only refills the editor. Ctrl+T
+expands or collapses thinking. Ctrl+O expands or collapses recorded tool
+output. Ctrl+X and /copy copy the last assistant answer; a missing clipboard
+backend is reported without installing one. /help and /hotkeys list the current
+commands and default keys. The first Ctrl+C clears the editor; a second Ctrl+C
+within 500ms exits. Ctrl+D exits when the editor and pending images are empty. OS SIGINT, SIGTERM
+and SIGHUP cancel through the Agent and exit 130, 143 and 129. A missing key,
+invalid configuration or a missing saved working directory keeps this screen
+and explains the repair; no verification request is sent. --use-theme selects
+dark or light. NO_COLOR or TERM=dumb uses the plain theme.
 
 Options:
   -c, --continue                 Continue the most recent session for the working directory

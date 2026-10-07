@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 from support import png_bytes
-from test_interactive import InteractiveSession, provider_env, sends
+from test_interactive import InteractiveSession, provider_env, sends, write_script
 
 from coding_agent import decode_history
 
@@ -165,6 +165,61 @@ def test_pending_load_cannot_be_overwritten_or_reappear_after_clear(
     finally:
         if writer is not None:
             os.close(writer)
+        session.close()
+
+
+def test_editor_history_external_edit_copy_and_clipboard_preserve_pending_images(
+    home: Path, tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    images = project / "images dir"
+    images.mkdir()
+    write_image(images / "picture.png")
+    clipboard = fake_clipboard_env(home, tmp_path, png_bytes((9, 6)))
+    captured = tmp_path / "copied.txt"
+    backend = "pbcopy" if sys.platform == "darwin" else "wl-copy"
+    write_script(tmp_path / "clipboard-bin" / backend, f"/bin/cat > {captured}")
+    editor = write_script(tmp_path / "editor", "printf ' edited' >> \"$1\"")
+    env = images_env(home, "vision", **clipboard, EDITOR=str(editor), VISUAL="")
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=env,
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"seed prompt\r")
+        session.wait_for("seen-image:0")
+        session.send(b"/attach images\t\r")
+        session.wait_for("> /attach images dir/")
+        session.send(b"pic\t\t\r")
+        session.wait_for("attached #1 picture.png")
+        session.send(b"/help attach\r")
+        session.wait_for("/attach: Add, list or remove pending image attachments")
+        assert len(sends(home)) == 1
+        session.send(b"original draft\x1b[A\x1b[A\x1b[B" + b"\x1b[C" * len("original draft") + b"\x0a")
+        session.send("中文".encode() + b"\x07")
+        session.wait_for("External editor returned")
+        session.wait_for("中文 edited")
+        assert len(sends(home)) == 1
+        session.send(b"\x16")
+        session.wait_for("attached #2 clipboard.png 9x6")
+        assert len(sends(home)) == 1
+        session.send(b"\r")
+        session.wait_for("seen-image:2")
+        assert len(recorded_images(home)) == 2
+        saved = next((home / "sessions").glob("*.jsonl"))
+        assert "original draft\\n中文 edited" in saved.read_text()
+        session.send(b"\x18")
+        session.wait_for("Copied the last assistant answer")
+        assert captured.read_text() == "seen-image:2"
+        session.send(b"/attach\r")
+        session.wait_for("attachments none pending")
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
         session.close()
 
 

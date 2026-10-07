@@ -1,4 +1,4 @@
-"""Desktop clipboard image backends for pasted screenshots.
+"""Desktop clipboard backends for copying answers and pasted screenshots.
 
 The product reads an image from the desktop clipboard without installing system
 tools. Detection is explicit per platform: macOS uses the system ``osascript``
@@ -7,6 +7,8 @@ on Wayland and ``xclip`` on X11. A missing backend never breaks the screen: the
 caller explains the dependency and keeps explicit file input available. The
 runner boundary is injectable so a controlled fixture can prove acceptance and
 fallback without a real desktop clipboard.
+Text copying uses the platform's existing clipboard command separately from
+image reading; neither capability installs system dependencies.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -215,3 +218,84 @@ async def _default_runner(command: Sequence[str]) -> tuple[int, bytes, bytes]:
         await process.wait()
         raise
     return int(process.returncode or 0), stdout, stderr
+
+
+class ClipboardError(RuntimeError):
+    """No usable clipboard backend, or the chosen backend failed."""
+
+
+def clipboard_command(
+    *, platform: str | None = None, environ: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> list[str] | None:
+    """Return the first available platform clipboard command, or ``None``."""
+    selected = sys.platform if platform is None else platform
+    environment = os.environ if environ is None else environ
+    finder = shutil.which if which is None else which
+    if selected == "darwin":
+        candidates: list[list[str]] = [["pbcopy"]]
+    elif selected.startswith("win"):
+        candidates = [["clip"]]
+    else:
+        candidates = []
+        if environment.get("TERMUX_VERSION"):
+            candidates.append(["termux-clipboard-set"])
+        if environment.get("WAYLAND_DISPLAY"):
+            candidates.append(["wl-copy"])
+        if environment.get("DISPLAY"):
+            candidates.append(["xclip", "-selection", "clipboard"])
+            candidates.append(["xsel", "--clipboard", "--input"])
+    for candidate in candidates:
+        if finder(candidate[0]):
+            return candidate
+    return None
+
+
+def _backend_hint(platform: str, environ: Mapping[str, str]) -> str:
+    """Name the clipboard command this platform would use, for a diagnostic."""
+    if platform == "darwin":
+        return "pbcopy"
+    if platform.startswith("win"):
+        return "clip"
+    names: list[str] = []
+    if environ.get("TERMUX_VERSION"):
+        names.append("termux-clipboard-set")
+    if environ.get("WAYLAND_DISPLAY"):
+        names.append("wl-copy")
+    if environ.get("DISPLAY"):
+        names.extend(["xclip", "xsel"])
+    return ", ".join(names) if names else "wl-copy, xclip or xsel"
+
+
+def copy_text(
+    text: str, *, platform: str | None = None, environ: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> None:
+    """Copy ``text`` to the desktop clipboard or raise :class:`ClipboardError`."""
+    command = clipboard_command(platform=platform, environ=environ, which=which)
+    if command is None:
+        selected = sys.platform if platform is None else platform
+        environment = os.environ if environ is None else environ
+        raise ClipboardError(
+            f"No clipboard backend is available; install {_backend_hint(selected, environment)} "
+            "to enable /copy. omh does not install one automatically."
+        )
+    run = subprocess.run if runner is None else runner
+    try:
+        result = run(
+            command, input=text, text=True, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ClipboardError(f"Cannot run clipboard backend {command[0]}: {error}") from error
+    if result.returncode != 0:
+        raise ClipboardError(
+            f"Clipboard backend {command[0]} failed with status {result.returncode}"
+        )
+
+
+__all__ = [
+    "ClipboardBackend", "ClipboardError", "ClipboardSupport", "ClipboardUnavailable",
+    "clipboard_command", "copy_text", "detect_clipboard", "read_clipboard_image",
+]

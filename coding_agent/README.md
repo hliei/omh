@@ -15,7 +15,8 @@ session header and incremental events; consumers inspect final messages as well 
 serially with slow-consumer backpressure, retries temporary buffer errors and exits `1`
 on a permanent write error without a synthetic result. See the [JSON wire contract](docs/print-json.md)
 and [consumer example](examples/consume_print_json.py). Interactive mode scrolls
-the conversation above an editor and status line; see
+the conversation above a multiline editor and status line, with session-scoped
+input history, command/path completion, an external editor and `/copy`; see
 [Interactive session](docs/interactive.md). See the [command line entry](docs/cli.md).
 
 From the repository root, install both projects for development:
@@ -50,7 +51,7 @@ repository. The root SDK checks run separately.
 | Contract | Responsibility |
 | --- | --- |
 | [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands, argument validation and print text/JSON |
-| [Interactive session](docs/interactive.md) | Regular terminal conversation, streaming fold, status, themes and exit |
+| [Interactive session](docs/interactive.md) | Regular terminal conversation, editing keys, editor history, completion, external editor, help/hotkeys/copy, streaming fold, status, themes and exit |
 | [Print JSON](docs/print-json.md) | Incremental wire schema, messages, retry/compact projection and process outcomes |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |

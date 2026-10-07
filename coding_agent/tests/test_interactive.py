@@ -9,6 +9,7 @@ import select
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import time
 from pathlib import Path
@@ -118,6 +119,22 @@ def sends(home: Path) -> list[str]:
     if not path.exists():
         return []
     return [line for line in path.read_text().splitlines() if line]
+
+
+def settle(session: "InteractiveSession", delay: float = 0.3) -> None:
+    """Let a just-finished turn return the screen to the input phase."""
+    time.sleep(delay)
+    session._pump(0.1)
+
+
+def wait_sends(home: Path, count: int, session: "InteractiveSession", timeout: float = 8) -> None:
+    """Wait until the controlled provider has received ``count`` requests."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if len(sends(home)) >= count:
+            return
+        session._pump(0.1)
+    raise AssertionError(f"expected {count} sends, saw {sends(home)!r}")
 
 
 @pytest.fixture
@@ -703,3 +720,412 @@ def test_failed_startup_rename_keeps_runtime_owned_and_closes_it(home: Path, tmp
         assert reopened.finish() == 0
     finally:
         reopened.close()
+
+
+def write_script(path: Path, body: str) -> Path:
+    path.write_text(f"#!/bin/sh\n{body}\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_multiline_editing_and_paste_do_not_autosubmit(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"first")
+        session.send(b"\x0a")
+        session.send("中文".encode())
+        session.send(b"\x1b[13;2u")
+        session.send(b"third")
+        session.send(b"\x0a")
+        session.send(b"\x1b[200~pasted\nlines\x1b[201~")
+        session.wait_for("pasted")
+        session.wait_for("中文")
+        assert sends(home) == []
+        assert list((home / "sessions").rglob("*.jsonl")) == []
+        session.send(b"\r")
+        session.wait_for("reply:first")
+        assert "中文" in session.visible()
+        assert "pasted" in session.visible()
+        assert "lines" in session.visible()
+        assert len(sends(home)) == 1
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_trailing_backslash_enter_inserts_a_newline(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"one\\")
+        session.send(b"\r")
+        session.send(b"two\r")
+        session.wait_for("reply:one")
+        assert "two" in session.visible()
+        assert len(sends(home)) == 1
+        session.send(b"\x04")
+        assert session.finish() == 0
+    finally:
+        session.close()
+
+
+def test_up_and_down_use_session_history_and_restore_the_draft(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"alpha\r")
+        wait_sends(home, 1, session)
+        settle(session)
+        session.send(b"beta\r")
+        wait_sends(home, 2, session)
+        settle(session)
+        session.send(b"\x1b[A")  # beta
+        session.send(b"\r")
+        wait_sends(home, 3, session)
+        settle(session)
+        session.send(b"\x1b[A")  # beta again (deduplicated)
+        session.send(b"\x1b[A")  # alpha
+        session.send(b"\r")
+        wait_sends(home, 4, session)
+        settle(session)
+        session.send(b"my draft")
+        session.send(b"\x1b[A")  # line start
+        session.send(b"\x1b[A")  # history
+        session.send(b"\x1b[B")  # restore the draft
+        session.send(b"\r")
+        wait_sends(home, 5, session)
+        assert len(sends(home)) == 5
+        session.send(b"\x04")
+        assert session.finish() == 0
+    finally:
+        session.close()
+
+
+def test_reopened_session_seeds_editor_history(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    sessions = home / "sessions"
+    first = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(sessions), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        first.wait_for("phase input")
+        first.send(b"saved prompt\r")
+        first.wait_for("reply:saved prompt")
+        first.send(b"\x04")
+        assert first.finish() == 0
+    finally:
+        first.close()
+    saved = next(sessions.glob("*.jsonl"))
+    second = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session", str(saved), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        second.wait_for("you saved prompt")
+        second.send(b"\x1b[A")
+        second.send(b"\r")
+        wait_sends(home, 2, second)
+        assert len(sends(home)) == 2
+        second.send(b"\x04")
+        assert second.finish() == 0
+    finally:
+        second.close()
+
+
+def test_escape_closes_completion_and_keeps_the_edited_text(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"/he")
+        session.send(b"\t")
+        session.wait_for("/help")
+        session.send(b"\x1b")
+        time.sleep(0.2)
+        session._pump(0.1)
+        session.send(b"\r")
+        session.wait_for("Unknown command /he")
+        session.wait_for("reply:/he")
+        session.send(b"/he")
+        session.send(b"\t")
+        session.send(b"\t")
+        session.send(b"\r")
+        session.wait_for("Commands:")
+        assert "/hotkeys" in session.visible()
+        assert len(sends(home)) == 1
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_skill_template_and_path_completion_expand_real_input(home: Path, tmp_path: Path) -> None:
+    agent = home / ".omh" / "agent"
+    skill = agent / "skills" / "review"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: review\ndescription: Review the change\n---\nReview body text.\n"
+    )
+    prompts = agent / "prompts"
+    prompts.mkdir(parents=True)
+    (prompts / "notes.md").write_text("---\ndescription: Notes\n---\nTEMPLATE BODY\n")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("x")
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"/skill:re")
+        session.send(b"\t")
+        session.send(b"\t")
+        session.send(b"\r")
+        session.wait_for("Review body text.")
+        session.send(b"/not")
+        session.send(b"\t")
+        session.send(b"\t")
+        session.send(b"\r")
+        session.wait_for("TEMPLATE BODY")
+        session.send(b"read @ap")
+        session.send(b"\t")
+        session.send(b"\t")
+        session.send(b"\r")
+        session.wait_for("reply:read @app.py")
+        assert len(sends(home)) == 3
+        session.send(b"\x04")
+        assert session.finish() == 0
+    finally:
+        session.close()
+
+
+def test_ctrl_g_external_editor_refills_without_submitting(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    editor = write_script(tmp_path / "fake-editor", "printf 'edited by script\\n' > \"$1\"")
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project,
+        env=provider_env(home, "echo", EDITOR=str(editor), VISUAL=""),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"draft text")
+        session.send(b"\x07")
+        session.wait_for("External editor returned")
+        time.sleep(0.3)
+        session._pump(0.1)
+        assert sends(home) == []
+        session.send(b"\r")
+        session.wait_for("reply:edited by script")
+        assert len(sends(home)) == 1
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_ctrl_g_missing_editor_diagnoses_and_keeps_the_draft(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project,
+        env=provider_env(home, "echo", EDITOR="/definitely/missing/editor", VISUAL=""),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"keep me")
+        session.send(b"\x07")
+        session.wait_for("command not found")
+        session.send(b"\r")
+        session.wait_for("reply:keep me")
+        assert len(sends(home)) == 1
+        session.send(b"\x04")
+        assert session.finish() == 0
+    finally:
+        session.close()
+
+
+def test_copy_without_a_backend_diagnoses_and_keeps_the_ui(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    env = provider_env(home, "echo")
+    env["PATH"] = str(empty)
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=env,
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"hello\r")
+        session.wait_for("reply:hello")
+        session.send(b"\x18")
+        session.wait_for("No clipboard backend")
+        session.send(b"next\r")
+        session.wait_for("reply:next")
+        assert len(sends(home)) == 2
+        session.send(b"\x04")
+        assert session.finish() == 0
+    finally:
+        session.close()
+
+
+def test_copy_and_slash_copy_use_an_available_backend(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    captured = tmp_path / "clipboard.txt"
+    backend = "pbcopy" if sys.platform == "darwin" else "wl-copy"
+    write_script(bin_dir / backend, f"/bin/cat >> {captured}")
+    env = provider_env(home, "echo")
+    env["PATH"] = str(bin_dir)
+    if sys.platform.startswith("linux"):
+        env["WAYLAND_DISPLAY"] = "controlled-display"
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=env,
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"hello\r")
+        session.wait_for("reply:hello")
+        session.send(b"\x18")
+        session.wait_for("Copied the last assistant answer")
+        assert captured.read_text().count("reply:hello") == 1
+        session.send(b"/copy\r")
+        session.wait_for("Copied the last assistant answer")
+        deadline = time.monotonic() + 5
+        while captured.read_text().count("reply:hello") < 2 and time.monotonic() < deadline:
+            session._pump(0.1)
+        assert captured.read_text().count("reply:hello") == 2
+        assert len(sends(home)) == 1
+        session.send(b"\x04")
+        assert session.finish() == 0
+    finally:
+        session.close()
+
+
+def test_builtin_arguments_reserved_names_and_unknown_slash(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"/copy extra\r")
+        session.wait_for("takes no arguments")
+        session.send(b"/new\r")
+        session.wait_for("reserved for a later delivery")
+        time.sleep(0.3)
+        session._pump(0.1)
+        assert sends(home) == []
+        session.send(b"/mystery\r")
+        session.wait_for("Unknown command /mystery")
+        session.wait_for("reply:/mystery")
+        assert len(sends(home)) == 1
+        session.send(b"/help\r")
+        session.wait_for("Commands:")
+        assert "/hotkeys" in session.visible()
+        session.send(b"/hotkeys\r")
+        session.wait_for("Ctrl+G")
+        time.sleep(0.2)
+        session._pump(0.1)
+        assert len(sends(home)) == 1
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_help_argument_completion_through_the_screen(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"/help c")
+        session.send(b"\t")
+        session.wait_for("Copy the last assistant answer")
+        session.send(b"\t")
+        session.send(b"\r")
+        session.wait_for("/copy: Copy the last assistant answer")
+        assert sends(home) == []
+        session.send(b"\x04")
+        assert session.finish() == 0
+    finally:
+        session.close()
+
+
+def test_ctrl_c_latch_resets_after_new_typing(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    session = InteractiveSession(
+        "--no-approve", "--no-context-files", "--api-key", "offline",
+        "--session-dir", str(home / "sessions"), "--cwd", str(project),
+        home=home, cwd=project, env=provider_env(home, "echo"),
+    )
+    try:
+        session.wait_for("phase input")
+        session.send(b"discarded")
+        session.send(b"\x03")
+        session.send(b"kept")
+        session.send(b"\x03")
+        session.send(b"sent\r")
+        session.wait_for("reply:sent")
+        assert "reply:kept" not in session.visible()
+        assert session.process.poll() is None
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
