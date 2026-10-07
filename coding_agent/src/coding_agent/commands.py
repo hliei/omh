@@ -69,10 +69,13 @@ class CommandSpec:
                     base += format.group()
                     fragment = fragment[format.end():]
                     path_only = True
-            if self.argument_source == "resume":
+            if self.argument_source in {"resume", "derivation"}:
                 head, space, tail = prefix.rpartition(" ")
                 if space:
                     base, fragment = head + space, tail
+            if self.argument_source == "derivation" and base.rstrip().endswith("--save-mode"):
+                return tuple(CompletionItem(value=base + mode, label=mode)
+                             for mode in ("auto", "memory") if mode.startswith(fragment))
             values = {
                 "resume": (("mtime", "created", "name", "id", "cwd") if base.rstrip().endswith("--sort")
                            else ("--list", "--all-projects", "--search ", "--sort ", "--reverse")),
@@ -80,10 +83,11 @@ class CommandSpec:
                 "export": ("jsonl ", "html ", "--retained "),
                 "save": ("--retained ",),
                 "quit": ("--discard-unsaved",),
+                "derivation": ("--cwd ", "--save-mode ", "--session-dir "),
             }.get(self.argument_source or "", ())
             items = [CompletionItem(value=base + value, label=value.strip())
                      for value in values if not path_only and value.startswith(fragment)]
-            if self.argument_source in {"save", "export", "resume"}:
+            if self.argument_source in {"save", "export", "resume", "derivation"}:
                 paths = complete_path(fragment, len(fragment), sources, allow_bare=True)
                 if paths is not None:
                     items.extend(CompletionItem(value=base + item.value, label=item.label,
@@ -119,6 +123,14 @@ AVAILABLE_COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec("name", "Show, change or clear the persistent name", "/name [text | --clear]",
                 max_arguments=None, argument_source="name", argument_help="name text, or --clear"),
+    CommandSpec("fork", "Select a user input and copy its ancestors into a new conversation",
+                "/fork [entry-id] [--cwd dir] [--save-mode auto | memory] [--session-dir dir]",
+                max_arguments=None, argument_source="derivation",
+                argument_help="optional active user entry ID; otherwise selector; target cwd, mode and directory"),
+    CommandSpec("clone", "Copy the active path into a new independent conversation",
+                "/clone [--cwd dir] [--save-mode auto | memory] [--session-dir dir]",
+                max_arguments=None, argument_source="derivation",
+                argument_help="optional target cwd, save mode and session directory"),
     CommandSpec("session", "Show current identity, configuration and retained recovery", "/session"),
     CommandSpec("save", "Repair or bind a complete history file", "/save [--retained n] [path]",
                 max_arguments=None, argument_source="save", argument_help="optional retained number and destination"),
@@ -201,6 +213,7 @@ HOTKEYS: tuple[tuple[str, str], ...] = (
     ("Backspace", "Delete the character before the cursor"),
     ("Tab", "Complete a command, skill, template, argument or path"),
     ("Escape", "Close completion; else recall queues and cancel the model; when it stops, cancel the shell"),
+    ("Double Escape in an empty editor", "Open the fork selector when model and shell are idle"),
     ("Ctrl+G", "Edit the current input in an external editor"),
     ("Ctrl+X, /copy", "Copy the last assistant answer"),
     ("Ctrl+V", "Add a clipboard screenshot to the pending images"),

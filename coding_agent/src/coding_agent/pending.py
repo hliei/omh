@@ -21,10 +21,11 @@ from coding_agent.attachments import resolve_attachment_path
 from coding_agent.images import ImageLimits, ProcessedImage, read_image
 
 #: Where a pending attachment's bytes came from.
-AttachmentOrigin = Literal["file", "clipboard"]
+AttachmentOrigin = Literal["file", "clipboard", "history"]
 
 #: Origin value for an entry read from an explicit image path.
 FILE_ORIGIN: AttachmentOrigin = "file"
+HISTORY_ORIGIN: AttachmentOrigin = "history"
 #: Origin value for an entry read from the desktop clipboard.
 CLIPBOARD_ORIGIN: AttachmentOrigin = "clipboard"
 

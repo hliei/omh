@@ -11,6 +11,8 @@ retired sessions available for recovery. All commands below are available from
 | `/new` | Create an empty conversation when the model and user shell are idle |
 | `/resume [path-or-id]` | Reopen a saved conversation, or show the selector without a reference |
 | `/resume --list [--all-projects] [--search text] [--sort field] [--reverse]` | Read-only discovery, available while work is busy |
+| `/fork [entry-id]` | Select a user on the active path and refill it in a new conversation |
+| `/clone` | Copy the current active path into an independent conversation |
 | `/name [text \| --clear]` | Show, change or clear the persistent name |
 | `/session` | Show identity, cwd, model/thinking, save mode/state/path, resources and retained recovery numbers |
 | `/save [--retained n] [path]` | Repair the original file, or save complete history and bind a new target |
@@ -74,6 +76,65 @@ synchronization. Terminal notification failure can accompany a published target.
 The conversation and event subscription follow the actual Runtime reference.
 Retired histories and saving errors remain available through `/session`; the
 status flags retained unsaved histories even while the new current is saved.
+
+## Fork or clone an independent conversation
+
+`/fork` opens the active user-input selector, newest first. Up/Down select an
+input, Enter forks and Escape or Ctrl+C returns to the source draft. Double
+Escape within 500ms in an empty editor opens the same selector. Completion
+still closes first, and busy model or shell work keeps its normal cancellation
+priority. An empty path has no user to select. `/fork <entry-id>` selects one
+of the displayed active user IDs directly; inactive or non-user IDs are rejected.
+
+Fork copies the complete ancestors **before** the selected user. That user is
+not committed in the target: its text and images refill the editor for editing
+and retry. Images come from saved history bytes, even if the original image
+file has disappeared; `/attach` shows their `history` origin and source
+conversation/entry. `/clone` copies the current root-to-leaf path and starts
+with an empty editor. Both omit inactive branches while preserving original
+record IDs, parents, model/thinking changes, compaction checkpoints and context
+edits. Complete SDK history restoration rebuilds effective context.
+
+Both commands require idle Agent and user shell work, and refuse busy work
+without aborting it. All unconsumed queues return to the source draft before
+replacement. The source text and images remain in memory under its identity;
+resume that source to restore the draft. Neither target receives source draft
+text, attachments or unconsumed queues. Selector cancellation keeps the source
+draft intact. All drafts are process-local.
+
+Each target has a new conversation ID, creation time and file destination.
+`/session` shows its immediate source kind, conversation ID, copied leaf,
+selected user ID for a fork, and source path when one exists. JSONL keeps this
+source metadata across save, export and reopen. The source history and file stay
+intact and can be resumed independently. Fork and clone leave workspace files
+and completed tool effects in place.
+
+By default the target uses the source cwd, saving mode and file directory.
+Model and thinking are inherited from the copied path, so forking before a
+later selection change restores the earlier selection. Tools and provider
+credentials remain current host dependencies; credentials never enter copied
+records. Resources are prepared again for the target environment. Target
+options are explicit and do not change startup defaults:
+
+```text
+/clone --cwd /work/experiment --session-dir /work/derived
+/fork --save-mode memory
+/clone --save-mode auto --session-dir /work/derived
+```
+
+Both commands accept `--cwd`, `--save-mode auto|memory` and `--session-dir`;
+quote paths with spaces. A directory implies auto unless memory is explicitly
+requested, which rejects a directory. Changing a memory source to auto needs a
+session directory. A copied path containing user, assistant or custom activity
+is saved after publication. A fork before the first real user activity remains
+pending until submission or explicit `/save`.
+
+Preparation errors or cancellation keep the source current. After handoff starts,
+the Runtime owns publication; a cancelled waiter or reported close error does
+not imply rollback. A target saving failure can leave the derived target as
+current with complete memory history and the source in retained sessions. The UI
+follows those actual references, keeps fork input available, pauses new work
+while unsaved, and offers the same save/backup/retained recovery below.
 
 ## Repair or back up failed saving
 

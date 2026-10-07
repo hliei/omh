@@ -39,7 +39,7 @@ def test_help_lists_only_runnable_commands() -> None:
     assert "/copy" in text
     for spec in AVAILABLE_COMMANDS:
         assert spec.usage in text
-    for reserved in ("/model", "/login", "/fork"):
+    for reserved in ("/model", "/login"):
         assert reserved not in text
 
 
@@ -47,7 +47,7 @@ def test_command_detail_only_resolves_runnable_commands() -> None:
     detail = command_detail("/help")
     assert detail is not None
     assert "Usage: /help [command]" in detail[1]
-    assert command_detail("fork") is None
+    assert "entry-id" in "\n".join(command_detail("fork"))
     assert command_detail("mystery") is None
 
 

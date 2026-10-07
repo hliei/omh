@@ -10,6 +10,7 @@ second Agent loop, and print execution does not import it.
 from __future__ import annotations
 
 import asyncio
+import base64
 import fcntl
 import os
 import select
@@ -19,11 +20,18 @@ import struct
 import termios
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO, cast
 
-from omh.agent import AgentEvent, AgentHistory, CustomAgentMessage
+from omh.agent import (
+    AgentEvent,
+    AgentHistory,
+    CustomAgentMessage,
+    MessageHistoryEntry,
+    validate_history,
+)
+from omh.agent.conversation.history import history_path
 from omh.agent.execution.events import (
     AgentSettledEvent,
     AgentStartEvent,
@@ -85,6 +93,7 @@ from coding_agent.keys import Key, KeyDecoder
 from coding_agent.pending import (
     CLIPBOARD_ORIGIN,
     FILE_ORIGIN,
+    HISTORY_ORIGIN,
     AttachmentOrigin,
     PendingAttachment,
     PendingAttachments,
@@ -97,10 +106,19 @@ from coding_agent.session_directory import (
     SessionInfo,
     SessionSort,
 )
-from coding_agent.session_manager import ExportFormat
+from coding_agent.session_manager import ExportFormat, SaveMode
 from coding_agent.terminal import EXIT_OK
 from coding_agent.theme import resolve_theme
 from coding_agent.user_shell import UserShell
+
+
+@dataclass(frozen=True, slots=True)
+class _DerivationRequest:
+    entry_id: str | None = None
+    cwd: Path | None = None
+    save_mode: SaveMode | None = None
+    session_dir: str | None = None
+
 
 _EXIT_SIGNALS = {signal.SIGINT: 130, signal.SIGTERM: 143, signal.SIGHUP: 129}
 _UNSAVED_GUIDANCE = (
@@ -227,6 +245,9 @@ class _Session:
         self._queued_images: list[tuple[str, PendingAttachment]] = []
         self._drafts: dict[str, _ConversationDraft] = {}
         self._management_task: asyncio.Task[None] | None = None
+        self._fork_selector: tuple[MessageHistoryEntry, ...] | None = None
+        self._fork_request: _DerivationRequest | None = None
+        self._escape_at = 0.0
         self._selector: tuple[SessionInfo, ...] | None = None
         self._selector_source: Editor | None = None
         self._selector_index = 0
@@ -396,7 +417,9 @@ class _Session:
             thinking=self.args.thinking, tools=tools, cwd=cwd,
         )
 
-    async def _apply_selection(self, selection: SessionSelection) -> None:
+    async def _apply_selection(
+        self, selection: SessionSelection, *, derivation: _DerivationRequest | None = None,
+    ) -> None:
         assert self.host is not None
         diagnostics = await self.host.readiness(selection)
         for diagnostic in diagnostics:
@@ -424,9 +447,11 @@ class _Session:
         self._request_block = credential.message if credential is not None else None
         if credential is not None:
             self._add(f"notice {_NO_REQUEST}")
-        await self._open_runtime(selection)
+        await self._open_runtime(selection, derivation=derivation)
 
-    async def _open_runtime(self, selection: SessionSelection) -> None:
+    async def _open_runtime(
+        self, selection: SessionSelection, *, derivation: _DerivationRequest | None = None,
+    ) -> None:
         assert self.host is not None
         options = self.host.build_options(selection)
         runtime = self.runtime
@@ -437,7 +462,14 @@ class _Session:
         else:
             runtime.options = options
         old = runtime.current_session
-        if selection.session_path is None:
+        if derivation is not None:
+            if derivation.entry_id is None:
+                await runtime.clone_session(cwd=selection.cwd, save_mode=derivation.save_mode,
+                                            session_dir=derivation.session_dir)
+            else:
+                await runtime.fork_session(derivation.entry_id, cwd=selection.cwd, save_mode=derivation.save_mode,
+                                           session_dir=derivation.session_dir)
+        elif selection.session_path is None:
             await runtime.new_session(display_name=self.args.name if old is None else None)
         else:
             await runtime.open_session(selection.session_path)
@@ -549,6 +581,11 @@ class _Session:
         self._redraw()
 
     def _handle_key(self, key: Key) -> None:
+        if key.name != "escape":
+            self._escape_at = 0.0
+        if self._fork_selector is not None:
+            self._fork_selector_key(key)
+            return
         if self._selector is not None:
             self._selector_key(key)
             return
@@ -983,6 +1020,13 @@ class _Session:
             assert self._shell_abort is not None
             self._add("shell cancel requested")
             self._shell_abort.abort()
+        elif not self.editor.text:
+            now = asyncio.get_running_loop().time()
+            if self._escape_at and now - self._escape_at <= 0.5:
+                self._escape_at = 0.0
+                self._derivation_command("fork", "")
+            else:
+                self._escape_at = now
 
     def _unsubmitted_content(self) -> list[str]:
         """Descriptions of unsubmitted content an exit would silently lose."""
@@ -1244,6 +1288,8 @@ class _Session:
             elif self._management_idle():
                 self._busy = True
                 self._management_task = asyncio.create_task(self._replace_current(spec.name, argument))
+        elif spec.name in {"fork", "clone"}:
+            self._derivation_command(spec.name, argument)
         elif spec.name == "name" and not argument:
             session = self._current_session()
             self._add(f"name {session.display_name or '(unnamed)' if session else '(no session)'}")
@@ -1252,6 +1298,78 @@ class _Session:
                 self._add("notice session management is already in progress")
                 return
             self._management_task = asyncio.create_task(self._save_command(spec.name, argument))
+
+    def _derivation_command(self, command: str, argument: str) -> None:
+        if not self._management_idle():
+            return
+        try:
+            tokens = shlex.split(argument)
+            entry_id = None
+            cwd = None
+            mode: SaveMode | None = None
+            directory = None
+            seen: set[str] = set()
+            while tokens:
+                token = tokens.pop(0)
+                if command == "fork" and not token.startswith("--") and entry_id is None:
+                    entry_id = token
+                    continue
+                if token not in {"--cwd", "--save-mode", "--session-dir"} or token in seen or not tokens:
+                    raise ValueError(f"Invalid derivation arguments; see /help {command}")
+                seen.add(token)
+                value = tokens.pop(0)
+                if token == "--cwd":
+                    cwd = (self._cwd() / Path(value).expanduser()).resolve()
+                elif token == "--session-dir":
+                    directory = value
+                elif value in {"auto", "memory"}:
+                    mode = cast(SaveMode, value)
+                else:
+                    raise ValueError("--save-mode needs auto or memory")
+            if mode == "memory" and directory is not None:
+                raise ValueError("Memory mode cannot specify --session-dir")
+            request = _DerivationRequest(entry_id=entry_id, cwd=cwd, save_mode=mode, session_dir=directory)
+            if command == "fork" and entry_id is None:
+                source = self._current_session()
+                if source is None:
+                    raise ValueError("Create or open a source session first")
+                self._fork_selector = tuple(entry for entry in reversed(history_path(source.agent.history))
+                                            if isinstance(entry, MessageHistoryEntry) and entry.message.role == "user")
+                self._fork_request = request
+                self._selector_source = self.editor
+                self.editor = Editor()
+                self._selector_index = 0
+                self._add("Select fork: Up/Down choose a user; Enter copies ancestors and refills input; Escape returns to draft")
+                return
+            self._busy = True
+            self._management_task = asyncio.create_task(self._replace_current(command, "", derivation=request))
+        except ValueError as error:
+            self._add(f"notice {error}; nothing was sent")
+
+    def _fork_selector_key(self, key: Key) -> None:
+        assert self._fork_selector is not None
+        if key.name in {"escape", "ctrl_c", "ctrl_d"}:
+            self._leave_fork_selector()
+            if self._cleared_text is not None:
+                self.editor.set_text(self._cleared_text)
+                self._cleared_text = None
+            self._add("notice fork selector canceled; source draft kept")
+        elif key.name in {"up", "down"}:
+            if self._fork_selector:
+                self._selector_index = (self._selector_index + (1 if key.name == "down" else -1)) % len(self._fork_selector)
+        elif key.name == "enter" and self._fork_selector and self._management_idle():
+            assert self._fork_request is not None
+            request = replace(self._fork_request, entry_id=self._fork_selector[self._selector_index].id)
+            self._leave_fork_selector()
+            self._busy = True
+            self._management_task = asyncio.create_task(self._replace_current("fork", "", derivation=request))
+
+    def _leave_fork_selector(self) -> None:
+        assert self._selector_source is not None
+        self.editor = self._selector_source
+        self._selector_source = None
+        self._fork_selector = None
+        self._fork_request = None
 
     def _resume_command(self, argument: str) -> None:
         try:
@@ -1378,6 +1496,10 @@ class _Session:
             return
         self._print(f"current {session.agent.history.conversation_id} name {session.display_name or '(unnamed)'}")
         self._print(self._status())
+        if session.source is not None:
+            source = session.source
+            self._print(f"source {source.kind} {source.conversation_id} leaf {source.leaf_id or 'root'} "
+                        f"entry {source.entry_id or '(none)'} path {source.path or 'memory'}")
         if session.save_error is not None:
             self._print(f"save error {session.save_error}")
         self._print("usage unknown")
@@ -1444,18 +1566,45 @@ class _Session:
         finally:
             self._redraw()
 
-    async def _replace_current(self, command: str, argument: str) -> None:
+    async def _replace_current(
+        self, command: str, argument: str, *, derivation: _DerivationRequest | None = None,
+    ) -> None:
         old = self._current_session()
         runtime = self.runtime
         previous_options = runtime.options if runtime is not None else None
         previous_block = self._request_block
         source_editor: Editor | None = None
         notices: list[str] = []
+        fork_draft: _ConversationDraft | None = None
         try:
             if self.host is None:
                 raise ValueError("The host is not ready")
             tools = () if self.args.no_tools else self.args.tools
-            if command == "new":
+            if derivation is not None:
+                if old is None or runtime is None:
+                    raise ValueError("Create or open a source session first")
+                history = old.agent.history
+                if derivation.entry_id is not None:
+                    selected = next((entry for entry in history_path(history) if entry.id == derivation.entry_id), None)
+                    if not isinstance(selected, MessageHistoryEntry) or not isinstance(selected.message, UserMessage):
+                        raise ValueError("Fork requires a user entry on the current active path")
+                    history = replace(history, leaf_id=selected.parent_id)
+                    editor = Editor()
+                    editor.set_text(_user_text(selected.message))
+                    images = PendingAttachments()
+                    for number, block in enumerate(_message_images(selected.message), 1):
+                        image = process_image(base64.b64decode(block.data, validate=True), limits=self._image_limits())
+                        images.add(name=f"history-image-{number}", origin=HISTORY_ORIGIN,
+                                   source=f"{history.conversation_id}:{selected.id}", image=image)
+                    fork_draft = _ConversationDraft(editor, images)
+                settings = validate_history(history)
+                selected_model = (f"{settings.provider}/{settings.model_id}" if settings.provider is not None
+                                  else f"{old.agent.state.model.provider}/{old.agent.state.model.id}")
+                selection = self.host.select_new(
+                    cwd=derivation.cwd or old.cwd, model=selected_model,
+                    thinking=settings.thinking_level, tools=runtime.options.tools,
+                )
+            elif command == "new":
                 selection = self.host.select_new(
                     cwd=self._cwd(), provider=self.args.provider, model=self.args.model,
                     thinking=self.args.thinking, tools=tools,
@@ -1481,7 +1630,7 @@ class _Session:
                 )
                 source_editor = self.editor
                 self.editor = Editor()
-            await self._apply_selection(selection)
+            await self._apply_selection(selection, derivation=derivation)
         except asyncio.CancelledError:
             notices.append("notice session switch wait canceled; checking actual current")
             self._add(notices[-1])
@@ -1503,7 +1652,9 @@ class _Session:
                 self._cleared_text = None
             current = self._current_session()
             if current is not old and current is not None:
-                state = self._drafts.get(current.agent.history.conversation_id)
+                state = fork_draft or self._drafts.get(current.agent.history.conversation_id)
+                if state is not None:
+                    self._drafts[current.agent.history.conversation_id] = state
                 self.editor = state.editor if state else Editor()
                 self._draft = state.images if state else PendingAttachments()
                 self._cleared_text = None
@@ -1513,7 +1664,8 @@ class _Session:
                 self._live = self._pending_you = None
                 self._shell = None
                 self._load_history()
-                self._add(f"{'new' if command == 'new' else 'resumed'} current {current.agent.history.conversation_id}")
+                label = {"new": "new", "resume": "resumed", "clone": "cloned", "fork": "forked"}[command]
+                self._add(f"{label} current {current.agent.history.conversation_id}")
                 self._remember_save()
             elif runtime is not None and previous_options is not None:
                 runtime.options = previous_options
@@ -1918,6 +2070,15 @@ class _Session:
         self._paint_fancy(lines, status, candidates, entry, cursor_row, cursor_col, rows, cols)
 
     def _completion_lines(self, cols: int) -> list[str]:
+        if self._fork_selector is not None:
+            start = max(0, self._selector_index - _COMPLETION_VISIBLE // 2)
+            lines = ["Select fork (active user inputs, newest first)"]
+            for number, entry in enumerate(self._fork_selector[start:start + _COMPLETION_VISIBLE], start):
+                text = _user_text(cast(UserMessage, entry.message)).replace("\n", " ")
+                lines.append(_fit(f"{'>' if number == self._selector_index else ' '} {entry.id} {text}", cols))
+            if not self._fork_selector:
+                lines.append("No active user inputs; Escape returns")
+            return lines
         if self._selector is not None:
             index = self._selector_index
             start = max(0, index - _COMPLETION_VISIBLE // 2)

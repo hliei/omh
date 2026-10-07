@@ -73,7 +73,14 @@ reopened as this complete history.
 
 Version 1 starts with a header containing `format="omh-agent-history"`,
 `version=1`, `id`, ISO `timestamp`, `cwd`, `displayName`, `leafId` and
-`entryCount`. Each following valid JSON object is one complete SDK entry.
+`entryCount`. Derived conversations also carry optional `source` metadata:
+`kind` (fork/clone), `conversationId`, `path` (nullable), `leafId` (nullable) and
+`entryId` (the excluded fork user, otherwise null). Older version 1 files without
+this field continue to read with `source=None`. `DecodedHistory.source`,
+`SessionManager.source` and `AgentSession.source` expose the immutable
+`ConversationSource` value. Full save, name changes, JSONL export and reopen
+preserve it; it is application metadata rather than an SDK history record.
+Each following valid JSON object is one complete SDK entry.
 `leafId` identifies the selected leaf of the initial snapshot; `entryCount`
 counts that snapshot's records. Additional appended entries advance the leaf
 to their last ID. This preserves inactive branches and a selected leaf that

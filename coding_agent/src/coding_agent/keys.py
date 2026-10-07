@@ -111,6 +111,8 @@ def _escape_sequence(blob: bytes, index: int) -> tuple[str | None, int] | None:
     if index + 1 >= len(blob):
         return None
     second = blob[index + 1]
+    if second == 0x1B:
+        return ("escape", 1)
     if second != 0x5B:
         # A bare Escape, an unbound modifier sequence, or Alt+Enter as ESC CR
         # or ESC LF; ESC CR is a follow-up, never a plain newline.

@@ -34,7 +34,12 @@ from coding_agent.config import (
     resolve_agent_dir,
     update_settings,
 )
-from coding_agent.history import DecodedHistory, decode_history, encode_history
+from coding_agent.history import (
+    ConversationSource,
+    DecodedHistory,
+    decode_history,
+    encode_history,
+)
 from coding_agent.history_html import encode_history_html
 from coding_agent.host import CodingAgentHost, SessionSelection
 from coding_agent.images import (
@@ -81,7 +86,7 @@ __all__ = [
     "AgentSession", "AgentSessionRuntime", "ApplicationDiagnostic", "ApplicationResources",
     "AttachmentError", "ClipboardBackend", "ClipboardSupport", "ClipboardUnavailable",
     "CodingAgentHost", "CodingAgentOptions", "ConfigDiagnostic", "ConfigError",
-    "DecodedHistory", "ExportFormat", "FileAttachment", "FileCredentialStore", "IMAGE_MAX_BASE64_BYTES",
+    "ConversationSource", "DecodedHistory", "ExportFormat", "FileAttachment", "FileCredentialStore", "IMAGE_MAX_BASE64_BYTES",
     "IMAGE_MAX_DIMENSION", "ImageInputError", "ImageLimits", "ModelDirectory", "ModelListing",
     "PendingAttachment", "PendingAttachments",
     "ProcessedImage", "PrintInputError", "PrintTask", "SaveMode", "SaveState", "SessionDirectory", "SessionInfo", "SessionLookupError", "SessionSort",

@@ -38,10 +38,22 @@ _DATA_TYPES = (*_RECORD_TYPES, ContextEditReplacement, SystemMessage, UserMessag
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationSource:
+    """Immediate source identity and position of an independent conversation."""
+
+    kind: Literal["fork", "clone"]
+    conversation_id: str
+    path: str | None
+    leaf_id: str | None
+    entry_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DecodedHistory:
     history: AgentHistory
     cwd: str
     display_name: str | None
+    source: ConversationSource | None = None
 
 
 def _key(name: str) -> str:
@@ -50,7 +62,7 @@ def _key(name: str) -> str:
 
 
 def _encode(value: object) -> object:
-    if type(value) in _DATA_TYPES:
+    if type(value) in _DATA_TYPES or type(value) is ConversationSource:
         return {
             _key(field.name): getattr(value, field.name) if field.name in _PAYLOAD_FIELDS
             else _encode(getattr(value, field.name))
@@ -95,7 +107,7 @@ def _decode(value: object, annotation: Any, where: str) -> Any:
             return datetime.fromisoformat(value)
         except ValueError as error:
             raise ValueError(f"{where}: invalid ISO timestamp") from error
-    if annotation in _DATA_TYPES:
+    if annotation in _DATA_TYPES or annotation is ConversationSource:
         if not isinstance(value, dict):
             raise ValueError(f"{where}: expected object")
         hints = get_type_hints(annotation)
@@ -131,7 +143,10 @@ def encode_entries(entries: tuple[AgentHistoryEntry, ...]) -> str:
                    for entry in entries)
 
 
-def encode_history(history: AgentHistory, *, cwd: str, display_name: str | None = None) -> str:
+def encode_history(
+    history: AgentHistory, *, cwd: str, display_name: str | None = None,
+    source: ConversationSource | None = None,
+) -> str:
     """Export all records, including inactive branches and the selected leaf."""
     validate_history(history)
     header = {
@@ -142,6 +157,8 @@ def encode_history(history: AgentHistory, *, cwd: str, display_name: str | None 
         # advance it without rewriting the header or losing inactive branches.
         "entryCount": len(history.entries),
     }
+    if source is not None:
+        header["source"] = _encode(source)
     return json.dumps(header, ensure_ascii=False, allow_nan=False) + "\n" + encode_entries(history.entries)
 
 
@@ -189,4 +206,9 @@ def decode_history(text: str | bytes) -> DecodedHistory:
     if len(entries) > count:
         history = replace(history, entries=entries, leaf_id=entries[-1].id)
         validate_history(history)
-    return DecodedHistory(history=history, cwd=cwd, display_name=display_name)
+    source = None
+    if "source" in header:
+        source = cast(ConversationSource, _decode(header["source"], ConversationSource, "header.source"))
+        if not source.conversation_id:
+            raise ValueError("header.source.conversationId: must be non-empty")
+    return DecodedHistory(history=history, cwd=cwd, display_name=display_name, source=source)

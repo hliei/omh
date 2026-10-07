@@ -126,7 +126,7 @@ disposing of the runtime. When creating a new file-backed session, the runtime
 uses `options.session_file` when set, otherwise the `options.session_dir`
 directory, otherwise memory; exclusive first saving still protects existing
 files. There is
-no fork, navigation, queue persistence or process recovery here.
+no same-conversation navigation, queue persistence or process recovery here.
 
 Run the offline [session switching example](../examples/session_switch.py) with
 `python coding_agent/examples/session_switch.py` from the repository root.
@@ -152,3 +152,46 @@ Agent and shell before actual replacement, and synchronizes its display with
 `current_session` after failure or cancellation. Its conversation drafts,
 numbered retained recovery and full-history exit decisions are described in
 [session management and recovery](session-management.md).
+
+## Independent derivation
+
+`await runtime.fork_session(entry_id, ...)` copies the ancestors before an active
+user entry; `await runtime.clone_session(...)` copies the active root-to-leaf
+path. They require an open idle source Agent. Hosts must additionally guard
+host-owned work such as a user shell and recall source queues/drafts before
+replacement. The SDK's public `history_path`, `validate_history` and
+`Agent.from_history` preserve complete records and reconstruct context, including
+compaction and edits; inactive paths are excluded. No historical tools execute.
+
+Both return a new AgentSession with a new conversation ID and UTC creation time.
+The source remains in `retained_sessions` after retirement. `session.source`
+exposes `ConversationSource(kind, conversation_id, path, leaf_id, entry_id)`;
+`entry_id` identifies a fork's excluded user and is `None` for a clone. `leaf_id`
+is the last copied source record, or `None` at the root. Immediate source
+metadata is retained by saving, JSONL export and reopening.
+
+Optional `cwd`, `save_mode="auto"|"memory"` and `session_dir` select the target
+environment/storage. Defaults are source cwd, mode and file directory. A supplied
+directory implies auto unless a mode is explicit; memory plus a directory is
+invalid, and auto needs a source or supplied directory. A directory is resolved
+against target cwd. The startup `session_file` is never reused as a derived
+file: its name comes from the new identity/time.
+
+The copied path chooses the model from current `available_models` (also including
+the source's executable model). A missing copied historical model rejects
+preparation, with no implicit fallback. Thinking is restored from the copied
+records. The current host supplies tools, stream, policies and credentials;
+message seeds, custom conversation identities and request identity overrides
+are excluded. The derived request `session_id` is always its new conversation ID.
+Target resources are loaded again; the SDK announces their system/tool changes
+before the next request. The source snapshot remains intact.
+
+Derivation uses the same cancellable prepare and owned close/publication path as
+new/open. Source busy work or changed history discovered before handoff rejects
+publication. Copied user/assistant/custom activity is automatically saved after
+publication; initialization-only history remains pending. Failure to save leaves
+the published target unsaved, with complete memory history, source metadata and
+normal repair/export methods. Always inspect actual `current_session` and
+`retained_sessions` after failure/cancellation. The interactive host's selected
+user refill and process-local draft handling are described in
+[fork and clone](session-management.md#fork-or-clone-an-independent-conversation).

@@ -87,8 +87,9 @@ line names the detected backend. `/attach remove <n>` removes one entry by its
 screenshot into the same draft. Neither adds a model request, and neither
 auto-submits.
 
-`PendingAttachment` keeps a stable identity, the display name, the `file` or
-`clipboard` origin, the source path (or `clipboard`), the `ProcessedImage` and
+`PendingAttachment` keeps a stable identity, the display name, the `file`,
+`clipboard` or `history` origin, the source path, clipboard marker or source
+conversation/entry, the `ProcessedImage` and
 its processing status (`ready`, plus `converted-from` and `resized-from` when
 they apply). `PendingAttachments` is process-memory draft state: it never enters
 saved history or a session file before the prompt submits it, so removing,
@@ -104,6 +105,11 @@ a follow-up, both through `steer`/`follow_up`. Recalling the queue with Alt+Up o
 Escape returns those images to this draft with their identity intact, so
 screenshot paste, `/attach` management and queued steering share one image
 draft.
+
+Fork refills only the selected user text and images from history, separately
+from the source pending draft. These attachments have `history` origin and do
+not need the original image file. They remain editable draft inputs until the
+new conversation submits them; see [fork and clone](session-management.md#fork-or-clone-an-independent-conversation).
 
 A path typed or pasted as ordinary text stays text; nothing is guessed as an
 attachment. A missing, unsupported, corrupt or over-limit image is explained
