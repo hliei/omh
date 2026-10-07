@@ -141,8 +141,8 @@ def _path_completion(text: str, cursor: int, sources: CompletionSources) -> Comp
     if "\n" in fragment:
         return None
     directory, _, partial = fragment.rpartition("/")
-    if directory:
-        base = Path(directory).expanduser()
+    if directory or fragment.startswith("/"):
+        base = Path(directory or "/").expanduser()
         lookup = base if base.is_absolute() else sources.cwd / base
     else:
         lookup = sources.cwd

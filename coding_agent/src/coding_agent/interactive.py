@@ -797,8 +797,9 @@ class _Session:
             else:
                 message = result.message
         finally:
-            self._apply_raw_mode()
-            self._start_reader()
+            if not self._closing:
+                self._apply_raw_mode()
+                self._start_reader()
             self._external_running = False
         if content_update is not None:
             self.editor.set_text(content_update)

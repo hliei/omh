@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import shlex
+import signal
+import sys
 from pathlib import Path
+
+import pytest
 
 from coding_agent.external_editor import (
     DEFAULT_EDITOR,
@@ -56,3 +63,36 @@ async def test_nonzero_exit_keeps_the_draft() -> None:
     assert result.status == "failed"
     assert "status 3" in result.message
     assert result.content == ""
+
+
+async def test_cancelled_editor_is_stopped_before_returning(tmp_path: Path) -> None:
+    ready = tmp_path / "ready"
+    script = tmp_path / "editor.py"
+    script.write_text(
+        "import os, pathlib, time\n"
+        f"pathlib.Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    task = asyncio.create_task(run_external_editor(command, "draft"))
+    pid: int | None = None
+    try:
+        async with asyncio.timeout(5):
+            while not ready.exists():
+                await asyncio.sleep(0.01)
+        pid = int(ready.read_text())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task

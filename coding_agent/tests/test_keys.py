@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from coding_agent.keys import Key, KeyDecoder
 
 
@@ -67,3 +69,22 @@ def test_bracketed_paste_keeps_newlines_and_never_submits() -> None:
     keys = decoder.feed("中文\nlast\x1b[201~".encode())
     assert keys == [Key(value="first\n中文\nlast")]
     assert all(key.name != "enter" for key in keys)
+
+
+@pytest.mark.parametrize("split", range(1, 6))
+def test_split_paste_end_preserves_text_and_following_keys(split: int) -> None:
+    decoder = KeyDecoder()
+    marker = b"\x1b[201~"
+    assert decoder.feed("\x1b[200~中文\nlast".encode() + marker[:split]) == []
+    assert decoder.feed(marker[split:] + b"\r\x03") == [
+        Key(value="中文\nlast"), Key(name="enter"), Key(name="ctrl_c"),
+    ]
+
+
+def test_paste_end_can_arrive_one_byte_at_a_time() -> None:
+    decoder = KeyDecoder()
+    assert decoder.feed(b"\x1b[200~text\x1b[20") == []
+    assert decoder.feed(b"x") == []
+    for byte in b"\x1b[201":
+        assert decoder.feed(bytes([byte])) == []
+    assert decoder.feed(b"~") == [Key(value="text\x1b[20x")]

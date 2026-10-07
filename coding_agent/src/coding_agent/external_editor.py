@@ -73,7 +73,17 @@ async def run_external_editor(
             return ExternalEditorResult(
                 "failed", message=f"Cannot start external editor {parts[0]!r}: {error}",
             )
-        status = await process.wait()
+        try:
+            status = await process.wait()
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=1)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+            raise
         if status != 0:
             return ExternalEditorResult(
                 "failed",

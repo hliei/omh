@@ -139,6 +139,8 @@ Ctrl+G writes the draft to a temporary Markdown file and runs `$VISUAL`,
 submits. A command that cannot start, a non-zero exit status, or a failed read
 prints a diagnostic and keeps the draft. The terminal is restored before the
 editor starts and re-entered afterwards, so editing and input continue normally.
+Process termination stops and waits for the external editor before returning
+the terminal to the shell.
 
 ## Clipboard
 

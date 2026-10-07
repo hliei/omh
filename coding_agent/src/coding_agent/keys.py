@@ -67,15 +67,15 @@ class KeyDecoder:
         index = 0
         while index < len(blob):
             if self._in_paste:
-                end = blob.find(_PASTE_END, index)
+                self._paste += blob[index:]
+                end = self._paste.find(_PASTE_END)
                 if end == -1:
-                    self._paste += blob[index:]
                     break
-                self._paste += blob[index:end]
-                keys.append(Key(value=normalize_paste(self._paste.decode("utf-8", "replace"))))
+                keys.append(Key(value=normalize_paste(self._paste[:end].decode("utf-8", "replace"))))
+                blob = self._paste[end + len(_PASTE_END):]
                 self._in_paste = False
                 self._paste = b""
-                index = end + len(_PASTE_END)
+                index = 0
                 continue
             byte = blob[index]
             if byte == 0x1B:

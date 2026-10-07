@@ -84,3 +84,13 @@ def test_hidden_entries_need_an_explicit_dot(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text("x")
     assert complete("@.", 2, sources(tmp_path)) is not None
     assert "@.env" in values(complete("@.", 2, sources(tmp_path)))
+
+
+def test_absolute_root_completion_uses_root_instead_of_cwd(tmp_path: Path) -> None:
+    (tmp_path / "only-in-project.txt").write_text("x")
+    root_entry = next(entry for entry in Path("/").iterdir() if not entry.name.startswith("."))
+    text = f"read @/{root_entry.name}"
+    found = values(complete(text, len(text), sources(tmp_path)))
+    assert any(item.rstrip("/") == f"@/{root_entry.name}" for item in found)
+    text = "read @/only-in-project"
+    assert complete(text, len(text), sources(tmp_path)) is None
