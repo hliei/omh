@@ -252,8 +252,13 @@ A leading `/token` is dispatched before any request:
   busy. `/settings` views current choices; `/settings global|project` views
   or explicitly edits defaults. See [scopes, values and effect points](configuration.md#interactive-choices-and-scoped-defaults).
   The busy status shows the captured request separately from the next choice.
-- `/reload` accepts updated resource defaults when model and shell are idle;
-  the next new prompt uses the new sections, while accepted inputs stay intact.
+- `/reload` accepts updated resource defaults and re-prepares AGENTS, system,
+  skills, templates and tool snippets as one batch when the model, user shell and
+  session preparation are idle. A busy reload is refused without canceling the
+  running work. Fatal preparation keeps the old resources; recoverable problems
+  are reported with their source tier. `/session` shows the loaded source tiers
+  plus collision winner/loser. The next new prompt uses the new sections, while
+  accepted inputs, the live model, thinking and cwd stay intact.
 - `/compact [instructions]` summarizes older context when the model and shell are
   idle and the session is saved; see
   [long conversations and usage](#long-conversations-compaction-and-usage).
@@ -263,7 +268,8 @@ A leading `/token` is dispatched before any request:
   [session management and recovery](session-management.md). Actual replacement
   requires an idle model and shell; read-only lists/info remain available.
 - `/skill:<name>` invokes a loaded skill and `/<name>` invokes a prompt template.
-- A reserved command that a later ticket delivers is reported and sent nowhere.
+- A built-in command name always wins; a same-name prompt template is diagnosed
+  and never offered or dispatched in its place.
 - An unknown slash command prints a notice and continues as an ordinary prompt.
 - A built-in command with an invalid argument prints a diagnostic and sends no
   request.

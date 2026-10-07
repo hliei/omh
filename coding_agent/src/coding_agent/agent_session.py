@@ -61,6 +61,13 @@ class UnsupportedImageModelError(RuntimeError):
     """A new image attachment was rejected because the selected model is text-only."""
 
 
+#: Option fields an idle resource reload re-prepares and adopts as one batch.
+RESOURCE_OPTION_FIELDS: tuple[str, ...] = (
+    "skill_sources", "template_sources", "custom_prompt", "append_system_prompt",
+    "resource_tiers", "load_context_files",
+)
+
+
 @dataclass(slots=True)
 class CodingAgentOptions:
     cwd: str | Path | None = None
@@ -284,14 +291,30 @@ class AgentSession:
         await self.agent.set_system_sections(sections)
         self._resource_options.tools = names
 
-    async def reload_resources(self) -> ApplicationResources:
-        """Load current options before publishing next-prompt sections and live tools."""
-        if self._resource_options is None:
+    async def reload_resources(self, options: CodingAgentOptions | None = None) -> ApplicationResources:
+        """Prepare one resource batch before publishing sections, tools and options.
+
+        ``options`` is an already resolved candidate, such as the host's freshly
+        assembled application options. Every resource loads before anything is
+        published, so a fatal preparation failure keeps the previous snapshot,
+        sections and tools. The candidate's resource fields replace the session's
+        live resource options only after a successful load, which shares the new
+        sources with the runtime and later sessions. A recoverable read or parse
+        problem stays in the published diagnostics while usable resources load.
+        Passing no candidate re-prepares the session's current options in place,
+        which is what an embedding that already changed them expects.
+        """
+        target = self._resource_options
+        if target is None:
             raise ValueError("Resource reload requires application options")
-        tools = _create_tools(self._resource_options.tools, self.cwd, image_limits=self._resource_options.image_limits)
-        resources, sections = load_resources(self._resource_options, self.cwd, tools)
+        candidate = options if options is not None else target
+        tools = _create_tools(candidate.tools, self.cwd, image_limits=candidate.image_limits)
+        resources, sections = load_resources(candidate, self.cwd, tools)
         await self.agent.set_system_sections(sections)
         await self.agent.set_tools(tools)
+        if candidate is not target:
+            for name in RESOURCE_OPTION_FIELDS:
+                setattr(target, name, getattr(candidate, name))
         self.resources = resources
         return resources
 

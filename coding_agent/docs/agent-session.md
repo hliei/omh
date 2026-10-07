@@ -171,15 +171,26 @@ options track the new selection for a later resource reload.
 `await session.reload_resources()` (or the runtime wrapper) loads a complete
 batch from the current options before replacing the resource snapshot, expected
 sections and executable tools. It does not run a model or commit history by
-itself. Fatal preparation failure leaves the current configuration usable;
-new/open preparation failures never start the candidate Agent. Current prompt
-sections stay captured through tool turns, queues and retries; `continue_` also
-keeps the committed sections. The next new prompt synchronizes named replacements
-and removals as ordinary SDK system messages. Tool changes follow the live SDK
-boundary: a captured request/batch keeps its tools and later requests use the
-new set. Template bodies and skill catalog metadata refresh only on reload.
-Changing `cwd`, model, credentials or policies is outside this resource reload;
-these retain their existing application or SDK configuration interfaces.
+itself. Passing prepared `CodingAgentOptions` (the installed host builds a
+candidate from current trust, settings, `SYSTEM`/`APPEND_SYSTEM` files, source
+arrays and tool selection) prepares AGENTS, system, skills, templates and tool
+snippets as one batch; the candidate's resource fields replace the live session
+and runtime options only after the whole batch loads. A fatal preparation
+failure therefore keeps the previous resources, sections, tools and options;
+recoverable read/parse problems stay in the published diagnostics while the
+usable set is accepted. `session.resources.diagnostics` retains path, source and
+collision winner/loser, and `describe_diagnostic` renders one line naming the
+source tier and both collision sides. New/open preparation failures never start
+the candidate Agent. Current prompt sections stay captured through tool turns,
+queues and retries; `continue_` also keeps the committed sections. The next new
+prompt synchronizes named replacements and removals as ordinary SDK system
+messages. Tool changes follow the live SDK boundary: a captured request/batch
+keeps its tools and later requests use the new set. Template bodies and skill
+catalog metadata refresh only on reload. New, reopened and derived (fork/clone)
+sessions share the runtime's live resource options, so a later reload reaches
+the actual current session. Changing `cwd`, model, credentials or policies is
+outside this resource reload; these retain their existing application or SDK
+configuration interfaces.
 
 Run the offline [resource flow example](../examples/resource_flow.py) with
 `python coding_agent/examples/resource_flow.py` from the repository root.

@@ -307,7 +307,7 @@ class AgentSessionRuntime:
             path=session_file_path(directory, history.conversation_id, history.created_at)
             if mode == "auto" and directory is not None else None,
         )
-        return AgentSession(agent, session_manager=manager, resources=resources, resource_options=options)
+        return AgentSession(agent, session_manager=manager, resources=resources, resource_options=self.options)
 
     async def open_session(self, path: str | Path) -> AgentSession:
         """Prepare a saved identity before closing and replacing the old Agent."""
@@ -371,8 +371,9 @@ class AgentSessionRuntime:
     def follow_up(self, message: str | AgentMessage, images: list[ImageContent] | None = None) -> None:
         self._current().follow_up(message, images)
 
-    async def reload_resources(self) -> ApplicationResources:
-        return await self._current().reload_resources()
+    async def reload_resources(self, options: CodingAgentOptions | None = None) -> ApplicationResources:
+        """Apply one prepared resource batch to the actual current session."""
+        return await self._current().reload_resources(options)
 
     async def continue_(self) -> None:
         await self._current().continue_()

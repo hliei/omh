@@ -119,7 +119,7 @@ from coding_agent.preferences import (
     parse_tools,
     resolve_model,
 )
-from coding_agent.resources import ApplicationResources
+from coding_agent.resources import ApplicationResources, describe_diagnostic
 from coding_agent.session_directory import (
     SESSION_SORTS,
     SessionDirectory,
@@ -1481,18 +1481,9 @@ class _Session:
                 if not selection.ready:
                     raise ConfigError("; ".join(item.message for item in selection.diagnostics if item.blocking))
                 prepared = self.host.build_options(selection)
-                options = self.runtime.options
-                previous_options = replace(options)
-                for name in ("skill_sources", "template_sources", "custom_prompt", "append_system_prompt", "resource_tiers", "load_context_files"):
-                    setattr(options, name, getattr(prepared, name))
-                try:
-                    resources = await session.reload_resources()
-                except BaseException:
-                    for name in ("skill_sources", "template_sources", "custom_prompt", "append_system_prompt", "resource_tiers", "load_context_files"):
-                        setattr(options, name, getattr(previous_options, name))
-                    raise
+                resources = await session.reload_resources(prepared)
                 for diagnostic in resources.diagnostics:
-                    self._add(f"notice {diagnostic.message}")
+                    self._add(f"notice {describe_diagnostic(diagnostic)}")
                 self._add("resources reloaded; next new prompt; accepted inputs unchanged")
         except Exception as error:
             self._add(f"notice {error}; inspect current selection (/settings current)")
@@ -1934,7 +1925,8 @@ class _Session:
         self._print(cost_label(usage))
         self._print(coverage_label(usage))
         for diagnostic in session.resources.diagnostics:
-            self._print(f"resource {diagnostic}")
+            self._print(f"resource {describe_diagnostic(diagnostic)}")
+        self._print(_resource_summary(session.resources))
         assert self.runtime is not None
         for number, old in enumerate(self.runtime.retained_sessions, 1):
             waiting = old.queued_messages
@@ -2809,6 +2801,20 @@ def _last_assistant_text(runtime: AgentSessionRuntime | None) -> str:
             if text:
                 return text
     return ""
+
+
+def _resource_summary(resources: ApplicationResources) -> str:
+    """Name each loaded resource tier so its composition stays inspectable."""
+    def counts(items: Sequence[object]) -> str:
+        grouped: dict[str, int] = {}
+        for item in items:
+            source = str(getattr(item, "source", "unknown"))
+            grouped[source] = grouped.get(source, 0) + 1
+        return ", ".join(f"{source} {count}" for source, count in sorted(grouped.items())) or "none"
+    return (
+        f"resources context files {counts(resources.context_files)}; "
+        f"skills {counts(resources.skills)}; templates {counts(resources.templates)}"
+    )
 
 
 def _render(
