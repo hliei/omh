@@ -248,7 +248,9 @@ def test_themes_and_plain_fallback(home: Path, tmp_path: Path) -> None:
         dumb.wait_for("theme plain")
         dumb.send("中文".encode())
         dumb.wait_for("中文")
-        dumb.send(b"\x03\x04")
+        # The line cleared by Ctrl+C is protected: Ctrl+D asks, and Enter then
+        # discards it explicitly. (The wrapped notice is unreadable at 12 cols.)
+        dumb.send(b"\x03\x04\r")
         assert dumb.finish() == 0
         assert "中文" in dumb.visible()
         assert _SGR.search(dumb.output.decode()) is None

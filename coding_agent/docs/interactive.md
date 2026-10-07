@@ -112,9 +112,11 @@ started, and neither ends the running turn.
 
 Queued inputs stay visible: each acceptance prints a `queued steering (n
 waiting): <text>` or `queued follow-up (n waiting): <text>` line, and the status
-shows the waiting counts. A queued input that the model consumes is displayed as
-a normal `you <text>` turn. The screen never infers that a queue was consumed
-from the end of a run; only actual consumption or an explicit recall removes it.
+keeps a preview of what is still waiting, for example `steering 1 (look at this
++1 image)`, so the text and the captured image count do not depend on
+scrollback. A queued input that the model consumes is displayed as a normal
+`you <text>` turn. The screen never infers that a queue was consumed from the
+end of a run; only actual consumption or an explicit recall removes it.
 
 Alt+Up recalls every queued input without cancelling anything. All steering comes
 back first, then all follow-ups, joined with blank lines in the editor together
@@ -230,8 +232,8 @@ available, Ctrl+V explains the missing dependency and points at
 `/attach <image-path>`, and the screen keeps working. A real desktop screenshot
 is verified by the manual two-platform acceptance, not by a headless terminal.
 
-Ctrl+D exits only when the editor and the pending list are both empty. With a
-pending image it explains how to remove or submit it instead of discarding it.
+Ctrl+D starts the exit decision described under [Exit](#exit): it does nothing
+while the editor has text, and it asks before discarding a pending image.
 
 ## Missing setup
 
@@ -278,9 +280,13 @@ text line cleared by Ctrl+C is put back. Nothing is dropped without this
 decision, and the discard is an explicit action rather than a side effect of
 cancelling a run.
 
+A line cleared by Ctrl+C stays protected until real editing, submission or the
+exit decision resolves it: pressing Ctrl+D, Escape or another non-editing key
+afterwards still offers to put the line back instead of exiting silently.
+
 | Action | Result |
 | --- | --- |
-| Ctrl+C | Clears the editor. A second Ctrl+C within 500ms starts the exit decision above |
+| Ctrl+C | Clears the editor. A second consecutive Ctrl+C within 500ms starts the exit decision above |
 | Ctrl+D | Starts the exit decision above when the editor is strictly empty |
 | SIGINT, SIGTERM, SIGHUP | Abort a busy Agent through its public cancel and close path, then exit 130, 143 or 129 |
 

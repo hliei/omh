@@ -55,7 +55,7 @@ def test_busy_enter_queues_steering_consumed_after_the_tool_batch(
         session.wait_for("phase tool bash")
         session.send(b"redirect the plan\r")
         session.wait_for("queued steering (1 waiting): redirect the plan")
-        session.wait_for("steering 1")
+        session.wait_for("steering 1 (redirect the plan)")
         session.wait_for("steered:redirect the plan")
         # The started tool batch was not preempted: both tools ran and the
         # steering request followed their results, exactly once.
@@ -80,7 +80,7 @@ def test_busy_alt_enter_queues_a_follow_up_consumed_at_the_stop_boundary(
         session.wait_for("phase tool bash")
         session.send(b"and then check\x1b\r")
         session.wait_for("queued follow-up (1 waiting): and then check")
-        session.wait_for("follow-up 1")
+        session.wait_for("follow-up 1 (and then check)")
         session.wait_for("turn-done")
         session.wait_for("followed:and then check")
         session.wait_for("you and then check")
@@ -148,8 +148,12 @@ def test_alt_up_recalls_both_queues_with_images_and_the_original_draft(
         session.wait_for("attached #1 shot.png")
         session.send(b"look at this\r")
         session.wait_for("queued steering (1 waiting): look at this +1 image")
+        # The waiting text and its image stay visible in the status, not only in
+        # the one-shot acceptance note.
+        session.wait_for("steering 1 (look at this +1 image)")
         session.send(b"and also\x1b\r")
         session.wait_for("queued follow-up (1 waiting): and also")
+        session.wait_for("follow-up 1 (and also)")
         session.send(b"fresh draft")
         session.wait_for("fresh draft")
         session.send(b"\x1b[1;3A")
@@ -192,6 +196,7 @@ def test_escape_recalls_the_queue_cancels_and_keeps_tool_side_effects(
         session.wait_for("partial answer")
         session.send(b"redirect\r")
         session.wait_for("queued steering (1 waiting): redirect")
+        session.wait_for("steering 1 (redirect)")
         session.send(b"\x1b")
         session.wait_for("phase cancel")
         session.wait_for("recalled 1 queued input(s) into the editor")
@@ -249,6 +254,7 @@ def test_double_ctrl_c_discards_a_queued_input_only_explicitly(
         session.wait_for("partial answer")
         session.send(b"redirect\r")
         session.wait_for("queued steering (1 waiting): redirect")
+        session.wait_for("steering 1 (redirect)")
         session.send(b"\x03\x03")
         session.wait_for("unsubmitted content remains")
         session.wait_for("Enter discards it and exits")
@@ -284,6 +290,69 @@ def test_idle_escape_and_alt_up_are_inert_and_ctrl_d_needs_an_empty_editor(
         session.send(b"\x03\x03")
         session.wait_for("unsubmitted content remains")
         session.send(b"\r")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_ctrl_c_then_ctrl_d_still_protects_the_cleared_line(
+    home: Path, tmp_path: Path,
+) -> None:
+    session, _project = start(home, tmp_path, "echo")
+    try:
+        session.wait_for("phase input")
+        session.send(b"unsent draft")
+        session.wait_for("unsent draft")
+        session.send(b"\x03")
+        settle(session)
+        session.send(b"\x04")
+        session.wait_for("unsubmitted content remains")
+        session.wait_for("cleared editor text")
+        session.send(b"x")
+        session.wait_for("exit canceled")
+        session.wait_for("> unsent draft")
+        session.send(b"\x03\x03")
+        session.wait_for("unsubmitted content remains")
+        session.send(b"\r")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_retry_reuses_the_accepted_input(home: Path, tmp_path: Path) -> None:
+    session, _project = start(home, tmp_path, "retry")
+    try:
+        session.wait_for("phase input")
+        session.send(b"go\r")
+        session.wait_for("retried")
+        # The retry reuses the accepted user message instead of expanding or
+        # duplicating the input.
+        assert requests(home) == ["go", "go"]
+        session.send(b"\x04")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_escape_cancels_a_pending_retry_and_keeps_the_session(
+    home: Path, tmp_path: Path,
+) -> None:
+    session, _project = start(home, tmp_path, "retry-cancel")
+    try:
+        session.wait_for("phase input")
+        session.send(b"go\r")
+        session.wait_for("phase retry")
+        session.send(b"\x1b")
+        session.wait_for("phase cancel")
+        session.wait_for("phase input")
+        session.send(b"after\r")
+        session.wait_for("reply:after")
+        # The cancelled retry never reached the provider again.
+        assert requests(home) == ["go", "after"]
+        session.send(b"\x04")
         assert session.finish() == 0
         assert session.restored()
     finally:

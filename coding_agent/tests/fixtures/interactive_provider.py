@@ -242,6 +242,12 @@ def stream_fn(model, context, options):
         else:
             emit_text(stream, output, f"reply:{user}")
         return stream
+    if SCENARIO == "retry-cancel":
+        if CALLS == 1:
+            emit_error(stream, output, "kept visible", "503 service unavailable")
+        else:
+            emit_text(stream, output, f"reply:{user}")
+        return stream
     if SCENARIO == "retry":
         if CALLS == 1:
             emit_error(stream, output, "", "503 service unavailable")
@@ -316,7 +322,11 @@ class ControlledHost(cli.CodingAgentHost):
             selection, session_file=session_file, agent_options=agent_options,
         )
         options.stream_fn = stream_fn
-        options.agent_options.retry = RetryPolicy(base_delay_ms=0)
+        # The retry-cancel scenario holds the retry wait open long enough to
+        # cancel it deliberately; the rest retry without a timer.
+        options.agent_options.retry = RetryPolicy(
+            base_delay_ms=8000 if SCENARIO == "retry-cancel" else 0,
+        )
         if SCENARIO == "compact":
             options.agent_options.compaction = CompactionSettings(
                 reserve_tokens=999_999, keep_recent_tokens=0,

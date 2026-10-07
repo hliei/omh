@@ -202,9 +202,9 @@ class _Session:
         #: While set, Enter discards the remaining unsubmitted content and any
         #: other key returns to editing; editor-key exits ask before discarding.
         self._exit_confirm = False
-        #: Draft attachments captured into queued inputs, keyed by the sent
+        #: Draft attachments captured into queued inputs, paired with the sent
         #: image data so a recall can restore the full original identity.
-        self._queued_images: dict[str, PendingAttachment] = {}
+        self._queued_images: list[tuple[str, PendingAttachment]] = []
         #: Whether the run's first user message event is the prompt the editor
         #: already displayed; queued steering and follow-ups display on arrival.
         self._prompt_first_user = False
@@ -509,11 +509,13 @@ class _Session:
         self._redraw()
 
     def _handle_key(self, key: Key) -> None:
+        if key.name != "ctrl_c":
+            # Only consecutive Ctrl+C presses form the exit double-press; any
+            # other key starts a fresh pair.
+            self._ctrl_c_at = 0.0
         if self._exit_confirm:
             self._answer_exit_confirm(accept=key.name == "enter")
             return
-        if self._cleared_text is not None and key.name != "ctrl_c":
-            self._cleared_text = None
         name = key.name
         if name == "escape":
             if self._completion is not None:
@@ -538,8 +540,8 @@ class _Session:
             return
         if name == "newline":
             self.editor.insert("\n")
+            self._forget_cleared_line()
             self._completion = None
-            self._ctrl_c_at = 0.0
             return
         if name == "up":
             if self._completion is not None:
@@ -563,8 +565,8 @@ class _Session:
             return
         if name == "backspace":
             self.editor.backspace()
+            self._forget_cleared_line()
             self._refresh_completion()
-            self._ctrl_c_at = 0.0
             return
         if name == "ctrl_c":
             self._ctrl_c()
@@ -590,8 +592,8 @@ class _Session:
             return
         if key.value:
             self.editor.insert(key.value)
+            self._forget_cleared_line()
             self._refresh_completion()
-            self._ctrl_c_at = 0.0
 
     def _accept_or_submit(self, *, follow_up: bool = False) -> None:
         completion = self._completion
@@ -605,6 +607,7 @@ class _Session:
         if cursor > 0 and text[cursor - 1] == "\\":
             self.editor.backspace()
             self.editor.insert("\n")
+            self._forget_cleared_line()
             return
         self._submit(follow_up=follow_up)
 
@@ -613,6 +616,7 @@ class _Session:
         if completion is None:
             return
         self.editor.replace_token(completion.start, completion.end, completion.current.value)
+        self._forget_cleared_line()
         self._completion = None
 
     def _arm_escape_timer(self) -> None:
@@ -638,10 +642,17 @@ class _Session:
             self._ctrl_c_at = 0.0
             self._request_exit(EXIT_OK, confirm=True)
             return
-        self._cleared_text = self.editor.text or None
+        if self.editor.text:
+            # Keep the last cleared line available to the exit decision; only a
+            # genuine edit, acceptance or exit resolves it.
+            self._cleared_text = self.editor.text
         self.editor.clear()
         self._completion = None
         self._ctrl_c_at = now
+
+    def _forget_cleared_line(self) -> None:
+        """Resolve the Ctrl+C-cleared line once real editing replaces it."""
+        self._cleared_text = None
 
     # ------------------------------------------------------------------ #
     # Completion
@@ -677,12 +688,12 @@ class _Session:
     def _submit(self, *, follow_up: bool = False) -> None:
         text = self.editor.text
         self._completion = None
-        self._ctrl_c_at = 0.0
         if self._chooser == "cwd":
             stripped = text.strip()
             if not stripped:
                 return
             self.editor.clear()
+            self._forget_cleared_line()
             self._choose_cwd(stripped)
             return
         if text.strip():
@@ -725,6 +736,7 @@ class _Session:
             return
         self.editor.clear()
         self.editor.remember(text)
+        self._forget_cleared_line()
         pending = self._draft.pop_all()
         self._pending_you = _You(text, image_labels=tuple(item.label for item in pending))
         self._items.append(self._pending_you)
@@ -775,29 +787,39 @@ class _Session:
                 self._show_unsaved()
             return
         for attachment in pending:
-            self._queued_images[attachment.image.data] = attachment
+            self._queued_images.append((attachment.image.data, attachment))
         self.editor.clear()
         self.editor.remember(text)
+        self._forget_cleared_line()
         snapshot = session.queued_messages
-        # Keep identities only for images still waiting in a queue, so the map
+        # Keep identities only for images still waiting in a queue, so the list
         # cannot grow past what a recall could actually need.
         in_flight = {
             block.data
             for message in (*snapshot.steering, *snapshot.follow_up)
-            if isinstance(message, UserMessage) and isinstance(message.content, list)
-            for block in message.content
-            if isinstance(block, ImageContent)
+            for block in _message_images(message)
         }
-        self._queued_images = {
-            data: attachment
-            for data, attachment in self._queued_images.items()
+        self._queued_images = [
+            (data, attachment)
+            for data, attachment in self._queued_images
             if data in in_flight
-        }
+        ]
         waiting = len(snapshot.follow_up) if follow_up else len(snapshot.steering)
         images_note = f" +{len(pending)} image" if len(pending) == 1 else (
             f" +{len(pending)} images" if pending else ""
         )
         self._add(f"queued {kind} ({waiting} waiting): {text.strip()}{images_note}")
+
+    def _find_queued_image(self, data: str) -> PendingAttachment | None:
+        """The captured attachment for one sent image, without taking it."""
+        return next((item for key, item in self._queued_images if key == data), None)
+
+    def _take_queued_image(self, data: str) -> PendingAttachment | None:
+        """Take the earliest captured record for one sent image during a recall."""
+        for index, (key, item) in enumerate(self._queued_images):
+            if key == data:
+                return self._queued_images.pop(index)[1]
+        return None
 
     def _recall_queued(self) -> None:
         """Return every queued steering and follow-up to the source editor.
@@ -807,7 +829,7 @@ class _Session:
         preserved. The SDK queue is cleared exactly by this explicit recall.
         """
         session = self._current_session()
-        if session is None or not session.agent.has_queued_messages():
+        if session is None or not self._has_queued_inputs(session):
             self._add("notice no queued inputs to recall")
             return
         snapshot = session.queued_messages
@@ -818,16 +840,9 @@ class _Session:
         for message in (*snapshot.steering, *snapshot.follow_up):
             if not isinstance(message, UserMessage):
                 continue
-            if not isinstance(message.content, list):
-                texts.append(message.content)
-                continue
-            texts.append("".join(
-                block.text for block in message.content if isinstance(block, TextContent)
-            ))
-            for block in message.content:
-                if not isinstance(block, ImageContent):
-                    continue
-                attachment = self._queued_images.get(block.data)
+            texts.append(_user_text(message))
+            for block in _message_images(message):
+                attachment = self._take_queued_image(block.data)
                 if attachment is not None:
                     images.append(attachment)
                 else:
@@ -837,6 +852,7 @@ class _Session:
         if draft.strip():
             parts.append(draft)
         self.editor.set_text("\n\n".join(parts))
+        self._forget_cleared_line()
         self._draft.restore(tuple(images))
         note = f"recalled {len(texts)} queued input(s) into the editor"
         if images:
@@ -850,7 +866,7 @@ class _Session:
     def _escape_action(self) -> None:
         """Escape without an open completion: recall queued inputs, cancel the model."""
         session = self._current_session()
-        if session is not None and session.agent.has_queued_messages():
+        if session is not None and self._has_queued_inputs(session):
             self._recall_queued()
         if session is not None and session.agent.state.is_busy:
             self._phase = "cancel"
@@ -869,12 +885,17 @@ class _Session:
         if len(self._draft):
             parts.append(f"{len(self._draft)} pending image(s)")
         session = self._current_session()
-        if session is not None and session.agent.has_queued_messages():
+        if session is not None:
             snapshot = session.queued_messages
-            parts.append(
-                f"{len(snapshot.steering) + len(snapshot.follow_up)} queued input(s)"
-            )
+            waiting = len(snapshot.steering) + len(snapshot.follow_up)
+            if waiting:
+                parts.append(f"{waiting} queued input(s)")
         return parts
+
+    def _has_queued_inputs(self, session: AgentSession) -> bool:
+        """Whether the product's queue snapshot still holds steering or follow-up."""
+        snapshot = session.queued_messages
+        return bool(snapshot.steering or snapshot.follow_up)
 
     def _begin_exit_confirm(self, parts: Sequence[str]) -> None:
         self._exit_confirm = True
@@ -913,6 +934,7 @@ class _Session:
         if len(self._draft) == 0:
             self.editor.clear()
             self.editor.remember(text)
+            self._forget_cleared_line()
             self._items.append(_You(text))
         if reason is None:
             return
@@ -923,7 +945,6 @@ class _Session:
         """Start reading a clipboard screenshot without submitting anything."""
         if self._attachment_task is not None and not self._attachment_task.done():
             return
-        self._ctrl_c_at = 0.0
         self._attachment_task = asyncio.create_task(self._read_clipboard())
 
     async def _read_clipboard(self) -> None:
@@ -1148,6 +1169,7 @@ class _Session:
             self._items.remove(you)
         self._draft.restore(pending)
         self.editor.set_text(text + self.editor.text)
+        self._forget_cleared_line()
 
     def _show_input_diagnostics(self, before: int) -> None:
         session = self._current_session()
@@ -1204,6 +1226,7 @@ class _Session:
             self._external_running = False
         if content_update is not None:
             self.editor.set_text(content_update)
+            self._forget_cleared_line()
             self._print("External editor returned; the draft was updated and not submitted.")
         elif message is not None:
             self._print(message)
@@ -1501,11 +1524,7 @@ class _Session:
         session = self._current_session()
         if session is None:
             identity = save = mode = model = thinking = cwd = path = "none"
-            steering = follow_up = 0
         else:
-            snapshot = session.queued_messages
-            steering = len(snapshot.steering)
-            follow_up = len(snapshot.follow_up)
             identity = session.agent.history.conversation_id
             mode = session.save_mode
             save = session.save_state
@@ -1514,19 +1533,44 @@ class _Session:
             thinking = session.agent.state.thinking_level
             cwd = str(session.cwd)
             path = str(session.path) if session.path is not None else "memory"
-        # Pending queued inputs stay visible next to the phase; empty queues
-        # add nothing so the status keeps its established shape.
-        queued = ""
-        if steering:
-            queued += f"steering {steering} | "
-        if follow_up:
-            queued += f"follow-up {follow_up} | "
+        # Pending queued inputs stay visible next to the phase, with their text
+        # and image counts; empty queues add nothing so the status keeps its
+        # established shape.
+        queued = self._queued_status(session)
         return (
             f"phase {self._phase} | {queued}"
             f"session {identity} | mode {mode} | save {save} | model {model} | "
             f"thinking {thinking} | theme {self.theme} | "
             f"cwd {cwd} | path {path} | pending {len(self._draft)}"
         )
+
+    def _queued_status(self, session: AgentSession | None) -> str:
+        """Preview waiting steering and follow-up inputs for the status line."""
+        if session is None or not self._has_queued_inputs(session):
+            return ""
+        snapshot = session.queued_messages
+        segments: list[str] = []
+        for label, messages in (("steering", snapshot.steering), ("follow-up", snapshot.follow_up)):
+            if not messages:
+                continue
+            previews: list[str] = []
+            for message in messages:
+                if not isinstance(message, UserMessage):
+                    continue
+                text = _user_text(message).strip().replace("\n", " ")
+                images = len(_message_images(message))
+                if images:
+                    text = f"{text} +{images} image" if text else f"+{images} image"
+                if text:
+                    previews.append(text)
+            detail = "; ".join(previews)
+            if len(detail) > 60:
+                detail = detail[:57] + "..."
+            if detail:
+                segments.append(f"{label} {len(messages)} ({detail})")
+            else:
+                segments.append(f"{label} {len(messages)}")
+        return "".join(f"{segment} | " for segment in segments)
 
     def _write(self, text: str) -> None:
         view = memoryview(text.encode("utf-8"))
@@ -1742,19 +1786,22 @@ def _user_image_labels(message: UserMessage) -> tuple[str, ...]:
     return tuple(block.mime_type for block in message.content if isinstance(block, ImageContent))
 
 
+def _message_images(message: object) -> tuple[ImageContent, ...]:
+    """The image blocks of one queued message, in content order."""
+    if not isinstance(message, UserMessage) or not isinstance(message.content, list):
+        return ()
+    return tuple(block for block in message.content if isinstance(block, ImageContent))
+
+
 def _queued_image_labels(
-    message: UserMessage, queued_images: dict[str, PendingAttachment],
+    message: UserMessage, queued_images: list[tuple[str, PendingAttachment]],
 ) -> tuple[str, ...]:
     """Live labels for images a queued input carries, with the MIME fallback."""
-    if not isinstance(message.content, list):
-        return ()
-    labels: list[str] = []
-    for block in message.content:
-        if not isinstance(block, ImageContent):
-            continue
-        attachment = queued_images.get(block.data)
-        labels.append(attachment.label if attachment is not None else block.mime_type)
-    return tuple(labels)
+    by_data = {data: attachment for data, attachment in queued_images}
+    return tuple(
+        by_data[block.data].label if block.data in by_data else block.mime_type
+        for block in _message_images(message)
+    )
 
 
 def _strip_quotes(text: str) -> str:
