@@ -2,7 +2,7 @@
 
 [Application overview](../README.md) · [Command line](cli.md) · [SessionManager](session-manager.md)
 
-`SessionDirectory(root)` is the shared, read-only directory for print and future
+`SessionDirectory(root)` is the shared, read-only directory for print and
 interactive selectors. It scans `.jsonl` files recursively below the selected
 root, validates the current `omh-agent-history` version 1 codec, and reports
 unreadable or invalid files in `diagnostics`. It creates no directories, acquires
@@ -73,10 +73,11 @@ The installed `--list-sessions [search]` lists the current effective project;
 `--all-projects` includes all projects, `--sort` selects a field and `--reverse`
 inverts its default order. `--session-dir` replaces the discovery root just as
 it replaces the save root. Print `-r` produces this read-only list and exits
-successfully without a selector. Interactive selection belongs to the later UI
-delivery. `-c` and `--session` already resolve and diagnose a selection; until
-print/interactive task execution ships, execution still reports unavailable
-without opening a writer or creating a conversation file.
+successfully without a selector. Interactive `-r` and `/resume` open the
+[session selector](session-management.md#find-a-conversation), with current/all
+projects, search and ordering. `-c` selects the current cwd's newest saved
+conversation or starts a diagnosed new one; `--session` directly reopens a
+resolved path or unique ID.
 
 Only omh JSONL is supported. There is no importer, cross-file merge or
 other-product JSONL/HTML compatibility.

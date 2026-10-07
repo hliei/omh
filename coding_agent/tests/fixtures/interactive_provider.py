@@ -220,7 +220,7 @@ def stream_fn(model, context, options):
         else:
             emit_text(stream, output, "parallel done")
         return stream
-    if SCENARIO == "steer":
+    if SCENARIO in {"steer", "queued-end"}:
         if tool is None and CALLS == 1:
             emit_tools(stream, output, [
                 ToolCall(id="call-a", name="bash",
@@ -340,6 +340,11 @@ def stream_fn(model, context, options):
 
 class ControlledHost(cli.CodingAgentHost):
     async def readiness(self, selection):
+        self.readiness_calls = getattr(self, "readiness_calls", 0) + 1
+        if SCENARIO == "switch-prepare" and self.readiness_calls == 2:
+            import asyncio
+            print("selection preparation", flush=True)
+            await asyncio.Event().wait()
         if SCENARIO == "startup":
             import asyncio
             from pathlib import Path
@@ -352,6 +357,8 @@ class ControlledHost(cli.CodingAgentHost):
             selection, session_file=session_file, agent_options=agent_options,
         )
         options.stream_fn = stream_fn
+        if SCENARIO == "queued-end":
+            options.agent_options.finish_turn = lambda context, signal: "end"
         # The retry-cancel scenario holds the retry wait open long enough to
         # cancel it deliberately; the rest retry without a timer.
         options.agent_options.retry = RetryPolicy(
@@ -371,3 +378,47 @@ if SCENARIO == "rename-failure":
         raise OSError("controlled rename failure")
 
     os.replace = fail_replace
+
+
+if SCENARIO in {"handoff", "handoff-error"}:
+    import asyncio
+    from pathlib import Path
+
+    from omh.agent import AgentSettledEvent
+
+    import coding_agent.interactive as interactive
+
+    class ControlledRuntime(interactive.AgentSessionRuntime):
+        """An external host activity races an idle UI's handoff, at public APIs.
+
+        The old terminal notification is held until the PTY driver releases it;
+        cancellation can therefore be observed without guessing scheduler time.
+        """
+
+        async def new_session(self, *, display_name=None):
+            old = self.current_session
+            if old is None:
+                return await super().new_session(display_name=display_name)
+            settled = asyncio.Event()
+
+            async def hold(event, signal):
+                if isinstance(event, AgentSettledEvent):
+                    settled.set()
+                    signal.add_callback(lambda: print("handoff closing", flush=True))
+                    release = Path(os.environ["HOME"]) / "release-handoff"
+                    while not release.exists():
+                        await asyncio.sleep(0.01)
+                    if SCENARIO == "handoff-error":
+                        raise LookupError("terminal notification failed")
+
+            old.agent.subscribe(hold)
+            prompt = asyncio.create_task(old.prompt("external host activity"))
+            await settled.wait()
+            try:
+                return await super().new_session(display_name=display_name)
+            finally:
+                # Cancelling the waiter must leave Runtime's owned handoff
+                # untouched. Retrieve the independently owned activity error.
+                prompt.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+
+    interactive.AgentSessionRuntime = ControlledRuntime

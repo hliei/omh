@@ -146,3 +146,9 @@ has the same `set_name` and `export` APIs, with temporary writer acquisition
 after close. Independent export preserves its save error and binding; a bound
 destination always performs complete JSONL save. See
 [persistent names and offline export](session-manager.md#persistent-names-and-offline-export).
+
+The interactive host uses one Runtime across `/new` and `/resume`, requires idle
+Agent and shell before actual replacement, and synchronizes its display with
+`current_session` after failure or cancellation. Its conversation drafts,
+numbered retained recovery and full-history exit decisions are described in
+[session management and recovery](session-management.md).

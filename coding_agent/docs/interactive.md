@@ -9,7 +9,9 @@ a second Agent loop.
 
 A new session saves under the normal session root. `--session`, `-c` and
 `--no-session` select the same way they do for print. Reopening shows the saved
-conversation and continues that history.
+conversation and continues that history. `-r` opens the current/all-project
+selector. See [session management and recovery](session-management.md) for
+commands, conversation drafts and retained recovery.
 
 ## Start
 
@@ -177,8 +179,10 @@ session, that conversation's user texts. Entries keep at most the 100 most
 recent prompts, newest first, without consecutive duplicates. Browsing from an
 empty editor moves through them; while a draft is in progress, the first Up
 moves to the start of the line, the next browses history, and Down returns the
-unsubmitted draft. The draft lives only in the editor: it is never written to
-the conversation history, and there is no cross-session input file.
+unsubmitted draft. Draft text and images stay associated with the conversation
+in process memory across `/new` and `/resume`; reopening a known conversation
+restores that draft and editor history. They never enter saved history or a
+cross-session input file. See [draft protection](session-management.md#keep-a-draft-while-switching).
 
 ## Completion
 
@@ -205,6 +209,9 @@ A leading `/token` is dispatched before any request:
   answer, like Ctrl+X.
 - `/attach [image-path | remove <n> | clear]` manages the pending image draft.
   Tab discovers paths and the available removal numbers.
+- `/new`, `/resume`, `/name`, `/session`, `/save`, `/export` and `/quit` provide
+  [session management and recovery](session-management.md). Actual replacement
+  requires an idle model and shell; read-only lists/info remain available.
 - `/skill:<name>` invokes a loaded skill and `/<name>` invokes a prompt template.
 - A reserved command that a later ticket delivers is reported and sent nowhere.
 - An unknown slash command prints a notice and continues as an ordinary prompt.
@@ -290,11 +297,14 @@ notice is:
 In-memory history is retained. New work is paused until the session can be saved.
 ```
 
-Interactive `/save`, `/export` and protection for exiting with unsaved history
-belong to the session-management delivery. Until those controls are available,
-the screen's current exit path can discard unsaved in-memory history. The
-embedded [session save/export APIs](agent-session.md#save-failure-admission)
-already retain final shell records for repair and backup.
+Use `/save` to repair the original target, or `/save <path>` to save complete
+history and bind a new destination. `/export [jsonl | html] <path>` makes an
+independent backup without repairing the original error. `/session` lists
+retained recovery numbers; `/save --retained <n> [path]` and
+`/export --retained <n> jsonl <path>` operate on old histories after switching.
+Exit checks current and every retained unsaved history and keeps the screen open
+when unbacked saving still fails. See the
+[full repair and exit guide](session-management.md#repair-or-back-up-failed-saving).
 
 ## Theme
 
@@ -318,7 +328,7 @@ notice unsubmitted content remains: 1 pending image(s); it is not saved to disk
 notice Enter discards it and exits; any other key returns to editing
 ```
 
-Enter discards that content and exits 0; any other key returns to editing, and a
+Enter discards that content and continues exit processing; any other key returns to editing, and a
 text line cleared by Ctrl+C is put back. Nothing is dropped without this
 decision, and the discard is an explicit action rather than a side effect of
 cancelling a run.
@@ -335,7 +345,11 @@ afterwards still offers to put the line back instead of exiting silently.
 
 Ctrl+C is a keyboard byte, not the operating-system signal, and the two never
 share a path: process signals cooperatively abort the Agent and user shell, complete saving and
-join the session without asking, while editor keys ask. Exit restores the
+join both activities without asking about drafts, while editor keys ask.
+Current and all retained saving errors still require repair, full JSONL backup
+or explicit `/quit --discard-unsaved`; failures keep the screen available.
+Completed exit retains the original signal code. See
+[history exit protection](session-management.md#exit-without-hiding-old-errors). Exit restores the
 terminal mode captured at start, including echo and line discipline, and
 disables bracketed paste. Process signals are handled during startup as well as
 during turns. A second process signal can leave the save incomplete and exits

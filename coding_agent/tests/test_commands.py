@@ -19,7 +19,7 @@ from coding_agent.completion import CompletionSources
 def test_classify_distinguishes_every_dispatch_kind() -> None:
     assert classify("/help").kind == "builtin"
     assert classify("/help extra words").argument == "extra words"
-    assert classify("/new").kind == "reserved"
+    assert classify("/new").kind == "builtin"
     assert classify("/skill:tdd do it").kind == "resource"
     assert classify("/notes topic", templates=["notes"]).kind == "resource"
     assert classify("/mystery").kind == "unknown"
@@ -29,7 +29,7 @@ def test_classify_distinguishes_every_dispatch_kind() -> None:
 
 def test_reserved_names_win_over_same_name_templates() -> None:
     intent = classify("/new hello", templates=["new"])
-    assert intent.kind == "reserved"
+    assert intent.kind == "builtin"
 
 
 def test_help_lists_only_runnable_commands() -> None:
@@ -39,7 +39,7 @@ def test_help_lists_only_runnable_commands() -> None:
     assert "/copy" in text
     for spec in AVAILABLE_COMMANDS:
         assert spec.usage in text
-    for reserved in ("/new", "/model", "/login", "/quit", "/resume"):
+    for reserved in ("/model", "/login", "/fork"):
         assert reserved not in text
 
 
@@ -47,7 +47,7 @@ def test_command_detail_only_resolves_runnable_commands() -> None:
     detail = command_detail("/help")
     assert detail is not None
     assert "Usage: /help [command]" in detail[1]
-    assert command_detail("new") is None
+    assert command_detail("fork") is None
     assert command_detail("mystery") is None
 
 

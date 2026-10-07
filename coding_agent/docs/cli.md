@@ -37,6 +37,9 @@ model directory or change configuration. The global agent directory is
 selector. Empty lists print nothing. Invalid history files are diagnosed and
 skipped. See [Session discovery](session-discovery.md) for shared host APIs and
 path/ID ambiguity, recent selection and cross-project cwd rules.
+Interactive `-r` opens the current/all-project selector; `/resume` supplies the
+same search, sort and explicit path/ID choices during a session. See
+[interactive session management](session-management.md).
 
 `--list-models` takes an optional search that matches provider, model ID,
 display name or `provider/model`, case-insensitively, including a fuzzy
