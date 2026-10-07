@@ -9,6 +9,7 @@ import select
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import time
 from pathlib import Path
@@ -1015,9 +1016,12 @@ def test_copy_and_slash_copy_use_an_available_backend(home: Path, tmp_path: Path
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     captured = tmp_path / "clipboard.txt"
-    write_script(bin_dir / "pbcopy", f"/bin/cat >> {captured}")
+    backend = "pbcopy" if sys.platform == "darwin" else "wl-copy"
+    write_script(bin_dir / backend, f"/bin/cat >> {captured}")
     env = provider_env(home, "echo")
     env["PATH"] = str(bin_dir)
+    if sys.platform.startswith("linux"):
+        env["WAYLAND_DISPLAY"] = "controlled-display"
     session = InteractiveSession(
         "--no-approve", "--no-context-files", "--api-key", "offline",
         "--session-dir", str(home / "sessions"), "--cwd", str(project),
