@@ -27,7 +27,7 @@ from omh.agent import (
     load_skills,
 )
 
-from coding_agent.commands import BUILTIN_COMMANDS
+from coding_agent.commands import RESERVED_COMMANDS
 from coding_agent.config import (
     AGENTS_RESOURCES_DIR,
     CONFIG_DIR_NAME,
@@ -155,7 +155,7 @@ def _builtin_conflicts(templates: Sequence[PromptTemplate]) -> list[PromptTempla
             "the built-in command wins",
         )
         for template in templates
-        if template.name in BUILTIN_COMMANDS
+        if template.name in RESERVED_COMMANDS
     ]
 
 

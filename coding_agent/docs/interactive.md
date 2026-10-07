@@ -65,6 +65,91 @@ and closed with `code end`.
 are separate labels. After a model or tool error, the text already on screen
 stays, the status returns to `phase input`, and Enter can submit another prompt.
 
+## Editing and keys
+
+The editor holds one multiline draft. The lines scroll with the conversation and
+the cursor stays in the editor area; wide characters such as Chinese count as
+two columns. A terminal paste that supports bracketed paste keeps its newlines
+and never submits the draft by itself.
+
+| Key | Default behaviour |
+| --- | --- |
+| Enter | Submit the editor when the session can accept work |
+| Shift+Enter, Ctrl+J | Insert a newline |
+| `\` then Enter | Insert a newline for terminals without Shift+Enter |
+| Up / Down | Browse this session's editor history and restore the unsubmitted draft |
+| Tab | Open completion, then accept the selected candidate |
+| Escape | Close completion and keep the edited text |
+| Left / Right | Move the cursor |
+| Backspace | Delete the character before the cursor |
+| Ctrl+G | Edit the current draft in an external editor |
+| Ctrl+X, `/copy` | Copy the last assistant answer |
+| Ctrl+T | Show or hide recorded thinking |
+| Ctrl+O | Expand or collapse recorded tool output |
+
+Ctrl+C, Ctrl+D and the process signals are listed under [Exit](#exit). Keys that
+a later delivery owns are not bound here, and the product does not read a custom
+keymap file.
+
+## Editor history and drafts
+
+Up and Down use entries submitted during this run and, after reopening a saved
+session, that conversation's user texts. Entries keep at most the 100 most
+recent prompts, newest first, without consecutive duplicates. Browsing from an
+empty editor moves through them; while a draft is in progress, the first Up
+moves to the start of the line, the next browses history, and Down returns the
+unsubmitted draft. The draft lives only in the editor: it is never written to
+the conversation history, and there is no cross-session input file.
+
+## Completion
+
+Tab discovers what the running session can actually invoke:
+
+- reserved built-in commands that this delivery implements, for example `/help`;
+- skills as `/skill:<name>`, read from the loaded skill sources;
+- prompt templates as `/<name>`, read from the loaded template sources;
+- valid arguments for a command, for example `/help <command>`;
+- local paths after `@` or inside a path-looking token, relative to the session
+  working directory.
+
+A prompt template that shares a reserved built-in name is never offered because
+the built-in command wins. Up and Down move the selection while the list is
+open, Tab accepts the selection, and Escape closes the list without changing the
+text.
+
+## The slash command surface
+
+A leading `/token` is dispatched before any request:
+
+- `/help [command]` lists the commands that this delivery runs, or one command's
+  usage. `/hotkeys` lists the default keys. `/copy` copies the last assistant
+  answer, like Ctrl+X.
+- `/skill:<name>` invokes a loaded skill and `/<name>` invokes a prompt template.
+- A reserved command that a later ticket delivers is reported and sent nowhere.
+- An unknown slash command prints a notice and continues as an ordinary prompt.
+- A built-in command with an invalid argument prints a diagnostic and sends no
+  request.
+
+Print mode has its own control syntax; it never runs these interactive commands.
+
+## External editor
+
+Ctrl+G writes the draft to a temporary Markdown file and runs `$VISUAL`,
+`$EDITOR` or `nano`. A successful exit only refills the editor and never
+submits. A command that cannot start, a non-zero exit status, or a failed read
+prints a diagnostic and keeps the draft. The terminal is restored before the
+editor starts and re-entered afterwards, so editing and input continue normally.
+Process termination stops and waits for the external editor before returning
+the terminal to the shell.
+
+## Clipboard
+
+Ctrl+X and `/copy` copy the last assistant answer through an existing desktop
+clipboard command (`pbcopy`, `wl-copy`, `xclip`, `xsel` or
+`termux-clipboard-set`, chosen from the platform's display environment). When no
+backend exists, the screen explains that `/copy` needs one and that omh does not
+install it; the UI stays usable.
+
 ## Missing setup
 
 A missing API key, invalid configuration, or a saved working directory that no
@@ -100,6 +185,7 @@ theme falls back to dark and says so.
 | SIGINT, SIGTERM, SIGHUP | Abort a busy Agent through its public cancel and close path, then exit 130, 143 or 129 |
 
 Keyboard Ctrl+C is not the operating-system signal. Exit restores the terminal
-mode captured at start, including echo and line discipline. Process signals
-are handled during startup as well as during turns. A second process
-signal can leave the save incomplete and exits with the same signal code.
+mode captured at start, including echo and line discipline, and disables
+bracketed paste. Process signals are handled during startup as well as during
+turns. A second process signal can leave the save incomplete and exits with the
+same signal code.
