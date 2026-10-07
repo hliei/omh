@@ -53,13 +53,14 @@ class InteractiveSession:
         assert self.process.pid is not None
         os.kill(self.process.pid, signal.SIGWINCH)
 
-    def wait_for(self, text: str, timeout: float = 8) -> None:
+    def wait_for(self, text: str, timeout: float = 8, *, after: int = 0) -> None:
+        """Wait for visible text after an optional captured output position."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if text in self.visible():
+            if text in self.visible()[after:]:
                 return
             self._pump(0.1)
-            if self.process.poll() is not None and text not in self.visible():
+            if self.process.poll() is not None and text not in self.visible()[after:]:
                 break
         raise AssertionError(f"missing {text!r} in {self.visible()!r}")
 
@@ -248,7 +249,9 @@ def test_themes_and_plain_fallback(home: Path, tmp_path: Path) -> None:
         dumb.wait_for("theme plain")
         dumb.send("中文".encode())
         dumb.wait_for("中文")
-        dumb.send(b"\x03\x04")
+        # The line cleared by Ctrl+C is protected: Ctrl+D asks, and Enter then
+        # discards it explicitly. (The wrapped notice is unreadable at 12 cols.)
+        dumb.send(b"\x03\x04\r")
         assert dumb.finish() == 0
         assert "中文" in dumb.visible()
         assert _SGR.search(dumb.output.decode()) is None

@@ -27,6 +27,7 @@ import coding_agent.cli as cli
 
 SCENARIO = os.environ.get("INTERACTIVE_SCENARIO", "echo")
 CALLS = 0
+SUMMARY_CALLS = 0
 FINAL = "# Fixed the value\n\n```python\nvalue = 2\n```\n"
 THINKING = "checked the assertion"
 
@@ -72,6 +73,15 @@ def last_user_images(context) -> list:
                 if isinstance(content, list) else []
             )
     return found
+
+
+def record_request(user: str) -> None:
+    """Record the model request's last user text for boundary assertions."""
+    path = os.environ.get("INTERACTIVE_REQUESTS")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(user.replace("\n", "\\n") + "\n")
 
 
 def record_images(images) -> None:
@@ -138,14 +148,39 @@ def emit_tool(stream, output, name: str, arguments: dict, tool_id: str) -> None:
     stream.push(DoneEvent(reason="toolUse", message=output))
 
 
+def emit_tools(stream, output, calls) -> None:
+    """One assistant message that requests several tool calls in one batch."""
+    output.content.extend(calls)
+    stream.push(StartEvent(partial=output))
+    for index, call in enumerate(calls):
+        stream.push(ToolCallStartEvent(content_index=index, partial=output))
+        stream.push(ToolCallEndEvent(content_index=index, tool_call=call, partial=output))
+    output.stop_reason = "toolUse"
+    stream.push(DoneEvent(reason="toolUse", message=output))
+
+
 def stream_fn(model, context, options):
-    global CALLS
+    global CALLS, SUMMARY_CALLS
     CALLS += 1
     summary = is_summary(context)
     counted("summary" if summary else "dialogue")
     stream = create_assistant_message_event_stream()
     output = message(model)
     if summary:
+        SUMMARY_CALLS += 1
+        if SCENARIO == "compact-cancel" and SUMMARY_CALLS == 1:
+            stream.push(StartEvent(partial=output))
+
+            def finish_summary() -> None:
+                counted("summary-aborted")
+                output.stop_reason = "aborted"
+                output.error_message = "summary aborted by caller"
+                stream.push(ErrorEvent(reason="aborted", error=output))
+
+            signal = None if options is None else getattr(options, "signal", None)
+            if signal is not None:
+                signal.add_callback(finish_summary)
+            return stream
         emit_text(stream, output, "summary of the conversation")
         return stream
     if SCENARIO == "controls":
@@ -169,9 +204,62 @@ def stream_fn(model, context, options):
         return stream
     user = last_user(context).strip()
     tool = latest_tool(context)
+    record_request(user)
+    if SCENARIO == "steer":
+        if tool is None and CALLS == 1:
+            emit_tools(stream, output, [
+                ToolCall(id="call-a", name="bash",
+                         arguments={"command": "sleep 2; printf a > first.txt"}),
+                ToolCall(id="call-b", name="bash",
+                         arguments={"command": "sleep 2; printf b > second.txt"}),
+            ])
+            return stream
+        if user != "go":
+            emit_text(stream, output, f"steered:{user}")
+        else:
+            emit_text(stream, output, "batch-done")
+        return stream
+    if SCENARIO == "follow":
+        if tool is None and CALLS == 1:
+            emit_tool(stream, output, "bash",
+                      {"command": "sleep 2; printf mark > marker.txt"}, "call-mark")
+            return stream
+        if user != "go":
+            emit_text(stream, output, f"followed:{user}")
+        else:
+            emit_text(stream, output, "turn-done")
+        return stream
+    if SCENARIO == "cancel-side":
+        if tool is None and CALLS == 1:
+            emit_tool(stream, output, "bash", {"command": "printf kept > kept.txt"}, "call-kept")
+            return stream
+        if CALLS == 2:
+            block = TextContent(text="")
+            output.content.append(block)
+            stream.push(StartEvent(partial=output))
+            block.text = "partial answer"
+            stream.push(TextDeltaEvent(content_index=0, delta="partial answer", partial=output))
+
+            def finish() -> None:
+                output.stop_reason = "aborted"
+                output.error_message = "aborted by caller"
+                stream.push(ErrorEvent(reason="aborted", error=output))
+
+            gate = None if options is None else getattr(options, "signal", None)
+            if gate is not None:
+                gate.add_callback(finish)
+            return stream
+        emit_text(stream, output, f"reply:{user}")
+        return stream
     if SCENARIO == "error":
         if CALLS == 1:
             emit_error(stream, output, "kept visible", "provider rejected the turn")
+        else:
+            emit_text(stream, output, f"reply:{user}")
+        return stream
+    if SCENARIO == "retry-cancel":
+        if CALLS == 1:
+            emit_error(stream, output, "kept visible", "503 service unavailable")
         else:
             emit_text(stream, output, f"reply:{user}")
         return stream
@@ -249,8 +337,12 @@ class ControlledHost(cli.CodingAgentHost):
             selection, session_file=session_file, agent_options=agent_options,
         )
         options.stream_fn = stream_fn
-        options.agent_options.retry = RetryPolicy(base_delay_ms=0)
-        if SCENARIO == "compact":
+        # The retry-cancel scenario holds the retry wait open long enough to
+        # cancel it deliberately; the rest retry without a timer.
+        options.agent_options.retry = RetryPolicy(
+            base_delay_ms=8000 if SCENARIO == "retry-cancel" else 0,
+        )
+        if SCENARIO in {"compact", "compact-cancel"}:
             options.agent_options.compaction = CompactionSettings(
                 reserve_tokens=999_999, keep_recent_tokens=0,
             )
