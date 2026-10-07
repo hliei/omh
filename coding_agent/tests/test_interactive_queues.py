@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 from support import png_bytes
-from test_interactive import InteractiveSession, provider_env, settle
+from test_interactive import InteractiveSession, provider_env, sends, settle, wait_sends
 
 
 @pytest.fixture
@@ -374,6 +374,38 @@ def test_double_ctrl_c_offers_the_cleared_text_back(home: Path, tmp_path: Path) 
         session.send(b"\x03\x03")
         session.wait_for("unsubmitted content remains")
         session.send(b"\r")
+        assert session.finish() == 0
+        assert session.restored()
+    finally:
+        session.close()
+
+
+def test_escape_cancels_automatic_compaction_recalls_and_keeps_the_session(
+    home: Path, tmp_path: Path,
+) -> None:
+    session, _project = start(home, tmp_path, "compact-cancel")
+    try:
+        session.wait_for("phase input")
+        session.send(b"go\r")
+        session.wait_for("phase compact threshold")
+        session.send(b"redirect\r")
+        session.wait_for("queued steering (1 waiting): redirect")
+        session.send(b"\x1b")
+        session.wait_for("recalled 1 queued input(s) into the editor")
+        session.wait_for("phase cancel")
+        session.wait_for("> redirect")
+        # The summary provider saw cooperative cancellation, and the recalled
+        # input never became a request or a committed compaction record.
+        wait_sends(home, 3, session)
+        assert sends(home) == ["dialogue", "summary", "summary-aborted"]
+        assert requests(home) == ["go"]
+        saved = next((home / "sessions").glob("*.jsonl"))
+        assert '"type":"compaction"' not in saved.read_text().replace(" ", "")
+        session.send(b"\x03")
+        session.send(b"after\r")
+        session.wait_for("reply:after")
+        assert requests(home) == ["go", "after"]
+        session.send(b"\x04")
         assert session.finish() == 0
         assert session.restored()
     finally:

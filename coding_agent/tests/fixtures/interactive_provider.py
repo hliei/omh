@@ -27,6 +27,7 @@ import coding_agent.cli as cli
 
 SCENARIO = os.environ.get("INTERACTIVE_SCENARIO", "echo")
 CALLS = 0
+SUMMARY_CALLS = 0
 FINAL = "# Fixed the value\n\n```python\nvalue = 2\n```\n"
 THINKING = "checked the assertion"
 
@@ -159,13 +160,27 @@ def emit_tools(stream, output, calls) -> None:
 
 
 def stream_fn(model, context, options):
-    global CALLS
+    global CALLS, SUMMARY_CALLS
     CALLS += 1
     summary = is_summary(context)
     counted("summary" if summary else "dialogue")
     stream = create_assistant_message_event_stream()
     output = message(model)
     if summary:
+        SUMMARY_CALLS += 1
+        if SCENARIO == "compact-cancel" and SUMMARY_CALLS == 1:
+            stream.push(StartEvent(partial=output))
+
+            def finish_summary() -> None:
+                counted("summary-aborted")
+                output.stop_reason = "aborted"
+                output.error_message = "summary aborted by caller"
+                stream.push(ErrorEvent(reason="aborted", error=output))
+
+            signal = None if options is None else getattr(options, "signal", None)
+            if signal is not None:
+                signal.add_callback(finish_summary)
+            return stream
         emit_text(stream, output, "summary of the conversation")
         return stream
     if SCENARIO == "controls":
@@ -327,7 +342,7 @@ class ControlledHost(cli.CodingAgentHost):
         options.agent_options.retry = RetryPolicy(
             base_delay_ms=8000 if SCENARIO == "retry-cancel" else 0,
         )
-        if SCENARIO == "compact":
+        if SCENARIO in {"compact", "compact-cancel"}:
             options.agent_options.compaction = CompactionSettings(
                 reserve_tokens=999_999, keep_recent_tokens=0,
             )

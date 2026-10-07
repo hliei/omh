@@ -810,10 +810,6 @@ class _Session:
         )
         self._add(f"queued {kind} ({waiting} waiting): {text.strip()}{images_note}")
 
-    def _find_queued_image(self, data: str) -> PendingAttachment | None:
-        """The captured attachment for one sent image, without taking it."""
-        return next((item for key, item in self._queued_images if key == data), None)
-
     def _take_queued_image(self, data: str) -> PendingAttachment | None:
         """Take the earliest captured record for one sent image during a recall."""
         for index, (key, item) in enumerate(self._queued_images):
