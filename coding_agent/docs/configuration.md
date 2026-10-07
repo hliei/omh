@@ -273,7 +273,9 @@ A definition requires `id`, `api`, `reasoning`, `input`, `cost`,
 and `cacheWrite`. An override merges into the built-in entry, so omitted fields
 keep their built-in value. Entries that come from `models.json` are listed with
 `source=user` and the date the file was configured. Adding a model does not make
-it verified support.
+it verified support. The [live provider support record](model-support.md)
+separates declared targets from live evidence and the diagnostics a live
+difference produces.
 
 Unknown keys, wrong field types, malformed `thinkingLevelMap` entries, an
 unreadable `headers` object and a `models` entry that duplicates an existing ID
