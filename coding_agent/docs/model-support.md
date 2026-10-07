@@ -59,8 +59,10 @@ A model's own catalog entry selects the thinking shape, not a provider-wide
 default:
 
 - An adjustable model accepts a subset of `off`, `minimal`, `low`, `medium`,
-  `high`, `xhigh`, `max`. An unsupported explicit level is reported and clamped
-  to a supported one; the sent parameter reflects the effective level.
+  `high`, `xhigh`, `max`. An unsupported explicit CLI or interactive level is
+  rejected before a request. A restored selection or a model change can be
+  clamped to a supported level, with an adjustment diagnostic; the sent
+  parameter reflects the effective level.
 - `opencode-go/kimi-k2.7-code` is fixed on. It exposes no adjustable level, the
   Go adapter omits `reasoning_effort`, and the product renders a fixed mode
   rather than a fabricated `off` or a silent lower tier.
@@ -77,7 +79,7 @@ default:
 | Missing or rejected key | Print fails before or at the request with the provider's authentication error and a `/login`/`--api-key` repair step; interactive keeps the editor and explains the repair. Configured or environment keys are labelled **account not verified** until a task succeeds. |
 | Balance, quota or subscription limit | The service error is surfaced as the task failure; the phase acceptance record stops that combination instead of retrying or switching provider. |
 | Image sent to a text-only model | Pre-request modality rejection naming the model; the image is not silently dropped. |
-| Unsupported thinking level | The diagnostic names the requested and effective levels; the request uses the clamped level. |
+| Unsupported thinking level | An invalid explicit choice is rejected before sending. A restored selection or model change reports any adjustment and uses the effective level. |
 | Unknown model or invalid `models.json` entry | Pre-request diagnostic; startup and reopen never contact the network to substitute a model. |
 | `--list-models` | Lists declared metadata, source and catalog date only. It sends no request and proves no route. |
 

@@ -46,8 +46,12 @@ jobs:
         run: python -m pytest
 
   package:
-    name: Application package verification
-    runs-on: ubuntu-24.04
+    name: Application package verification (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -98,21 +102,34 @@ jobs:
           PY
       - name: Install built wheels and application test tooling
         run: |
-          python -m pip install dist/sdk/*.whl coding_agent/dist/*.whl
+          python -m pip install dist/sdk/*.whl
+          python - <<'PY'
+          from importlib.metadata import distribution
+          import shutil
+          assert not distribution("omh").entry_points
+          assert shutil.which("omh") is None
+          PY
+          python -m pip install coding_agent/dist/*.whl
           python -m pip install "omh-coding-agent[dev]"
       - name: Test installation outside repository
         working-directory: ${{ runner.temp }}
         run: |
           python - <<'PY'
           from pathlib import Path
+          from dataclasses import fields
           import omh
           import coding_agent
           from coding_agent import AgentSession, AgentSessionRuntime, SessionManager
+          from omh.agent import AgentEndEvent, estimate_history_tokens
+          from omh.llm.types import Usage
           assert AgentSession.__module__ == "coding_agent.agent_session"
           assert AgentSessionRuntime.__module__ == "coding_agent.agent_session_runtime"
           assert SessionManager.__module__ == "coding_agent.session_manager"
           assert "site-packages" in str(Path(omh.__file__))
           assert "site-packages" in str(Path(coding_agent.__file__))
+          assert "will_retry" in {field.name for field in fields(AgentEndEvent)}
+          assert "reported" in {field.name for field in fields(Usage)}
+          assert callable(estimate_history_tokens)
           PY
           omh --version
           omh --help > /dev/null

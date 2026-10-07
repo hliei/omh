@@ -6,6 +6,10 @@ installable distribution is `omh-coding-agent`; its Python import is
 does not install this application or its command. Python 3.14 on macOS or
 Linux is required.
 
+Start with the [installed-command walkthrough](docs/getting-started.md) for
+installation, first configuration, a coding conversation, scripted output,
+cross-mode continuation and recovery without Python assembly code.
+
 This delivery provides the installed command, read-only model and session
 listing, shared session selection, persistent names, JSONL/HTML export, and
 print text and JSON execution. Print text composes piped stdin, file attachments
