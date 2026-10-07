@@ -55,6 +55,7 @@ repository. The root SDK checks run separately.
 | [Interactive session](docs/interactive.md) | Regular terminal conversation, editing keys, editor history, completion, external editor, queues and recall, parallel !/!! user shell and independent cancellation, help/hotkeys/copy, streaming fold, status, themes and exit |
 | [Print JSON](docs/print-json.md) | Incremental wire schema, messages, retry/compact projection and process outcomes |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
+| [Live provider support record](docs/model-support.md) | Declared provider/model/vision/thinking targets, live evidence status and user-visible diagnostics |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
 | [Input and attachments](docs/input.md) | File argument boundaries, image conversion and limits, model modality, pending interactive attachments, clipboard backends and read images |
 | [SessionManager](docs/session-manager.md) | File metadata, JSONL, saving state, export and repair |
@@ -196,7 +197,9 @@ example from outside the repository with imports from `site-packages`. SDK tests
 run against their independent installation too. Separate quality jobs run Ruff,
 mypy and offline tests on macOS and Ubuntu 24.04, including file and process
 cancellation. These checks validate the Python embedding APIs; they make no
-live-provider or performance claim.
+live-provider or performance claim. Whether the two providers and eight target
+combinations have actually been exercised live is recorded separately in the
+[live provider support record](docs/model-support.md).
 
 ### Writer ownership and save recovery
 
