@@ -154,8 +154,11 @@ A project layer loads only when the effective project is trusted:
 
 With none of these, the project settings, project `SYSTEM.md`/`APPEND_SYSTEM.md`,
 project skills and project templates are skipped and an `untrusted` diagnostic
-reports the skip. Print never waits for an answer; interactive mode can inspect
-`host.needs_trust_decision`, ask, and persist the answer with
+reports the skip. Print never waits for an answer; interactive mode asks on first selection
+when controlled resources need a decision. `y` approves and `n` denies and
+remembers the answer globally; Escape skips without remembering. Embeddings
+can inspect `host.needs_trust_decision` or `host.remembered_trust(cwd)` through
+the same host trust store and persist an answer with
 `host.remember_trust("approved"|"denied")`. Global configuration and resources,
 ancestor `AGENTS` instructions, and explicit paths remain available either way.
 Trust is resolved per effective cwd, so `--cwd` and a restored cwd select their
@@ -290,12 +293,56 @@ API keys resolve in this order:
    DeepSeek provider and `OPENCODE_API_KEY` for OpenCode Go.
 
 `auth.json` is written atomically with mode `0600`, and an existing file with
-group or other permissions is tightened on read. `/login` and `/logout` (later
-delivery) change this file through the same store. Credentials never enter the
+group or other permissions is tightened on read. `/login` and `/logout`
+change this global file through the same store; the project never stores keys. Credentials never enter the
 session history, stdout, JSON events or exports. `key_source()` reports the
 source that a request would use without sending one, and `readiness()` combines
 the selection diagnostics with a missing-key repair step for the pre-request
 check.
+
+### Interactive credential commands
+
+`/login` shows the effective key source for both supported providers. Use
+`/login deepseek` or `/login opencode-go` to open hidden API key input; Enter
+saves the single nonempty key globally and Escape, Ctrl+C or Ctrl+D cancels.
+The secret input is separate from the editor and its history; completion,
+clipboard actions and the external editor are unavailable in that input.
+Do not place a key in slash-command arguments.
+
+`/logout [deepseek | opencode-go]` deletes only the global saved entry; without
+an argument it uses the current model's provider. The response reports the
+remaining effective source, including `cli` for a temporary override or
+`DEEPSEEK_API_KEY` / `OPENCODE_API_KEY` for an environment key. It never claims
+those sources were deleted. A saved replacement is masked by a temporary
+`--api-key`; restart without that flag to use the saved key.
+
+Configuration and source inspection send no inference or authentication probe.
+Every source is labeled **account not verified**. OAuth, subscription login,
+account dashboards and balance settings are outside these commands. After an
+actual task reports an authentication error, the interface returns to input
+and points to `/login` for repair and `/model` for an explicit replacement.
+Credential write errors name the auth file and repair action without echoing
+the submitted key; inspect the file before retrying because a filesystem error
+can occur after replacement.
+
+### Changing project trust
+
+`/trust` reports the current project's remembered decision, one-run CLI override
+and prepared layer. `/trust approve` and `/trust deny` remember a decision in
+global `trust.json`. They leave accepted resources, current model, thinking,
+cwd, policies and expanded inputs in place, including while busy. Run `/reload`
+when the model, user shell and session preparation are idle to prepare resources;
+the next new prompt synchronizes the accepted system sections. A fatal reload
+failure retains the old resource snapshot. Existing history and accepted inputs
+are never rewritten or expanded again.
+
+The explicit `--approve` / `--no-approve` flags still take precedence for that
+run, even after `/trust` records a different future decision. Restart without
+the flag to use the remembered decision. New/reopened sessions resolve trusted
+project defaults normally; a reload does not replace live model or policies.
+Embeddings can use `remember_trust(..., refresh=False)` to record a decision
+without refreshing host settings, then explicitly select/prepare at their own
+idle boundary.
 
 ## Readiness and repair
 
@@ -307,7 +354,7 @@ scope and reason, and name the actual and requested values where they differ.
 Print should fail non-zero before any request when the selection is not ready or
 no key is available, with the diagnostics as repair steps. Interactive keeps its
 interface usable and lets the user fix or choose a replacement through the
-configuration UI delivered later. Read-only commands, configuration and
+`/login` and `/model` commands. Read-only commands, configuration and
 selection never send a verification inference request.
 
 `readiness()` includes the selected settings/model-directory diagnostics and

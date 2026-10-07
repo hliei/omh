@@ -39,7 +39,7 @@ def test_help_lists_only_runnable_commands() -> None:
     assert "/copy" in text
     for spec in AVAILABLE_COMMANDS:
         assert spec.usage in text
-    for reserved in ("/trust", "/login"):
+    for reserved in ("/compact",):
         assert reserved not in text
 
 

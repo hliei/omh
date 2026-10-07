@@ -250,6 +250,10 @@ resources and system files load only when the project is trusted;
 `--approve`/`--no-approve` decide one run without asking, and an already
 remembered decision or explicit path is used otherwise. See
 [project trust and resource discovery](configuration.md#project-trust).
+Interactive asks when an unknown project first needs loading authorization and
+keeps the screen usable without a key; use `/login` and `/model` to repair.
+Print never asks, and a missing key fails before a request with configuration
+guidance. See [first configuration](interactive.md#first-configuration-login-and-trust).
 
 `--model` and `--thinking` must name an exact registered model and a level that
 model supports; `--api-key` applies to this process only and is never saved.

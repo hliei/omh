@@ -595,3 +595,19 @@ async def test_template_using_a_builtin_command_name_is_diagnosed(tmp_path: Path
     )
     assert conflict.path.endswith("help.md")
     assert "help" in conflict.message
+
+
+async def test_trust_inspection_and_deferred_decisions_use_the_injected_store(tmp_path: Path) -> None:
+    cwd, agent_dir, home = build_trusted_project(tmp_path)
+    store = TrustStore(tmp_path / 'custom-trust.json')
+    store.remember(cwd, 'denied')
+    host = CodingAgentHost(startup_dir=cwd, agent_dir=agent_dir, home=home, trust_store=store)
+    assert host.remembered_trust(cwd) == 'denied'
+    assert not host.project_trusted
+    host.remember_trust('approved', cwd=cwd, refresh=False)
+    assert host.remembered_trust(cwd) == 'approved'
+    assert not host.project_trusted
+    assert not (agent_dir / 'trust.json').exists()
+    selection = host.select_new()
+    assert host.project_trusted
+    assert selection.model is not None and selection.model.id == 'deepseek-v4-pro'
