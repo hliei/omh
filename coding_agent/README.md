@@ -51,7 +51,7 @@ repository. The root SDK checks run separately.
 | Contract | Responsibility |
 | --- | --- |
 | [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands, argument validation and print text/JSON |
-| [Interactive session](docs/interactive.md) | Regular terminal conversation, editing keys, editor history, completion, external editor, steering/follow-up queues and recall, help/hotkeys/copy, streaming fold, status, themes and exit |
+| [Interactive session](docs/interactive.md) | Regular terminal conversation, editing keys, editor history, completion, external editor, queues and recall, parallel !/!! user shell and independent cancellation, help/hotkeys/copy, streaming fold, status, themes and exit |
 | [Print JSON](docs/print-json.md) | Incremental wire schema, messages, retry/compact projection and process outcomes |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |

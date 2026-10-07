@@ -21,6 +21,7 @@ from omh.llm.types import (
 )
 
 from coding_agent.history import encode_entries
+from coding_agent.user_shell import HIDDEN_SHELL_TYPE
 
 
 def encode_history_html(history: AgentHistory, *, cwd: str, display_name: str | None = None) -> str:
@@ -48,6 +49,8 @@ img {{max-width:100%;height:auto}} small {{color:#555}} details {{margin:.5rem 0
         elif isinstance(entry, CustomMessageHistoryEntry):
             label = entry.custom_type
             content = entry.content
+            if entry.custom_type == HIDDEN_SHELL_TYPE and isinstance(entry.details, dict):
+                content = json.dumps(entry.details, ensure_ascii=False, indent=2)
         parts.append(f'<article><h2>{escape(label)}</h2><small>{entry.timestamp.isoformat()}</small>')
         if isinstance(content, str):
             parts.append(f"<pre>{escape(content)}</pre>")

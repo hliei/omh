@@ -44,7 +44,9 @@ application admission checks; the SDK has no permanent save-failure state.
 
 Hosts call `session.ensure_can_accept_work()` (or the runtime wrapper) before
 starting a new user shell or other host write. It raises with the same save-error
-cause while unsaved, and rejects a closing or closed session. `await session.submit_custom_message(message)` admits a new custom submission;
+cause while unsaved, and rejects a closing or closed session. The interactive
+host also checks public `agent.state.activity_kind` before starting a shell
+and refuses `manual_compaction`. `await session.submit_custom_message(message)` admits a new custom submission;
 once accepted, it follows the SDK safe commit boundary. For a shell already
 admitted before a later save failure, commit its final output through
 `await session.agent.submit_custom_message(message)` without another admission
@@ -52,6 +54,17 @@ check: the SDK retains that record even when the saving listener propagates the
 existing error. Hosts finish admitted shell records before application close.
 Already accepted Agent work settles through the SDK cleanup rules.
 The public SDK `agent` remains available for reading and cooperative abort.
+
+The interactive host owns [user shell](interactive.md#user-shell) execution and
+joins it before session close. Final records use SDK `CustomAgentMessage`:
+`user_shell` has model-visible content, while `user_shell_hidden` has empty
+content and JSON details holding `command`, `output`, `status` and bash `result`
+details. Runtime assembly filters `user_shell_hidden` before ordinary request
+transformation/conversion, including after reopen in print mode, preserving any
+configured transform for the remaining messages. Empty content also keeps
+these commands and outputs out of SDK summary serialization. The UI reads
+details to display both types. No shell method or numeric exit-code contract is
+added to the Agent or application session.
 
 `await session.close()` owns Agent close and writer release. Cancelled waiters
 can call it again to await the same result. History, queues, errors, full saving

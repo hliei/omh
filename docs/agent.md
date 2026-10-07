@@ -859,6 +859,16 @@ files are created only when truncated, flushed during capture, and closed before
 completion. They remain available after Agent closure; the host owns deletion.
 Empty successful output returns `(no output)`.
 
+A host executing bash directly can use the public `execute` callable and
+`on_update` callback. Success returns the final `AgentToolResult`; failures
+raise an exception whose text includes the bounded output and termination
+explanation. The last progress callback retains output and JSON truncation/
+spill-path details even on failure. Consume that callback and the exception
+text without depending on an internal exception class or numeric exit-code
+field. A host can record its final outcome as custom context at the safe
+submission boundary described above; bash execution alone does not start an
+Agent dialogue.
+
 Nonzero exit codes, signal termination, timeout, abort, and execution failures
 become ordinary Agent error tool results. Command failures preserve captured
 output and, when truncated, its JSON details and file path. Abort and timeout

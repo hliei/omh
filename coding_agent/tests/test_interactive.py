@@ -884,7 +884,7 @@ def test_escape_closes_completion_and_keeps_the_edited_text(home: Path, tmp_path
         session.send(b"\t")
         session.send(b"\r")
         session.wait_for("Commands:")
-        assert "/hotkeys" in session.visible()
+        session.wait_for("/hotkeys")
         assert len(sends(home)) == 1
         session.send(b"\x04")
         assert session.finish() == 0
@@ -1073,7 +1073,7 @@ def test_builtin_arguments_reserved_names_and_unknown_slash(home: Path, tmp_path
         assert len(sends(home)) == 1
         session.send(b"/help\r")
         session.wait_for("Commands:")
-        assert "/hotkeys" in session.visible()
+        session.wait_for("/hotkeys")
         session.send(b"/hotkeys\r")
         session.wait_for("Ctrl+G")
         time.sleep(0.2)

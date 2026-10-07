@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO, cast
 
-from omh.agent import AgentEvent
+from omh.agent import AgentEvent, CustomAgentMessage
 from omh.agent.execution.events import (
     AgentSettledEvent,
     AgentStartEvent,
@@ -37,6 +37,7 @@ from omh.agent.execution.events import (
     TurnStartEvent,
 )
 from omh.llm.types import (
+    AbortController,
     AbortSignal,
     AssistantMessage,
     ImageContent,
@@ -91,6 +92,7 @@ from coding_agent.pending import (
 from coding_agent.resources import ApplicationResources
 from coding_agent.terminal import EXIT_OK
 from coding_agent.theme import resolve_theme
+from coding_agent.user_shell import UserShell
 
 _EXIT_SIGNALS = {signal.SIGINT: 130, signal.SIGTERM: 143, signal.SIGHUP: 129}
 _UNSAVED_GUIDANCE = (
@@ -138,7 +140,7 @@ class _Tool:
     bounded: bool = False
 
 
-_Item = _Note | _You | _Assistant | _Tool
+_Item = _Note | _You | _Assistant | _Tool | UserShell
 
 
 def run_interactive(
@@ -189,6 +191,9 @@ class _Session:
         self._busy = False
         self._closing = False
         self._prompt_task: asyncio.Task[None] | None = None
+        self._shell_task: asyncio.Task[None] | None = None
+        self._shell: UserShell | None = None
+        self._shell_abort: AbortController | None = None
         self._startup_task: asyncio.Task[None] | None = None
         self._exit_task: asyncio.Task[None] | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -422,7 +427,11 @@ class _Session:
         calls: dict[str, tuple[str, dict[str, object]]] = {}
         sent: list[str] = []
         for message in session.agent.state.messages:
-            if isinstance(message, UserMessage):
+            if isinstance(message, CustomAgentMessage):
+                shell = UserShell.from_message(message)
+                if shell is not None:
+                    self._items.append(shell)
+            elif isinstance(message, UserMessage):
                 text = _user_text(message)
                 labels = _user_image_labels(message)
                 if text or labels:
@@ -696,6 +705,9 @@ class _Session:
             self._forget_cleared_line()
             self._choose_cwd(stripped)
             return
+        if text.startswith("!"):
+            self._start_shell(text)
+            return
         if text.strip():
             intent = classify(text, skills=self._skill_names(), templates=self._template_names())
             if intent.kind == "builtin":
@@ -745,6 +757,52 @@ class _Session:
         self._prompt_first_user = True
         self._set_phase("model")
         self._prompt_task = asyncio.create_task(self._prompt(text, pending))
+
+    def _start_shell(self, text: str) -> None:
+        if self._shell_task is not None and not self._shell_task.done():
+            self._add("notice a user shell is already running; cancel it before starting another")
+            return
+        session = self._current_session()
+        if session is None:
+            self._add("notice the session is not ready; no shell was started")
+            return
+        if session.agent.state.activity_kind == "manual_compaction":
+            self._add("notice manual compaction is running; no shell was started")
+            return
+        try:
+            session.ensure_can_accept_work()
+        except RuntimeError as error:
+            self._add(f"notice {error}")
+            if session.save_state == "unsaved":
+                self._show_unsaved()
+            return
+        excluded = text.startswith("!!")
+        command = text[2 if excluded else 1:]
+        if not command.strip():
+            self._add("notice ! or !! needs a command; no shell was started")
+            return
+        self.editor.clear()
+        self.editor.remember(text)
+        self._forget_cleared_line()
+        shell = UserShell(command, excluded)
+        self._shell = shell
+        self._shell_abort = AbortController()
+        self._items.append(shell)
+        self._add("notice model and user shell may operate on the same workspace")
+        self._shell_task = asyncio.create_task(self._run_shell(session, shell, self._shell_abort.signal))
+
+    async def _run_shell(self, session: AgentSession, shell: UserShell, signal: AbortSignal) -> None:
+        await shell.execute(session.cwd, signal, self._redraw)
+        try:
+            # This shell was admitted before execution. A later saving failure
+            # must not reject its terminal record; Agent owns the safe boundary.
+            await session.agent.submit_custom_message(shell.message())
+        except Exception as error:
+            self._add(f"notice shell record: {error}")
+            if session.save_state == "unsaved":
+                self._show_unsaved()
+        finally:
+            self._redraw()
 
     def _queue_input(self, text: str, *, follow_up: bool) -> None:
         """Accept steering or a follow-up while the model is running.
@@ -860,7 +918,7 @@ class _Session:
             )
 
     def _escape_action(self) -> None:
-        """Escape without an open completion: recall queued inputs, cancel the model."""
+        """Recall queues and cancel the model first, then a still-running shell."""
         session = self._current_session()
         if session is not None and self._has_queued_inputs(session):
             self._recall_queued()
@@ -868,6 +926,10 @@ class _Session:
             self._phase = "cancel"
             self._add("phase cancel")
             session.agent.abort()
+        elif self._shell_task is not None and not self._shell_task.done():
+            assert self._shell_abort is not None
+            self._add("shell cancel requested")
+            self._shell_abort.abort()
 
     def _unsubmitted_content(self) -> list[str]:
         """Descriptions of unsubmitted content an exit would silently lose."""
@@ -1394,7 +1456,13 @@ class _Session:
                     self._add("phase cancel")
                     self._redraw()
                     session.agent.abort()
+            if self._shell_task is not None and not self._shell_task.done():
+                assert self._shell_abort is not None
+                self._shell_abort.abort()
+            if self._prompt_task is not None:
                 await self._prompt_task
+            if self._shell_task is not None:
+                await self._shell_task
             if self.runtime is not None:
                 await self.runtime.close()
         except Exception as error:
@@ -1533,11 +1601,12 @@ class _Session:
         # and image counts; empty queues add nothing so the status keeps its
         # established shape.
         queued = self._queued_status(session)
+        shell = self._shell.status if self._shell is not None else "idle"
         return (
             f"phase {self._phase} | {queued}"
             f"session {identity} | mode {mode} | save {save} | model {model} | "
             f"thinking {thinking} | theme {self.theme} | "
-            f"cwd {cwd} | path {path} | pending {len(self._draft)}"
+            f"cwd {cwd} | path {path} | pending {len(self._draft)} | shell {shell}"
         )
 
     def _queued_status(self, session: AgentSession | None) -> str:
@@ -1666,6 +1735,13 @@ def _render(
                 lines.extend(_wrap(f"image {label}", width))
         elif isinstance(item, _Assistant):
             lines.extend(_render_assistant(item, width, thinking_open=thinking_open))
+        elif isinstance(item, UserShell):
+            prefix = "!!" if item.exclude_context else "!"
+            context = "excluded from model context" if item.exclude_context else "included in model context"
+            lines.extend(_flatten([
+                f"shell {item.status} {prefix}{item.command}", context,
+                *item.output.splitlines(),
+            ], width))
         else:
             lines.extend(_render_tool(item, width, tools_open=tools_open))
     return lines

@@ -23,7 +23,7 @@ Both stdin and stdout must be terminals. `--mode interactive` forces this mode.
 With no explicit mode, a terminal on both streams selects it; otherwise the
 command runs print text.
 
-The status line names the phase, session id, save mode, save state, model,
+The status line names the model phase, independent user shell status, session id, save mode, save state, model,
 thinking level, theme, working directory and session path in words. Color is
 an extra cue. `mode memory` is an in-memory session and stays `save pending`.
 `mode auto` is file-backed. `save pending`, `save saved` and `save unsaved`
@@ -71,6 +71,43 @@ inputs are consumed only at the SDK's safe boundaries, so an accepted message
 never interrupts a tool batch that has already started. The status shows how
 many inputs of each kind are waiting.
 
+## User shell
+
+Enter `!command` to run a user shell, or `!!command` to keep its command and
+output out of model context. These inputs also run while a model stream or
+model tool is active; they never become steering or follow-up and never start
+a model request. `--no-tools` disables model tools and still allows user shells.
+The shell uses the session cwd and inherits the host environment, with closed
+stdin. The model and shell may operate on the same workspace, so concurrent
+changes can affect what either sees.
+
+Only one user shell runs at a time. A second is refused and its input stays in
+the editor. The status independently shows, for example, `phase tool` together
+with `shell running`, then `shell completed`, `shell failed` or `shell cancelled`. The
+conversation displays the command, bounded output and terminal explanation.
+Shell input leaves pending image attachments in the draft.
+
+`!` records the command, output and final status for subsequent model requests.
+`!!` saves and displays the same information, but excludes the command and
+output from ordinary requests and compaction summaries, including split and
+updated summaries. Both save complete history even in a new shell-only session
+with no assistant answer. With `--no-session`, they remain in memory.
+Reopening displays the saved record without executing the command again.
+
+Output uses the SDK bash limit: the last 2000 lines or 50 KiB, plus truncation
+and termination explanations. When truncated, `Full output: <path>` names a
+temporary file containing all captured output. The path stays in history; the
+temporary file may have been removed when the conversation is reopened.
+
+Escape first closes completion. Otherwise it recalls queued inputs and cancels
+the model; if both activities are busy, the shell continues. After the model
+has stopped, a subsequent Escape cancels the shell. Cancellation keeps completed
+side effects and waits for shell process cleanup. Exit and operating-system
+signals cancel both activities and join them before saving the final shell
+record and closing the session. Manual compaction refuses new shell work, as
+does `save unsaved`; a shell already admitted still records its final outcome
+in memory when a later save fails. Saving errors remain visible as `unsaved`.
+
 ## Editing and keys
 
 The editor holds one multiline draft. The lines scroll with the conversation and
@@ -87,7 +124,7 @@ and never submits the draft by itself.
 | Up / Down | Browse this session's editor history and restore the unsubmitted draft |
 | Alt+Up | Recall all queued steering, then all follow-ups, back into the editor |
 | Tab | Open completion, then accept the selected candidate |
-| Escape | Close completion first; otherwise recall queued inputs and cancel the model |
+| Escape | Close completion first; otherwise recall queued inputs and cancel the model; after the model stops, cancel the user shell |
 | Left / Right | Move the cursor |
 | Backspace | Delete the character before the cursor |
 | Ctrl+G | Edit the current draft in an external editor |
@@ -253,6 +290,12 @@ notice is:
 In-memory history is retained. New work is paused until the session can be saved.
 ```
 
+Interactive `/save`, `/export` and protection for exiting with unsaved history
+belong to the session-management delivery. Until those controls are available,
+the screen's current exit path can discard unsaved in-memory history. The
+embedded [session save/export APIs](agent-session.md#save-failure-admission)
+already retain final shell records for repair and backup.
+
 ## Theme
 
 The default theme is dark. `--use-theme light` or `"theme": "light"` in
@@ -288,10 +331,10 @@ afterwards still offers to put the line back instead of exiting silently.
 | --- | --- |
 | Ctrl+C | Clears the editor. A second consecutive Ctrl+C within 500ms starts the exit decision above |
 | Ctrl+D | Starts the exit decision above when the editor is strictly empty |
-| SIGINT, SIGTERM, SIGHUP | Abort a busy Agent through its public cancel and close path, then exit 130, 143 or 129 |
+| SIGINT, SIGTERM, SIGHUP | Cancel and join the Agent and user shell, record the final shell outcome, then exit 130, 143 or 129 |
 
 Ctrl+C is a keyboard byte, not the operating-system signal, and the two never
-share a path: process signals cooperatively abort the Agent, complete saving and
+share a path: process signals cooperatively abort the Agent and user shell, complete saving and
 join the session without asking, while editor keys ask. Exit restores the
 terminal mode captured at start, including echo and line discipline, and
 disables bracketed paste. Process signals are handled during startup as well as
