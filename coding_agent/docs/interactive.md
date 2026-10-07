@@ -65,6 +65,12 @@ and closed with `code end`.
 are separate labels. After a model or tool error, the text already on screen
 stays, the status returns to `phase input`, and Enter can submit another prompt.
 
+While the model is running, Enter does not wait for the turn to end: it accepts
+the editor text as steering, and Alt+Enter accepts it as a follow-up. Queued
+inputs are consumed only at the SDK's safe boundaries, so an accepted message
+never interrupts a tool batch that has already started. The status shows how
+many inputs of each kind are waiting.
+
 ## Editing and keys
 
 The editor holds one multiline draft. The lines scroll with the conversation and
@@ -74,12 +80,14 @@ and never submits the draft by itself.
 
 | Key | Default behaviour |
 | --- | --- |
-| Enter | Submit the editor when the session can accept work |
+| Enter | Submit the editor when idle; accept the text as steering while the model runs |
+| Alt+Enter | Accept the text as a follow-up while the model runs; submit normally when idle |
 | Shift+Enter, Ctrl+J | Insert a newline |
 | `\` then Enter | Insert a newline for terminals without Shift+Enter |
 | Up / Down | Browse this session's editor history and restore the unsubmitted draft |
+| Alt+Up | Recall all queued steering, then all follow-ups, back into the editor |
 | Tab | Open completion, then accept the selected candidate |
-| Escape | Close completion and keep the edited text |
+| Escape | Close completion first; otherwise recall queued inputs and cancel the model |
 | Left / Right | Move the cursor |
 | Backspace | Delete the character before the cursor |
 | Ctrl+G | Edit the current draft in an external editor |
@@ -88,9 +96,40 @@ and never submits the draft by itself.
 | Ctrl+T | Show or hide recorded thinking |
 | Ctrl+O | Expand or collapse recorded tool output |
 
-Ctrl+C, Ctrl+D and the process signals are listed under [Exit](#exit). Keys that
-a later delivery owns are not bound here, and the product does not read a custom
-keymap file.
+Ctrl+C, Ctrl+D and the process signals are listed under [Exit](#exit). The
+empty-editor double Escape fork selector belongs to a later delivery and is not
+bound here. The product does not read a custom keymap file.
+
+## Steering, follow-up and recall
+
+While a turn is running, Enter accepts the editor text as **steering** and
+Alt+Enter accepts it as a **follow-up**. Acceptance expands skills and templates,
+and captures the pending images into the queued message exactly as a submitted
+prompt does. The two inputs differ only in when the SDK consumes them: steering
+is injected at the next queue drain point, while a follow-up runs only when the
+model would otherwise stop. Neither preempts a tool batch that has already
+started, and neither ends the running turn.
+
+Queued inputs stay visible: each acceptance prints a `queued steering (n
+waiting): <text>` or `queued follow-up (n waiting): <text>` line, and the status
+shows the waiting counts. A queued input that the model consumes is displayed as
+a normal `you <text>` turn. The screen never infers that a queue was consumed
+from the end of a run; only actual consumption or an explicit recall removes it.
+
+Alt+Up recalls every queued input without cancelling anything. All steering comes
+back first, then all follow-ups, joined with blank lines in the editor together
+with the draft that was already there; queued images return to the pending draft
+with their original identity. The order between the two kinds is fixed (steering
+then follow-up) and the recall is all-or-nothing: there is no per-entry editing
+or interleaved ordering. With nothing queued, Alt+Up only says so.
+
+Escape closes an open completion first. With no completion, it recalls queued
+inputs exactly like Alt+Up and then cancels the running model through the public
+abort path, so `phase cancel` appears and the same session stays usable. During
+a retry or an automatic compaction this cancels that activity. The cancelled run
+keeps everything already executed: committed tool results, their side effects,
+and the unconsumed queues. Cancelling the waiting host task is never treated as
+proof that the activity stopped.
 
 ## Editor history and drafts
 
@@ -222,14 +261,33 @@ theme falls back to dark and says so.
 
 ## Exit
 
+Editor keys and operating-system signals exit differently.
+
+Editor keys ask before losing unsubmitted work. When the editor text, a cleared
+editor line, a pending or still-preparing image, or a queued input would be lost,
+the screen prints which content remains, states that it is not saved to disk,
+and waits for a decision:
+
+```text
+notice unsubmitted content remains: 1 pending image(s); it is not saved to disk
+notice Enter discards it and exits; any other key returns to editing
+```
+
+Enter discards that content and exits 0; any other key returns to editing, and a
+text line cleared by Ctrl+C is put back. Nothing is dropped without this
+decision, and the discard is an explicit action rather than a side effect of
+cancelling a run.
+
 | Action | Result |
 | --- | --- |
-| Ctrl+C | Clears the editor. A second Ctrl+C within 500ms exits 0 |
-| Ctrl+D | Exits 0 when the editor and the pending attachment list are both empty; otherwise it explains the pending images |
+| Ctrl+C | Clears the editor. A second Ctrl+C within 500ms starts the exit decision above |
+| Ctrl+D | Starts the exit decision above when the editor is strictly empty |
 | SIGINT, SIGTERM, SIGHUP | Abort a busy Agent through its public cancel and close path, then exit 130, 143 or 129 |
 
-Keyboard Ctrl+C is not the operating-system signal. Exit restores the terminal
-mode captured at start, including echo and line discipline, and disables
-bracketed paste. Process signals are handled during startup as well as during
-turns. A second process signal can leave the save incomplete and exits with the
-same signal code.
+Ctrl+C is a keyboard byte, not the operating-system signal, and the two never
+share a path: process signals cooperatively abort the Agent, complete saving and
+join the session without asking, while editor keys ask. Exit restores the
+terminal mode captured at start, including echo and line discipline, and
+disables bracketed paste. Process signals are handled during startup as well as
+during turns. A second process signal can leave the save incomplete and exits
+with the same signal code.

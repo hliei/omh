@@ -321,8 +321,11 @@ def test_ctrl_d_keeps_a_pending_image_until_it_is_removed(home: Path, tmp_path: 
         session.send(b"/attach picture.png\r")
         session.wait_for("attached #1 picture.png 6x4 image/png ready")
         session.send(b"\x04")
-        session.wait_for("pending attachments remain")
+        # A pending image needs an explicit discard decision before exit.
+        session.wait_for("unsubmitted content remains")
         assert session.process.poll() is None
+        session.send(b"x")
+        session.wait_for("exit canceled")
         session.send(b"/attach clear\r")
         session.wait_for("attachments cleared")
         session.send(b"\x04")

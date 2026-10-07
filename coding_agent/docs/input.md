@@ -98,6 +98,13 @@ editor text through `prompt(..., images=...)`, exactly like a print attachment,
 and the source file is not rewritten. An empty editor does not submit a pending
 image on its own.
 
+The same draft also feeds queued inputs: pressing Enter while the model runs
+captures the pending images into that steering message and Alt+Enter does so for
+a follow-up, both through `steer`/`follow_up`. Recalling the queue with Alt+Up or
+Escape returns those images to this draft with their identity intact, so
+screenshot paste, `/attach` management and queued steering share one image
+draft.
+
 A path typed or pasted as ordinary text stays text; nothing is guessed as an
 attachment. A missing, unsupported, corrupt or over-limit image is explained
 with the same message `read_image` or `process_image` produces and adds no

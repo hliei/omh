@@ -122,8 +122,9 @@ def help_lines() -> list[str]:
     lines.extend([
         "",
         "Invoke a skill with /skill:<name>, or a prompt template with /<name>.",
-        "Enter submits. Tab completes commands, skills, templates, arguments and paths.",
-        "Escape closes completion and keeps the text. /hotkeys lists the default keys.",
+        "Enter submits, and while the model runs it queues steering. Alt+Enter queues a follow-up.",
+        "Tab completes commands, skills, templates, arguments and paths.",
+        "Escape closes completion, then recalls queued inputs and cancels the model. /hotkeys lists the default keys.",
     ])
     return lines
 
@@ -139,21 +140,23 @@ def command_detail(name: str) -> list[str] | None:
 
 #: Default keys this delivery implements. Later tickets append their own rows.
 HOTKEYS: tuple[tuple[str, str], ...] = (
-    ("Enter", "Submit the editor"),
+    ("Enter", "Submit the editor; queue steering while the model runs"),
+    ("Alt+Enter", "Queue a follow-up while the model runs; submit when idle"),
     ("Shift+Enter, Ctrl+J", "Insert a newline"),
     ("\\ then Enter", "Insert a newline when Shift+Enter is unavailable"),
     ("Up / Down", "Browse this session's editor history and restore the draft"),
+    ("Alt+Up", "Recall all queued steering, then follow-up, back into the editor"),
     ("Left / Right", "Move the cursor"),
     ("Backspace", "Delete the character before the cursor"),
     ("Tab", "Complete a command, skill, template, argument or path"),
-    ("Escape", "Close completion and keep the edited text"),
+    ("Escape", "Close completion; else recall queued inputs and cancel the model"),
     ("Ctrl+G", "Edit the current input in an external editor"),
     ("Ctrl+X, /copy", "Copy the last assistant answer"),
     ("Ctrl+V", "Add a clipboard screenshot to the pending images"),
     ("Ctrl+T", "Show or hide recorded thinking"),
     ("Ctrl+O", "Expand or collapse recorded tool output"),
-    ("Ctrl+C", "Clear the editor; a second Ctrl+C within 500ms exits"),
-    ("Ctrl+D", "Exit when the editor and pending images are empty"),
+    ("Ctrl+C", "Clear the editor; a second Ctrl+C within 500ms starts an exit"),
+    ("Ctrl+D", "Start an exit when the editor is strictly empty"),
     ("SIGINT, SIGTERM, SIGHUP", "Cancel the turn and exit 130, 143 or 129"),
 )
 

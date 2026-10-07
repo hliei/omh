@@ -51,7 +51,7 @@ repository. The root SDK checks run separately.
 | Contract | Responsibility |
 | --- | --- |
 | [Command line entry](docs/cli.md) | Installed `omh` command, mode selection, read-only commands, argument validation and print text/JSON |
-| [Interactive session](docs/interactive.md) | Regular terminal conversation, editing keys, editor history, completion, external editor, help/hotkeys/copy, streaming fold, status, themes and exit |
+| [Interactive session](docs/interactive.md) | Regular terminal conversation, editing keys, editor history, completion, external editor, steering/follow-up queues and recall, help/hotkeys/copy, streaming fold, status, themes and exit |
 | [Print JSON](docs/print-json.md) | Incremental wire schema, messages, retry/compact projection and process outcomes |
 | [Configuration and credentials](docs/configuration.md) | Directories, settings merge, model directory, credentials and effective selection precedence |
 | [AgentSession](docs/agent-session.md) | Conversation entry, resources, input expansion and admission |
@@ -78,6 +78,9 @@ The [print signals and rescue decision](docs/adr/0008-print-signals-and-rescue.m
 records cooperative termination signals and complete-history rescue.
 The [interactive attachments and clipboard decision](docs/adr/0009-interactive-attachments-and-clipboard.md)
 records the pending image draft and the desktop backend fallback.
+The [interactive queues, recall and exit decision](docs/adr/0010-interactive-queues-recall-and-exit.md)
+records steering/follow-up acceptance, queued-input recall, cancel priority and
+exit protection.
 The [SDK ADR index](../docs/adr/README.md) records SDK decisions.
 
 ## Create, run, save and reopen

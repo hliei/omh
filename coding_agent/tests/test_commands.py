@@ -54,6 +54,8 @@ def test_command_detail_only_resolves_runnable_commands() -> None:
 def test_hotkeys_describe_the_delivered_defaults() -> None:
     text = "\n".join(hotkey_lines())
     assert "Shift+Enter, Ctrl+J" in text
+    assert "Alt+Enter" in text
+    assert "Alt+Up" in text
     assert "Ctrl+G" in text
     assert "Ctrl+X, /copy" in text
     assert "Ctrl+L" not in text

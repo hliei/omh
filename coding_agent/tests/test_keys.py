@@ -27,11 +27,18 @@ def test_shift_enter_encodings_insert_a_newline() -> None:
     assert names(KeyDecoder(), b"\x1b[27;2;13~") == ["newline"]
 
 
-def test_alt_enter_and_other_modifier_keys_are_left_unbound() -> None:
-    # Alt+Enter belongs to follow-up, and a non-newline CSI 13;2 final stays unbound.
-    assert names(KeyDecoder(), b"\x1b\r") == []
+def test_alt_enter_and_alt_up_encodings_are_bound() -> None:
+    # Alt+Enter queues a follow-up; Alt+Up recalls queued inputs.
+    assert names(KeyDecoder(), b"\x1b\r") == ["alt_enter"]
+    assert names(KeyDecoder(), b"\x1b\n") == ["alt_enter"]
+    assert names(KeyDecoder(), b"\x1b[13;3u") == ["alt_enter"]
+    assert names(KeyDecoder(), b"\x1b[1;3A") == ["alt_up"]
+
+
+def test_other_modifier_keys_are_left_unbound() -> None:
     assert names(KeyDecoder(), b"\x1b[13;2A") == []
-    assert names(KeyDecoder(), b"\x1b[13;3u") == []
+    assert names(KeyDecoder(), b"\x1b[1;3B") == []
+    assert names(KeyDecoder(), b"\x1b[13;5u") == []
     assert KeyDecoder().flush_escape() is None
 
 
