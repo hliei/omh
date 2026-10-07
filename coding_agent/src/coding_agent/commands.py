@@ -13,7 +13,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from coding_agent.completion import CompletionItem, CompletionSources
+from coding_agent.completion import CompletionItem, CompletionSources, complete_path
 
 #: Interactive command names without the leading slash. The full product surface
 #: is reserved up front so a template cannot claim a command that a later ticket
@@ -32,8 +32,8 @@ class CommandSpec:
     name: str
     summary: str
     usage: str
-    #: Greatest number of whitespace-separated arguments accepted.
-    max_arguments: int = 0
+    #: Greatest argument count, or None for a command with its own path parser.
+    max_arguments: int | None = 0
     #: How the accepted arguments are described in one command's help.
     argument_help: str = "none"
     #: Named dynamic argument source understood by :meth:`argument_items`.
@@ -41,6 +41,21 @@ class CommandSpec:
 
     def argument_items(self, prefix: str, sources: CompletionSources) -> Sequence[CompletionItem]:
         """Return valid arguments for this command before the cursor."""
+        if self.argument_source == "attachments":
+            if prefix.startswith("remove "):
+                return tuple(
+                    CompletionItem(value=f"remove {index}", label=f"remove {index}")
+                    for index in range(1, sources.pending_count + 1)
+                    if f"remove {index}".startswith(prefix)
+                )
+            items = [
+                CompletionItem(value=value, label=value.strip())
+                for value in ("remove ", "clear") if value.startswith(prefix)
+            ]
+            paths = complete_path(prefix, len(prefix), sources, allow_bare=True)
+            if paths is not None:
+                items.extend(paths.items)
+            return items
         if self.argument_source != "commands":
             return ()
         return tuple(
@@ -59,6 +74,11 @@ AVAILABLE_COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec("hotkeys", "Show the default keyboard shortcuts", "/hotkeys"),
     CommandSpec("copy", "Copy the last assistant answer", "/copy"),
+    CommandSpec(
+        "attach", "Add, list or remove pending image attachments",
+        "/attach [image-path | remove <n> | clear]", max_arguments=None,
+        argument_help="optional image path, remove <n>, or clear", argument_source="attachments",
+    ),
 )
 
 COMMANDS_BY_NAME: dict[str, CommandSpec] = {spec.name: spec for spec in AVAILABLE_COMMANDS}
@@ -129,10 +149,11 @@ HOTKEYS: tuple[tuple[str, str], ...] = (
     ("Escape", "Close completion and keep the edited text"),
     ("Ctrl+G", "Edit the current input in an external editor"),
     ("Ctrl+X, /copy", "Copy the last assistant answer"),
+    ("Ctrl+V", "Add a clipboard screenshot to the pending images"),
     ("Ctrl+T", "Show or hide recorded thinking"),
     ("Ctrl+O", "Expand or collapse recorded tool output"),
     ("Ctrl+C", "Clear the editor; a second Ctrl+C within 500ms exits"),
-    ("Ctrl+D", "Exit when the editor is empty"),
+    ("Ctrl+D", "Exit when the editor and pending images are empty"),
     ("SIGINT, SIGTERM, SIGHUP", "Cancel the turn and exit 130, 143 or 129"),
 )
 

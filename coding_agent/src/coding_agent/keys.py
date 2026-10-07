@@ -27,6 +27,7 @@ _CONTROL_KEYS = {
     0x0F: "ctrl_o",
     0x14: "ctrl_t",
     0x18: "ctrl_x",
+    0x16: "ctrl_v",
 }
 _ARROWS = {"A": "up", "B": "down", "C": "right", "D": "left"}
 

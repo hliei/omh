@@ -94,3 +94,40 @@ def test_absolute_root_completion_uses_root_instead_of_cwd(tmp_path: Path) -> No
     assert any(item.rstrip("/") == f"@/{root_entry.name}" for item in found)
     text = "read @/only-in-project"
     assert complete(text, len(text), sources(tmp_path)) is None
+
+
+def test_attach_discovers_paths_and_management_arguments(tmp_path: Path) -> None:
+    (tmp_path / "picture name.png").write_bytes(b"image")
+    text = "/attach pic"
+    assert values(complete(text, len(text), sources(tmp_path))) == ["picture name.png"]
+    text = "/attach cl"
+    assert "clear" in values(complete(text, len(text), sources(tmp_path)))
+    assert "/attach " in values(complete("/at", 3, sources(tmp_path)))
+
+
+def test_attach_removal_completes_only_existing_pending_numbers(tmp_path: Path) -> None:
+    selected = CompletionSources(
+        cwd=tmp_path, commands=AVAILABLE_COMMANDS, pending_count=2,
+    )
+    text = "/attach remove "
+    assert values(complete(text, len(text), selected)) == ["remove 1", "remove 2"]
+    text = "/attach remove 3"
+    assert complete(text, len(text), selected) is None
+
+
+def test_attach_directory_completion_refills_without_executing(tmp_path: Path) -> None:
+    (tmp_path / "images dir").mkdir()
+    text = "/attach images"
+    completion = complete(text, len(text), sources(tmp_path))
+    assert values(completion) == ["images dir/"]
+    assert completion is not None and not completion.submit
+
+
+def test_attach_completes_spaced_and_quoted_paths(tmp_path: Path) -> None:
+    directory = tmp_path / "images dir"
+    directory.mkdir()
+    (directory / "picture name.png").write_bytes(b"image")
+    text = "/attach images dir/pic"
+    assert values(complete(text, len(text), sources(tmp_path))) == ["images dir/picture name.png"]
+    text = '/attach "images dir/pic'
+    assert values(complete(text, len(text), sources(tmp_path))) == ['"images dir/picture name.png"']

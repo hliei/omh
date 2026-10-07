@@ -70,6 +70,7 @@ class CompletionSources:
     skills: tuple[tuple[str, str], ...] = ()
     templates: tuple[tuple[str, str], ...] = ()
     reserved: frozenset[str] = frozenset()
+    pending_count: int = 0
 
 
 def complete(text: str, cursor: int, sources: CompletionSources) -> Completion | None:
@@ -83,7 +84,7 @@ def complete(text: str, cursor: int, sources: CompletionSources) -> Completion |
             argument_start = line_start + 1 + len(name) + 1
             return _argument_completion(name, argument, argument_start, cursor, sources)
         return _command_completion(head, line_start, cursor, sources)
-    return _path_completion(text, cursor, sources)
+    return complete_path(text, cursor, sources)
 
 
 def _limit(items: list[CompletionItem]) -> list[CompletionItem]:
@@ -124,17 +125,27 @@ def _argument_completion(
         items = [item for item in command.argument_items(token, sources)]
         if not items:
             return None
-        return Completion(start=start, end=end, items=_limit(items), submit=True)
+        return Completion(start=start, end=end, items=_limit(items), submit=name != "attach")
     return None
 
 
-def _path_completion(text: str, cursor: int, sources: CompletionSources) -> Completion | None:
-    start = _token_start(text, cursor)
+def complete_path(
+    text: str, cursor: int, sources: CompletionSources, *, allow_bare: bool = False,
+) -> Completion | None:
+    """Complete a local path; command path arguments may also use bare names."""
+    start = 0 if allow_bare else _token_start(text, cursor)
     token = text[start:cursor]
+    quote = token[:1] if allow_bare and token[:1] in {"'", '"'} else ""
+    if quote:
+        token = token[1:]
+        if token.endswith(quote):
+            token = token[:-1]
     prefix = ""
     if token.startswith("@"):
         prefix, fragment = "@", token[1:]
     elif token.startswith(("~", ".", "/")) or "/" in token:
+        fragment = token
+    elif allow_bare:
         fragment = token
     else:
         return None
@@ -162,7 +173,8 @@ def _path_completion(text: str, cursor: int, sources: CompletionSources) -> Comp
             continue
         is_dir = entry.is_dir()
         suffix = "/" if is_dir else ""
-        value = f"{prefix}{display_prefix}{name}{suffix}"
+        close_quote = quote if quote and not is_dir else ""
+        value = f"{quote}{prefix}{display_prefix}{name}{suffix}{close_quote}"
         items.append(CompletionItem(value=value, label=f"{name}{suffix}", description="directory" if is_dir else "file"))
     if not items:
         return None
@@ -176,4 +188,4 @@ def _token_start(text: str, cursor: int) -> int:
     return index
 
 
-__all__ = ["COMPLETION_LIMIT", "CommandEntry", "Completion", "CompletionItem", "CompletionSources", "complete"]
+__all__ = ["COMPLETION_LIMIT", "CommandEntry", "Completion", "CompletionItem", "CompletionSources", "complete", "complete_path"]

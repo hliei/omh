@@ -66,3 +66,10 @@ def test_help_argument_completion_uses_the_runnable_surface() -> None:
     assert [item.value for item in spec.argument_items("he", sources)] == ["help"]
     assert spec.argument_items("model", sources) == ()
     assert "help" in RESERVED_COMMANDS
+
+
+def test_attach_is_a_runnable_builtin_with_help_and_clipboard_key() -> None:
+    assert classify("/attach picture.png", templates=["attach"]).kind == "builtin"
+    detail = command_detail("attach")
+    assert detail is not None and "remove <n>" in "\n".join(detail)
+    assert "Ctrl+V" in "\n".join(hotkey_lines())

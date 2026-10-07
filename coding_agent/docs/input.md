@@ -12,8 +12,10 @@ sends a request, and both keep the source file byte-for-byte.
 
 `read_file_attachment(argument, cwd=...)` resolves one file argument against the
 supplied working directory, `~` included, and returns a `FileAttachment` with
-the resolved path, the boundary text and an optional processed image. The
-installed command passes its startup directory (an explicit `--cwd` when given,
+the resolved path, the boundary text and an optional processed image.
+`resolve_attachment_path(argument, cwd)` exposes that same resolution rule for
+callers that read the file themselves, including the interactive `/attach`
+draft. The installed command passes its startup directory (an explicit `--cwd` when given,
 otherwise the invocation directory), so a relative `@file` follows the CLI path
 rule rather than a reopened session's saved cwd.
 `compose_first_task(stdin_text=..., attachments=..., first_prompt=...)` orders
@@ -38,8 +40,8 @@ interpretation is part of [the command line entry](cli.md). A path typed inside
 prompt text is ordinary text and never becomes an attachment. Print composes
 the accepted attachments, piped stdin and the first prompt into its first task
 through `compose_first_task`, then runs each later prompt serially; see
-[print text](cli.md#print-text). Pending interactive attachments and their
-draft management remain a later delivery.
+[print text](cli.md#print-text). Interactive pending attachments and their
+draft management are a separate, unsaved draft described below.
 
 ## Image processing and limits
 
@@ -74,6 +76,48 @@ SDK read option it comes from.
 when it cannot be read or accepted. The source file is never rewritten:
 conversion only changes the representation that is sent and saved.
 
+## Pending interactive attachments and screenshot paste
+
+Interactive mode keeps images in the conversation draft until the user submits
+one prompt with the text. `/attach <image-path>` reads and processes a real
+image file; `/attach` without arguments lists the pending entries with their
+name, dimensions, processing status, origin and source, and the `clipboard`
+line names the detected backend. `/attach remove <n>` removes one entry by its
+1-based number, and `/attach clear` empties the list. Ctrl+V reads a desktop
+screenshot into the same draft. Neither adds a model request, and neither
+auto-submits.
+
+`PendingAttachment` keeps a stable identity, the display name, the `file` or
+`clipboard` origin, the source path (or `clipboard`), the `ProcessedImage` and
+its processing status (`ready`, plus `converted-from` and `resized-from` when
+they apply). `PendingAttachments` is process-memory draft state: it never enters
+saved history or a session file before the prompt submits it, so removing,
+rejecting or cancelling a draft keeps the original editor text and the complete
+image identity. Submitting sends the pending `ImageContent` together with the
+editor text through `prompt(..., images=...)`, exactly like a print attachment,
+and the source file is not rewritten. An empty editor does not submit a pending
+image on its own.
+
+A path typed or pasted as ordinary text stays text; nothing is guessed as an
+attachment. A missing, unsupported, corrupt or over-limit image is explained
+with the same message `read_image` or `process_image` produces and adds no
+entry; the editor text is untouched.
+
+Clipboard detection is explicit and never installs a system tool. macOS uses
+the system `osascript` against the AppKit clipboard. Linux prefers `wl-paste`
+from `wl-clipboard` when `WAYLAND_DISPLAY` is set, then `xclip` when `DISPLAY`
+is set. When the Wayland command itself fails and `xclip` is available, the read
+falls back to X11; a normal empty result never reads the possibly stale X11
+clipboard. A headless environment never claims clipboard support from a TTY
+alone.
+When no backend is available, `read_clipboard_image` raises
+`ClipboardUnavailable` with the missing dependency and the
+`/attach <image-path>` fallback, and the screen keeps working. `detect_clipboard`
+reports the same backend information the `/attach` list shows. The subprocess
+runner is injectable, so a controlled fixture proves acceptance and the
+missing-backend path; a real desktop screenshot paste is proved by the manual
+two-platform acceptance, not by a headless PTY.
+
 ## Model modality
 
 A new image attachment requires a model whose `input` declares `image`.
@@ -81,9 +125,11 @@ A new image attachment requires a model whose `input` declares `image`.
 `UnsupportedImageModelError` before accepting anything when the selected model is
 text-only; the message names the model, lists vision-capable models from the
 available catalog when it can, and states that no provider is switched
-automatically. `AgentSession.supports_images` reports the current model's
-capability. Nothing is added to history and no request is sent when it is
-rejected.
+automatically. `AgentSession.unsupported_image_message()` returns that same
+guidance without raising, so the interactive draft can warn when an image is
+added and refuse submission before `phase model` or any request.
+`AgentSession.supports_images` reports the current model's capability. Nothing
+is added to history and no request is sent when it is rejected.
 
 Images already in saved history are never rejected this way. Resolving such a
 session with a text-only model adds a non-blocking `adjusted` diagnostic that
@@ -107,4 +153,7 @@ preserve that content with the surrounding text, model and usage records, so a
 conversation continues after the temporary source file disappears. The
 application history codec already round-trips `ImageContent` in user and
 tool-result messages; the round trip is covered by
-[the attachment tests](../tests/test_image_input.py).
+[the attachment tests](../tests/test_image_input.py) and by the installed
+interactive PTY flow in
+[the interactive attachment tests](../tests/test_interactive_attachments.py),
+which deletes the source file and reopens the saved session.

@@ -39,6 +39,7 @@ def test_arrows_and_control_keys() -> None:
     decoder = KeyDecoder()
     assert names(decoder, b"\x1b[A\x1b[B\x1b[C\x1b[D") == ["up", "down", "right", "left"]
     assert names(decoder, b"\x07\x18\t\x7f") == ["ctrl_g", "ctrl_x", "tab", "backspace"]
+    assert names(decoder, b"\x16") == ["ctrl_v"]
 
 
 def test_text_and_multibyte_characters_are_decoded() -> None:
