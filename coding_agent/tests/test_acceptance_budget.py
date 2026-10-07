@@ -37,6 +37,8 @@ EXIT_FAILURE = 1
 PRICES = {
     ("opencode-go", "deepseek-v4.1-flash"): ModelPrice(0.30, 1.20),
     ("opencode-go", "deepseek-v4-pro"): ModelPrice(1.32, 3.96),
+    ("opencode-go", "kimi-k3"): ModelPrice(3.00, 15.00),
+    ("opencode-go", "kimi-k2.7-code"): ModelPrice(0.95, 4.00),
     ("deepseek", "deepseek-flash"): ModelPrice(0.30, 1.20),
     ("deepseek", "deepseek-v4-pro"): ModelPrice(1.32, 3.96),
 }
@@ -79,7 +81,7 @@ def usage_stream(text: str = "done") -> object:
     })
 
 
-def streaming_response(*lines: str) -> FetchResponse:
+def line_stream_response(*lines: str) -> FetchResponse:
     """A response shaped like the real transport: an async line iterator."""
 
     async def generate() -> object:
@@ -205,15 +207,20 @@ async def test_summary_send_is_counted_and_capped(tmp_path: Path) -> None:
     assert len(inner.requests) == 2
     assert "summarization assistant" in json.dumps(inner.bodies[1])
     assert ledger.sends == 2
-    assert inner.bodies[1]["max_tokens"] <= 4096
+    # The summary carries its own smaller cap; the gate must clamp, not raise it.
+    assert inner.bodies[0]["max_tokens"] == 4096
+    assert 0 < inner.bodies[1]["max_tokens"] < 4096
 
 
-async def test_output_cap_override_can_raise_a_fixed_thinking_model(tmp_path: Path) -> None:
+async def test_fixed_thinking_go_models_use_8192_without_an_override(tmp_path: Path) -> None:
     inner = RecordingFetch(text_stream("done"))
-    ledger = make_ledger(tmp_path, output_caps={"opencode-go/deepseek-v4.1-flash": 8192})
-    code, _, _ = await run_chain(make_host(tmp_path, ledger.guarded_fetch(inner)), "go")
+    ledger = make_ledger(tmp_path)
+    code, _, _ = await run_chain(
+        make_host(tmp_path, ledger.guarded_fetch(inner)), "go", model="kimi-k2.7-code",
+    )
 
     assert code == EXIT_OK
+    assert inner.bodies[0]["model"] == "kimi-k2.7-code"
     assert inner.bodies[0]["max_tokens"] == 8192
     assert ledger.output_cap_tokens == 8192
 
@@ -273,7 +280,7 @@ async def test_reported_usage_is_recorded_without_replacing_the_reservation(tmp_
 
 
 async def test_a_streamed_response_records_usage_and_completion(tmp_path: Path) -> None:
-    inner = RecordingFetch(streaming_response(
+    inner = RecordingFetch(line_stream_response(
         'data: {"choices": [{"delta": {"content": "done"}, "finish_reason": "stop"}]}',
         'data: {"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}}',
         "data: [DONE]",
@@ -357,6 +364,18 @@ async def test_ledger_resumes_from_its_file_and_keeps_the_remaining_limits(tmp_p
     assert code == EXIT_FAILURE and later.requests == []
 
 
+async def test_the_ledger_records_headroom_for_the_next_ticket(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    await run_chain(make_host(tmp_path, ledger.guarded_fetch(RecordingFetch(text_stream("done")))), "go")
+    ledger.record_snapshot()
+
+    snapshots = [record for record in records(ledger) if record["kind"] == "snapshot"]
+    assert len(snapshots) == 1
+    assert snapshots[0]["sends"] == 1 and snapshots[0]["remaining_sends"] == 59
+    resumed = AcceptanceLedger(ledger.path, PRICES)
+    assert resumed.snapshot()["remaining_sends"] == 59
+
+
 async def test_ledger_never_records_credentials(tmp_path: Path) -> None:
     inner = RecordingFetch(text_stream("done"))
     ledger = make_ledger(tmp_path)
@@ -370,6 +389,9 @@ async def test_ledger_never_records_credentials(tmp_path: Path) -> None:
     text = ledger.path.read_text(encoding="utf-8")
     assert "super-secret-key" not in text
     assert "bearer" not in text.lower() and "authorization" not in text.lower()
+    send = next(record for record in records(ledger) if record["kind"] == "send")
+    assert send["attempt"] == 1 and send["parameters"]["max_tokens"] == 4096
+    assert "api_key" not in json.dumps(send).lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -431,3 +453,52 @@ def test_the_live_injection_records_through_the_installed_command(tmp_path: Path
     assert caps.read_text().split() == ["4096"]
     send = next(record for record in records(AcceptanceLedger(ledger_path, PRICES)) if record["kind"] == "send")
     assert send["task"] == "installed" and send["output_cap"] == 4096
+
+
+# --------------------------------------------------------------------------- #
+# The acceptance transport mirrors the SDK default shape
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_acceptance_transport_streams_lines_and_reads_error_bodies(tmp_path: Path) -> None:
+    import http.server
+    import threading
+
+    from acceptance_budget import create_httpx_transport
+    from omh.llm.types import FetchRequest
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("content-length") or 0)
+            self.rfile.read(length)
+            if self.path == "/error":
+                payload = b'{"error": {"message": "bad key"}}'
+                self.send_response(401)
+                self.send_header("content-type", "application/json")
+            else:
+                payload = b'data: {"choices": []}\n\ndata: [DONE]\n'
+                self.send_response(200)
+                self.send_header("content-type", "text/event-stream")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args: object) -> None:
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    transport = create_httpx_transport()
+    try:
+        ok = await transport(FetchRequest(method="POST", url=f"{base}/ok", headers={}, json_body={}))
+        assert ok.status == 200
+        assert [line async for line in ok.aiter_lines()][-1].strip() == "data: [DONE]"
+        error = await transport(
+            FetchRequest(method="POST", url=f"{base}/error", headers={}, json_body={}),
+        )
+        assert error.status == 401 and "bad key" in error.text
+    finally:
+        server.shutdown()
+        server.server_close()

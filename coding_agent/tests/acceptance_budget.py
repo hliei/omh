@@ -54,6 +54,12 @@ DEFAULT_ROUTES: Mapping[str, str] = {
 #: Both target providers select their output cap with ``max_tokens``.
 MAX_TOKENS_FIELD = "max_tokens"
 
+#: Spec T04: the fixed-thinking Go K3 and K2.7 Code combinations may use 8192.
+SPEC_OUTPUT_CAPS: Mapping[str, int] = {
+    "opencode-go/kimi-k3": 8192,
+    "opencode-go/kimi-k2.7-code": 8192,
+}
+
 #: Characters kept for stop-reason classification; enough for an error body.
 _MAX_BODY = 16_384
 
@@ -101,10 +107,10 @@ class PhaseLimits:
 class PreparedSend:
     """One send's reserved facts, computed before the request leaves."""
 
-    task: str
     provider: str
     model: str
     thinking: str
+    parameters: dict[str, object]
     output_cap: int
     input_estimate: int
     cost_estimate: float
@@ -198,23 +204,18 @@ class AcceptanceLedger:
 
     ``prices`` is the conservative peak price table the caller re-verified
     before execution, keyed by ``(provider, model)``. A missing entry refuses
-    the send rather than guessing a cost. ``output_caps`` overrides the default
-    per-request cap for a ``provider/model`` combination.
+    the send rather than guessing a cost. Each send carries the default 4096
+    cap, except the fixed-thinking Go K3 and K2.7 Code combinations, which the
+    phase allows at 8192.
     """
 
     def __init__(
         self, path: str | Path, prices: Mapping[tuple[str, str], ModelPrice], *,
         limits: PhaseLimits | None = None,
-        output_caps: Mapping[str, int] | None = None,
-        routes: Mapping[str, str] | None = None,
-        clock: Any = None,
     ) -> None:
         self.path = Path(path)
         self._prices = dict(prices)
         self._limits = limits if limits is not None else PhaseLimits()
-        self._output_caps = dict(output_caps or {})
-        self._routes = dict(DEFAULT_ROUTES if routes is None else routes)
-        self._clock = clock if clock is not None else self._now
         self.sends = 0
         self.input_tokens = 0
         self.output_cap_tokens = 0
@@ -248,6 +249,10 @@ class AcceptanceLedger:
             "stop_reason": self.stop_reason,
         }
 
+    def record_snapshot(self) -> None:
+        """Append the terminal totals so ticket 27 reads headroom, not derived state."""
+        self._append({"kind": "snapshot", "time": self._now(), **self.snapshot()})
+
     # ------------------------------------------------------------------ #
     # Gate
     # ------------------------------------------------------------------ #
@@ -264,7 +269,7 @@ class AcceptanceLedger:
                 self._record_result(index, status=None, outcome="interrupted",
                                     usage_known=False, error=type(error).__name__)
                 raise
-            self._watch(index, response)
+            self._observe_response(index, response)
             return response
 
         return send
@@ -298,11 +303,13 @@ class AcceptanceLedger:
         self._append({
             "kind": "send",
             "index": self._index,
+            "attempt": self._index,
             "task": task,
-            "time": self._clock(),
+            "time": self._now(),
             "provider": send.provider,
             "model": send.model,
             "thinking": send.thinking,
+            "parameters": dict(send.parameters),
             "input_estimate": send.input_estimate,
             "output_cap": send.output_cap,
             "cost_estimate": round(send.cost_estimate, 6),
@@ -325,13 +332,21 @@ class AcceptanceLedger:
         cost = price.input * estimate / 1_000_000 + price.output * cap / 1_000_000
         prepared = replace(request, json_body={**body, MAX_TOKENS_FIELD: cap})
         return prepared, PreparedSend(
-            task=task, provider=provider, model=model,
-            thinking=describe_sent_thinking(body), output_cap=cap,
-            input_estimate=estimate, cost_estimate=cost,
+            provider=provider, model=model,
+            thinking=describe_sent_thinking(body),
+            parameters={
+                "model": model,
+                "max_tokens": cap,
+                "reasoning_effort": body.get("reasoning_effort"),
+                "thinking": body.get("thinking"),
+                "stream": body.get("stream"),
+            },
+            output_cap=cap, input_estimate=estimate, cost_estimate=cost,
         )
 
     def _output_cap(self, provider: str, model: str, body: Mapping[str, object]) -> int:
-        limit = self._output_caps.get(f"{provider}/{model}", self._limits.default_output_cap)
+        name = f"{provider}/{model}"
+        limit = SPEC_OUTPUT_CAPS.get(name, self._limits.default_output_cap)
         requested = body.get(MAX_TOKENS_FIELD)
         if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0:
             return min(requested, limit)
@@ -339,10 +354,8 @@ class AcceptanceLedger:
 
     def _provider(self, url: str) -> str:
         host = urlparse(url).hostname or ""
-        if not host:
-            return self._routes.get("", "")
-        for suffix, provider in self._routes.items():
-            if suffix and (host == suffix or host.endswith(f".{suffix}")):
+        for suffix, provider in DEFAULT_ROUTES.items():
+            if host == suffix or host.endswith(f".{suffix}"):
                 return provider
         return host
 
@@ -365,7 +378,7 @@ class AcceptanceLedger:
         return "; ".join(reasons) if reasons else None
 
     def _refuse(self, task: str, reason: str, projected: Mapping[str, Any] | None = None) -> None:
-        record: dict[str, Any] = {"kind": "refused", "task": task, "time": self._clock(), "reason": reason}
+        record: dict[str, Any] = {"kind": "refused", "task": task, "time": self._now(), "reason": reason}
         if projected is not None:
             record["projected"] = self._rounded(projected)
         self._append(record)
@@ -376,7 +389,7 @@ class AcceptanceLedger:
     # Response observation
     # ------------------------------------------------------------------ #
 
-    def _watch(self, index: int, response: FetchResponse) -> None:
+    def _observe_response(self, index: int, response: FetchResponse) -> None:
         if response.status >= 400 or response.lines is None:
             self._finish(index, response.status, complete=True,
                          text=response.text, usage='"usage"' in response.text)
@@ -392,7 +405,7 @@ class AcceptanceLedger:
             self._finish(index, response.status, complete=complete,
                          text=state["text"], usage=state["usage"])
 
-        async def watched() -> AsyncIterator[str]:
+        async def watched_lines() -> AsyncIterator[str]:
             try:
                 async for line in lines:
                     if '"usage"' in line:
@@ -410,7 +423,7 @@ class AcceptanceLedger:
             finally:
                 finish(False)
 
-        response.lines = watched()
+        response.lines = watched_lines()
 
     def _finish(self, index: int, status: int, *, complete: bool, text: str, usage: bool) -> None:
         if status >= 400:
@@ -427,7 +440,7 @@ class AcceptanceLedger:
         stop: str | None = None, error: str | None = None,
     ) -> None:
         record: dict[str, Any] = {
-            "kind": "result", "index": index, "time": self._clock(),
+            "kind": "result", "index": index, "time": self._now(),
             "status": status, "outcome": outcome, "usage_known": usage_known,
         }
         if error is not None:
@@ -439,7 +452,7 @@ class AcceptanceLedger:
     def _stop(self, reason: str) -> None:
         if self.stop_reason is None:
             self.stop_reason = reason
-            self._append({"kind": "stop", "time": self._clock(), "reason": reason})
+            self._append({"kind": "stop", "time": self._now(), "reason": reason})
 
     # ------------------------------------------------------------------ #
     # Persistence

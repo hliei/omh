@@ -25,26 +25,26 @@ product.
 
 ## Eight target combinations
 
-The acceptance plan exercises these eight combinations with an installed
-command in a small temporary repository: `read`, `edit`, `write` and `bash`,
-then save, close, reopen and continue ([L01/L02](../README.md)).
+The planned real-service smoke task uses these eight combinations with an
+installed command in a small temporary repository: `read`, `edit`, `write` and
+`bash`, then save, close, reopen and continue in the same conversation.
 
-| Combination | Input | Thinking levels | Live task evidence |
+| Combination | Input | Thinking levels | Live-verified |
 | --- | --- | --- | --- |
-| `opencode-go/glm-5.3` | text | low, high, max | not executed |
-| `opencode-go/glm-5.3-flash` | text, image | low, high, max | not executed |
-| `opencode-go/kimi-k3` | text, image | max | not executed |
-| `opencode-go/kimi-k2.7-code` | text, image | fixed on, no adjustable level | not executed |
-| `opencode-go/deepseek-v4.1-flash` | text, image | low, high, max | not executed |
-| `opencode-go/deepseek-v4-pro` | text | high, max | not executed |
-| `deepseek/deepseek-flash` | text, image | low, high, max | not executed |
-| `deepseek/deepseek-v4-pro` | text | high, max | not executed |
+| `opencode-go/glm-5.3` | text | low, high, max | no |
+| `opencode-go/glm-5.3-flash` | text, image | low, high, max | no |
+| `opencode-go/kimi-k3` | text, image | max | no |
+| `opencode-go/kimi-k2.7-code` | text, image | fixed on, no adjustable level | no |
+| `opencode-go/deepseek-v4.1-flash` | text, image | low, high, max | no |
+| `opencode-go/deepseek-v4-pro` | text | high, max | no |
+| `deepseek/deepseek-flash` | text, image | low, high, max | no |
+| `deepseek/deepseek-v4-pro` | text | high, max | no |
 
-"Live task evidence" is `not executed` until a real task has been run under the
-shared acceptance ledger. Recording a readiness check, a configured key or a
-catalog date does not change this column. When a task runs, its evidence names
-the exact command, the observed tool turns, the resulting files and the saved
-history ID.
+`Live-verified` is `no` until a real task has exercised the combination under
+the shared acceptance ledger. Recording a readiness check, a configured key or
+a catalog date does not change this column; it stays `no` until the product has
+actual evidence. When a combination is exercised, its evidence names the exact
+command, the observed tool turns, the resulting files and the saved history ID.
 
 The five candidate vision targets are `opencode-go/glm-5.3-flash`,
 `opencode-go/kimi-k3`, `opencode-go/kimi-k2.7-code`,
@@ -83,11 +83,13 @@ default:
 
 ## Acceptance budget is local, not a product feature
 
-The real-service smoke tasks run under one conservative phase budget (bounded
-HTTP sends, estimated input, sent output caps and a conservative cost estimate).
-The reservation and ledger live in local acceptance tooling at the public
-injectable transport boundary; the shipped product exposes no budget setting,
-account panel, scorer or general runtime budget API. A live run refuses a send
-whose reservation would exceed the phase limits and records the stop reason
-instead of trying another attempt or provider. See the parent specification for
-the current limits.
+The real-service smoke tasks run under one conservative phase budget: at most
+60 HTTP sends, 400,000 estimated input tokens, 192,000 sent output-cap tokens,
+USD 5 total and USD 2 for DeepSeek direct, with a 4096 per-request output cap
+(8192 for the fixed-thinking Go K3 and K2.7 Code). The reservation and ledger
+live in local acceptance tooling at the public injectable transport boundary;
+the shipped product exposes no budget setting, account panel, scorer or general
+runtime budget API. A live run refuses a send whose reservation would exceed
+the phase limits and records the stop reason instead of trying another attempt
+or provider. Estimated input and cost are pre-send stop thresholds, not a
+provider tokenizer count or a bill guarantee.
