@@ -42,6 +42,7 @@ from omh.llm.types import (
 )
 
 from coding_agent.config import ToolName as ToolName
+from coding_agent.history import ConversationSource
 from coding_agent.images import ImageLimits, create_read_image_processor
 from coding_agent.resources import ApplicationResources, load_resources
 from coding_agent.session_manager import (
@@ -161,6 +162,11 @@ class AgentSession:
     @property
     def save_error(self) -> Exception | None:
         return self.session_manager.save_error
+
+    @property
+    def source(self) -> ConversationSource | None:
+        """Immediate derivation source, preserved by saves and reopening."""
+        return self.session_manager.source
 
     def ensure_can_accept_work(self) -> None:
         """Check admission before the host starts new work, including a user shell."""

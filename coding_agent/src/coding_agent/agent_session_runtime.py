@@ -6,7 +6,9 @@ import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid7
 
 from omh.agent import (
     Agent,
@@ -17,14 +19,16 @@ from omh.agent import (
     AgentOptions,
     CompactionResult,
     CustomAgentMessage,
+    MessageHistoryEntry,
     validate_history,
 )
+from omh.agent.conversation.history import history_path
 from omh.llm.types import AbortSignal, ImageContent
 
 from coding_agent.agent_session import AgentSession, CodingAgentOptions, _create_tools
-from coding_agent.history import DecodedHistory
+from coding_agent.history import ConversationSource, DecodedHistory
 from coding_agent.resources import ApplicationResources, load_resources
-from coding_agent.session_manager import ExportFormat, SessionManager, _path
+from coding_agent.session_manager import ExportFormat, SaveMode, SessionManager, _path
 from coding_agent.session_paths import session_file_path
 from coding_agent.user_shell import HIDDEN_SHELL_TYPE
 
@@ -88,13 +92,14 @@ class AgentSessionRuntime:
         return await asyncio.shield(task)
 
     async def _publish(
-        self, session: AgentSession, *, previous_history: AgentHistory | None,
+        self, session: AgentSession, *, previous_history: AgentHistory | None, stable_source: bool = False,
     ) -> AgentSession:
         old = self.current_session
-        if (previous_history is not None and old is not None and session.path == old.path
+        if (previous_history is not None and old is not None and (stable_source or session.path == old.path)
                 and (old.agent.state.is_busy or old.agent.history != previous_history)):
             await session.session_manager.close()
-            raise RuntimeError("Wait for stable idle history before reopening the current session file")
+            action = "deriving a conversation" if stable_source else "reopening the current session file"
+            raise RuntimeError(f"Wait for stable idle history before {action}")
         try:
             if old is not None:
                 await old.agent.close()
@@ -112,12 +117,15 @@ class AgentSessionRuntime:
                 for subscription in self._subscriptions:
                     subscription.unsubscribe()
                     subscription.unsubscribe = session.agent.subscribe(subscription.listener)
+                if stable_source:
+                    await session.session_manager.commit(session.agent.history, session.agent.history.entries)
             else:
                 await session.session_manager.close()
         return session
 
     async def _replace_session(
         self, path: str | Path | None = None, *, display_name: str | None = None,
+        prepare: Callable[[], Awaitable[AgentSession]] | None = None,
     ) -> AgentSession:
         if self._preparing or self._switching():
             raise RuntimeError("A session switch is already in progress")
@@ -127,13 +135,14 @@ class AgentSessionRuntime:
         session = None
         try:
             previous_history = (self.current_session.agent.history
-                                if path is not None and self.current_session is not None else None)
+                                if (path is not None or prepare is not None) and self.current_session is not None else None)
             # Keep cancellation in preparation separate from the owned handoff.
             await asyncio.sleep(0)
-            session = await (self._prepare_new_session(display_name=display_name)
+            session = await (prepare() if prepare is not None else
+                             self._prepare_new_session(display_name=display_name)
                              if path is None else self._prepare_open_session(path))
             await asyncio.sleep(0)
-            self._switch_task = asyncio.create_task(self._publish(session, previous_history=previous_history))
+            self._switch_task = asyncio.create_task(self._publish(session, previous_history=previous_history, stable_source=prepare is not None))
             self._switch_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
         except BaseException:
             if session is not None:
@@ -143,10 +152,10 @@ class AgentSessionRuntime:
             self._preparing = False
         return await asyncio.shield(self._switch_task)
 
-    def _assemble(self, decoded: DecodedHistory | None = None) -> tuple[
+    def _assemble(self, decoded: DecodedHistory | None = None, *, options: CodingAgentOptions | None = None) -> tuple[
         AgentOptions, Path, str | None, ApplicationResources, dict[str, str],
     ]:
-        options = self.options
+        options = options or self.options
         cwd = Path(options.cwd or (decoded.cwd if decoded else Path.cwd())).expanduser().resolve()
         initial = options.agent_options.initial_state or AgentInitialState()
         selected = options.model or initial.model
@@ -221,6 +230,84 @@ class AgentSessionRuntime:
                 _path(self.options.session_dir, cwd), history.conversation_id, history.created_at,
             )
         return None
+
+    async def clone_session(
+        self, *, cwd: str | Path | None = None, save_mode: SaveMode | None = None,
+        session_dir: str | Path | None = None,
+    ) -> AgentSession:
+        """Copy the current active path into an independent idle conversation."""
+        return await self._derive_session(cwd=cwd, save_mode=save_mode, session_dir=session_dir)
+
+    async def fork_session(
+        self, entry_id: str, *, cwd: str | Path | None = None, save_mode: SaveMode | None = None,
+        session_dir: str | Path | None = None,
+    ) -> AgentSession:
+        """Copy ancestors before a user on the active path, excluding that user."""
+        return await self._derive_session(entry_id=entry_id, cwd=cwd, save_mode=save_mode, session_dir=session_dir)
+
+    async def _derive_session(
+        self, *, entry_id: str | None = None, cwd: str | Path | None,
+        save_mode: SaveMode | None, session_dir: str | Path | None,
+    ) -> AgentSession:
+        old = self._current()
+        if old.agent.state.is_busy or old.agent.state.is_closed:
+            raise RuntimeError("Derivation requires an open idle Agent")
+        if save_mode not in (None, "auto", "memory"):
+            raise ValueError("save_mode must be auto or memory")
+        if save_mode == "memory" and session_dir is not None:
+            raise ValueError("A memory conversation cannot specify a session directory")
+        original = old.agent.history
+        path = history_path(original)
+        leaf = original.leaf_id
+        if entry_id is not None:
+            selected = next((entry for entry in path if entry.id == entry_id), None)
+            if not isinstance(selected, MessageHistoryEntry) or selected.message.role != "user":
+                raise ValueError("Fork requires a user entry on the current active path")
+            leaf = selected.parent_id
+            path = path[:path.index(selected)]
+        history = replace(original, entries=tuple(path), leaf_id=leaf,
+                          conversation_id=str(uuid7()), created_at=datetime.now(UTC))
+        validate_history(history)
+        source = ConversationSource("fork" if entry_id is not None else "clone", original.conversation_id,
+                                    str(old.path) if old.path is not None else None, leaf, entry_id)
+        return await self._replace_session(prepare=lambda: self._prepare_derived_session(
+            history, source, cwd=cwd, save_mode=save_mode, session_dir=session_dir,
+        ))
+
+    async def _prepare_derived_session(
+        self, history: AgentHistory, source: ConversationSource, *, cwd: str | Path | None,
+        save_mode: SaveMode | None, session_dir: str | Path | None,
+    ) -> AgentSession:
+        old = self._current()
+        target_cwd = _path(cwd, old.cwd) if cwd is not None else old.cwd
+        mode = save_mode or ("auto" if session_dir is not None else old.save_mode)
+        directory = (_path(session_dir, target_cwd) if session_dir is not None else
+                     old.path.parent if old.path is not None else
+                     _path(self.options.session_dir, target_cwd) if self.options.session_dir is not None else None)
+        if mode == "auto" and directory is None:
+            raise ValueError("Automatic derivation requires a session directory")
+        initial = self.options.agent_options.initial_state or AgentInitialState()
+        options = replace(
+            self.options, cwd=target_cwd, model=None, thinking_level=None,
+            available_models=(*self.options.available_models, old.agent.state.model),
+            fallback_model=old.agent.state.model,
+            agent_options=replace(self.options.agent_options, conversation_id=None, session_id=None,
+                                  initial_state=replace(initial, model=None, thinking_level=None, messages=None)),
+        )
+        assembled, target_cwd, fallback, resources, sections = self._assemble(
+            DecodedHistory(history, str(target_cwd), None), options=options,
+        )
+        if fallback is not None:
+            raise ValueError(fallback)
+        agent = Agent.from_history(history, assembled)
+        await agent.set_system_sections(sections)
+        agent.session_id = history.conversation_id
+        manager = SessionManager(
+            cwd=target_cwd, source=source,
+            path=session_file_path(directory, history.conversation_id, history.created_at)
+            if mode == "auto" and directory is not None else None,
+        )
+        return AgentSession(agent, session_manager=manager, resources=resources, resource_options=options)
 
     async def open_session(self, path: str | Path) -> AgentSession:
         """Prepare a saved identity before closing and replacing the old Agent."""

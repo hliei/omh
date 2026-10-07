@@ -16,6 +16,7 @@ from omh.agent import (
 )
 
 from coding_agent.history import (
+    ConversationSource,
     DecodedHistory,
     decode_history,
     encode_entries,
@@ -53,13 +54,14 @@ class SessionManager:
 
     def __init__(
         self, *, cwd: Path, path: Path | None = None,
-        display_name: str | None = None,
+        display_name: str | None = None, source: ConversationSource | None = None,
     ) -> None:
         self.cwd = cwd
         self._path = _path(path, cwd) if path is not None else None
         self._writer = WriterLock(self._path) if self._path is not None else None
         self._closed = False
         self.display_name = display_name
+        self.source = source
         self._save_state: SaveState = "pending"
         self._save_error: Exception | None = None
         self._saved_ids: set[str] = set()
@@ -114,6 +116,7 @@ class SessionManager:
             raise
         manager.cwd = Path(decoded.cwd)
         manager.display_name = decoded.display_name
+        manager.source = decoded.source
         manager._save_state = "saved"
         manager._saved_ids = {entry.id for entry in decoded.history.entries}
         manager._needs_separator = bool(raw and not raw.endswith(b"\n"))
@@ -162,7 +165,7 @@ class SessionManager:
                 if self._save_state == "pending":
                     self.path.parent.mkdir(parents=True, exist_ok=True)
                     with self.path.open("x", encoding="utf-8", newline="\n") as file:
-                        file.write(encode_history(history, cwd=str(self.cwd), display_name=self.display_name))
+                        file.write(encode_history(history, cwd=str(self.cwd), display_name=self.display_name, source=self.source))
                     self._saved_ids = {entry.id for entry in history.entries}
                 else:
                     entries = tuple(entry for entry in entries if entry.id not in self._saved_ids)
@@ -184,7 +187,7 @@ class SessionManager:
             try:
                 if destination != self.path or self._writer is None:
                     writer = WriterLock(destination)
-                text = encode_history(history, cwd=str(self.cwd), display_name=self.display_name)
+                text = encode_history(history, cwd=str(self.cwd), display_name=self.display_name, source=self.source)
                 _replace_file(destination, text)
             except Exception as error:
                 self._save_state, self._save_error = "unsaved", error
@@ -221,8 +224,9 @@ class SessionManager:
             await self.save(history)
             # A bound history destination always stays reopenable JSONL.
             format = "jsonl"
-        encode = encode_history if format == "jsonl" else encode_history_html
-        text = encode(history, cwd=str(self.cwd), display_name=self.display_name)
+        text = (encode_history(history, cwd=str(self.cwd), display_name=self.display_name, source=self.source)
+                if format == "jsonl" else
+                encode_history_html(history, cwd=str(self.cwd), display_name=self.display_name))
         if destination is not None and destination != self.path:
             writer = WriterLock(destination)
             try:

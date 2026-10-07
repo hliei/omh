@@ -183,10 +183,13 @@ async def _execute_print(
                 session = runtime.current_session
                 assert session is not None
                 history = session.agent.history
-                writer.write(_json_line({"type": "session", "version": 3,
-                                         "id": history.conversation_id,
-                                         "timestamp": history.created_at.isoformat(),
-                                         "cwd": str(session.cwd)}))
+                header: dict[str, object] = {"type": "session", "version": 3,
+                                             "id": history.conversation_id,
+                                             "timestamp": history.created_at.isoformat(),
+                                             "cwd": str(session.cwd)}
+                if session.source is not None and session.source.path is not None:
+                    header["parentSession"] = session.source.path
+                writer.write(_json_line(header))
                 if session.save_mode == "memory":
                     write_diagnostic(stderr, "in-memory session; history will not be saved")
 

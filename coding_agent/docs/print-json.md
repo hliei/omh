@@ -18,8 +18,9 @@ The first line is a session header:
 
 Only this header has `version`. It identifies the current conversation and its
 original creation time, including after reopening. `parentSession` is optional
-and requires an actual recorded source; current new/open print paths do not
-create one. Model, thinking level, saving state, memory mode and rescue paths
+and contains the recorded source file path when reopening a fork or clone
+whose source was file-backed. Memory sources omit it. New print conversations
+do not create source metadata. Model, thinking level, saving state, memory mode and rescue paths
 are absent from the header. `--no-session` reports memory mode on stderr.
 Reopening emits this invocation's header and new events; it does not replay old
 history or resume interrupted requests.

@@ -127,6 +127,7 @@ and never submits the draft by itself.
 | Alt+Up | Recall all queued steering, then all follow-ups, back into the editor |
 | Tab | Open completion, then accept the selected candidate |
 | Escape | Close completion first; otherwise recall queued inputs and cancel the model; after the model stops, cancel the user shell |
+| Double Escape in an empty editor | Open the active-user fork selector while Agent and shell are idle |
 | Left / Right | Move the cursor |
 | Backspace | Delete the character before the cursor |
 | Ctrl+G | Edit the current draft in an external editor |
@@ -135,9 +136,10 @@ and never submits the draft by itself.
 | Ctrl+T | Show or hide recorded thinking |
 | Ctrl+O | Expand or collapse recorded tool output |
 
-Ctrl+C, Ctrl+D and the process signals are listed under [Exit](#exit). The
-empty-editor double Escape fork selector belongs to a later delivery and is not
-bound here. The product does not read a custom keymap file.
+Ctrl+C, Ctrl+D and the process signals are listed under [Exit](#exit).
+See [fork and clone](session-management.md#fork-or-clone-an-independent-conversation)
+for copied history, selected-input refill, target options and source drafts.
+The product does not read a custom keymap file.
 
 ## Steering, follow-up and recall
 

@@ -9,9 +9,10 @@ sessions; the session connects awaited SDK history commits to its manager.
 
 ## Session entry
 
-`new_session`, `open_session` and `switch_session` return `AgentSession`, which exposes
+`new_session`, `open_session`, `switch_session`, `fork_session` and
+`clone_session` return `AgentSession`, which exposes
 `agent`, `session_manager`, `path`, `cwd`, `display_name`, `save_state`, `save_error`,
-`save_mode` and `model_fallback_message`. Session methods `prompt`, `continue_`, `compact`,
+`save_mode`, `source` and `model_fallback_message`. Session methods `prompt`, `continue_`, `compact`,
 `save`, `export`, `submit_custom_message` and `close` have matching runtime wrappers. `steer`, `follow_up` and
 `reload_resources` also work through either the session or runtime. `save_mode` is
 `"auto"` for a file-backed conversation and `"memory"` when no destination exists;

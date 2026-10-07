@@ -17,7 +17,7 @@ on a permanent write error without a synthetic result. See the [JSON wire contra
 and [consumer example](examples/consume_print_json.py). Interactive mode scrolls
 the conversation above a multiline editor and status line, with session-scoped
 input history, command/path completion, an external editor, conversation
-switching with drafts, retained saving recovery and protected exit; see
+switching with drafts, independent fork/clone, retained saving recovery and protected exit; see
 [Interactive session](docs/interactive.md). See the [command line entry](docs/cli.md).
 
 From the repository root, install both projects for development:
@@ -60,7 +60,7 @@ repository. The root SDK checks run separately.
 | [SessionManager](docs/session-manager.md) | File metadata, JSONL, saving state, export and repair |
 | [Session management and recovery](docs/session-management.md) | Interactive selectors, names, per-conversation drafts, save/export, retained recovery and exit protection |
 | [Session discovery](docs/session-discovery.md) | Current/all projects, search, ordering, paths/IDs and recent-session selection |
-| [AgentSessionRuntime](docs/agent-session-runtime.md) | Host assembly, current-session switching, subscriptions and retained sessions |
+| [AgentSessionRuntime](docs/agent-session-runtime.md) | Host assembly, current-session switching, fork/clone, subscriptions and retained sessions |
 
 The [SDK Agent contract](../docs/agent.md) defines history, execution policies and
 lifecycle. [Product vocabulary](CONTEXT.md) and
