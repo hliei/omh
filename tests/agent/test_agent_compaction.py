@@ -1158,3 +1158,30 @@ async def test_compaction_checkpoint_preserves_system_instructions_and_tools() -
     )
     assert restored.state.messages[0].role == "system"
     assert "BASE PROMPT" in str(restored.state.messages[0].content)
+
+
+def test_public_context_estimate_uses_the_latest_reported_usage() -> None:
+    from datetime import UTC, datetime
+
+    from omh.agent import AgentHistory, estimate_history_tokens
+
+    stamp = datetime(2026, 10, 5, tzinfo=UTC)
+    history = AgentHistory(
+        conversation_id="estimate", created_at=stamp,
+        entries=(
+            MessageHistoryEntry(
+                id="user", parent_id=None, timestamp=stamp,
+                message=UserMessage(content="estimate this", timestamp=1),
+            ),
+            MessageHistoryEntry(
+                id="assistant", parent_id="user", timestamp=stamp,
+                message=AssistantMessage(
+                    api="openai-completions", provider="test", model="test-model",
+                    usage=replace(empty_usage(), input=1000, output=234, total_tokens=1234, reported=True),
+                    stop_reason="stop", timestamp=NOW, content=[TextContent(text="answer")],
+                ),
+            ),
+        ),
+        leaf_id="assistant",
+    )
+    assert estimate_history_tokens(history) == 1234

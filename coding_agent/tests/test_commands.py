@@ -37,10 +37,12 @@ def test_help_lists_only_runnable_commands() -> None:
     assert "/help" in text
     assert "/hotkeys" in text
     assert "/copy" in text
+    assert "/compact" in text
     for spec in AVAILABLE_COMMANDS:
         assert spec.usage in text
-    for reserved in ("/compact",):
-        assert reserved not in text
+    # Every reserved name is runnable today; a future reserved name must never be
+    # advertised by help until it is delivered.
+    assert RESERVED_COMMANDS <= {spec.name for spec in AVAILABLE_COMMANDS}
 
 
 def test_command_detail_only_resolves_runnable_commands() -> None:
