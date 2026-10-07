@@ -60,9 +60,6 @@ SPEC_OUTPUT_CAPS: Mapping[str, int] = {
     "opencode-go/kimi-k2.7-code": 8192,
 }
 
-#: Characters kept for stop-reason classification; enough for an error body.
-_MAX_BODY = 16_384
-
 _AUTH_STATUS = frozenset({401, 403})
 _BALANCE_STATUS = frozenset({402})
 _AUTH_TEXT = re.compile(r"invalid api key|unauthori[sz]ed|authentication failed", re.IGNORECASE)
@@ -148,6 +145,22 @@ def _stop_reason(status: int | None, text: str) -> str | None:
     if _QUOTA_TEXT.search(text):
         return "quota"
     return None
+
+
+def _response_data(text: str) -> dict[str, Any]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _usage_known(data: Mapping[str, object]) -> bool:
+    usage = data.get("usage")
+    return isinstance(usage, dict) and all(
+        type(usage.get(key)) is int and usage[key] >= 0
+        for key in ("prompt_tokens", "completion_tokens")
+    )
 
 
 def create_httpx_transport() -> FetchFunction:
@@ -340,6 +353,8 @@ class AcceptanceLedger:
                 "reasoning_effort": body.get("reasoning_effort"),
                 "thinking": body.get("thinking"),
                 "stream": body.get("stream"),
+                "session_id": next((value for key, value in request.headers.items()
+                                    if key.lower() == "x-opencode-session"), None),
             },
             output_cap=cap, input_estimate=estimate, cost_estimate=cost,
         )
@@ -390,12 +405,22 @@ class AcceptanceLedger:
     # ------------------------------------------------------------------ #
 
     def _observe_response(self, index: int, response: FetchResponse) -> None:
-        if response.status >= 400 or response.lines is None:
+        if response.status >= 400 or (
+            response.lines is None and not response.text.lstrip().startswith("data:")
+        ):
+            data = _response_data(response.text)
+            error_text = response.text if response.status >= 400 else (
+                json.dumps(data["error"]) if data.get("error") is not None else ""
+            )
             self._finish(index, response.status, complete=True,
-                         text=response.text, usage='"usage"' in response.text)
+                         text=error_text, usage=_usage_known(data))
             return
-        lines = response.lines
-        state = {"text": "", "usage": False}
+        async def buffered_lines() -> AsyncIterator[str]:
+            for line in response.text.splitlines():
+                yield line
+
+        lines = response.lines if response.lines is not None else buffered_lines()
+        state = {"error": "", "usage": False}
         finished = [False]
 
         def finish(complete: bool) -> None:
@@ -403,16 +428,20 @@ class AcceptanceLedger:
                 return
             finished[0] = True
             self._finish(index, response.status, complete=complete,
-                         text=state["text"], usage=state["usage"])
+                         text=state["error"], usage=state["usage"])
 
         async def watched_lines() -> AsyncIterator[str]:
             try:
                 async for line in lines:
-                    if '"usage"' in line:
-                        state["usage"] = True
-                    remaining = _MAX_BODY - len(state["text"])
-                    if remaining > 0:
-                        state["text"] += line[:remaining]
+                    if line.startswith("data:"):
+                        data = _response_data(line[5:].strip())
+                        if isinstance(data.get("usage"), dict):
+                            state["usage"] = _usage_known(data)
+                        if data.get("error") is not None:
+                            state["error"] = json.dumps(data["error"])
+                            stop = _stop_reason(response.status, state["error"])
+                            if stop is not None:
+                                self._stop(stop)
                     # The adapter stops reading at the terminal marker, so the
                     # completion has to be recorded before it is yielded; a
                     # response that ends without the marker is also complete.
@@ -428,6 +457,8 @@ class AcceptanceLedger:
     def _finish(self, index: int, status: int, *, complete: bool, text: str, usage: bool) -> None:
         if status >= 400:
             outcome = "http_error"
+        elif text:
+            outcome = "provider_error"
         elif complete:
             outcome = "ok"
         else:

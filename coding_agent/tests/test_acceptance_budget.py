@@ -11,6 +11,7 @@ import json
 from io import StringIO
 from pathlib import Path
 
+import pytest
 from acceptance_budget import (
     AcceptanceLedger,
     ModelPrice,
@@ -127,6 +128,46 @@ async def test_reserves_the_send_and_injects_the_explicit_output_cap(tmp_path: P
     assert ledger.snapshot()["remaining_sends"] == 59
 
 
+@pytest.mark.parametrize("usage, known", [
+    (None, False), ({"prompt_tokens": 12}, False),
+    ({"prompt_tokens": 0, "completion_tokens": 0}, True),
+])
+async def test_usage_known_requires_complete_numeric_counts(tmp_path: Path, usage, known) -> None:
+    inner = RecordingFetch(sse_response({
+        "choices": [{"delta": {"content": "done"}, "finish_reason": "stop"}],
+        "usage": usage,
+    }))
+    ledger = make_ledger(tmp_path)
+    code, _, _ = await run_chain(make_host(tmp_path, ledger.guarded_fetch(inner)), "go")
+    assert code == EXIT_OK
+    result = next(record for record in records(ledger) if record["kind"] == "result")
+    assert result["usage_known"] is known
+    assert ledger.sends == 1 and ledger.output_cap_tokens == 4096
+
+
+async def test_account_words_in_successful_content_do_not_stop_the_phase(tmp_path: Path) -> None:
+    inner = SequencedFetch(text_stream("The quota is sufficient"), text_stream("continue"))
+    ledger = make_ledger(tmp_path)
+    code, stdout, _ = await run_chain(make_host(tmp_path, ledger.guarded_fetch(inner)), "go", "next")
+    assert code == EXIT_OK and stdout == "continue"
+    assert ledger.sends == 2 and ledger.stop_reason is None
+
+
+async def test_late_stream_account_error_stops_before_a_new_send(tmp_path: Path) -> None:
+    inner = RecordingFetch(line_stream_response(
+        "data: " + json.dumps({"choices": [{"delta": {"content": "a" * 20_000}}]}),
+        'data: {"error": {"message": "subscription quota exceeded"}}',
+        "data: [DONE]",
+    ))
+    ledger = make_ledger(tmp_path)
+    await run_chain(make_host(tmp_path, ledger.guarded_fetch(inner)), "go")
+    assert ledger.stop_reason == "quota"
+    result = next(record for record in records(ledger) if record["kind"] == "result")
+    assert result["outcome"] == "provider_error" and result["usage_known"] is False
+    await run_chain(make_host(tmp_path, ledger.guarded_fetch(inner)), "next")
+    assert len(inner.requests) == 1
+
+
 async def test_vision_payload_contributes_to_the_input_estimate(tmp_path: Path) -> None:
     from support import png_bytes
 
@@ -169,6 +210,10 @@ async def test_tool_continuation_counts_each_send(tmp_path: Path) -> None:
     assert len(inner.requests) == 2
     assert ledger.sends == 2
     assert [record["output_cap"] for record in records(ledger) if record["kind"] == "send"] == [4096, 4096]
+    session_ids = [record["parameters"]["session_id"]
+                   for record in records(ledger) if record["kind"] == "send"]
+    assert session_ids[0] and session_ids[0] == session_ids[1]
+    assert session_ids == [request.headers["x-opencode-session"] for request in inner.requests]
 
 
 async def test_retry_counts_each_actual_send(tmp_path: Path) -> None:
