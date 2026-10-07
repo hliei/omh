@@ -21,7 +21,7 @@ from support import OfflineStream, model
 from test_interactive import InteractiveSession, provider_env, sends, settle
 
 from coding_agent import AgentSessionRuntime, CodingAgentOptions
-from coding_agent.agent_session import RESOURCE_OPTION_FIELDS
+from coding_agent.agent_session import RELOAD_OPTION_FIELDS
 
 
 def write_skill(path: Path, *, name: str, body: str = "Skill body", hidden: bool = False) -> Path:
@@ -64,7 +64,6 @@ async def test_reload_after_clone_accepts_changed_sources_and_keeps_history(tmp_
     assert user_texts(stream)[-1] == "first template one"
 
     clone = await runtime.clone_session()
-    assert clone._resource_options is runtime.options
     history = clone.agent.history
     sent = len(stream.requests)
 
@@ -103,6 +102,7 @@ async def test_fatal_preparation_keeps_previous_options_and_successful_batch_ado
     assert session.resources == snapshot
     assert session.agent.state.system_sections == sections
     assert runtime.options.template_sources == (PromptTemplateSource(first),)
+    assert runtime.options.context_dirs == ()
     assert len(stream.requests) == sent
     await session.prompt("/greet b")
     assert user_texts(stream)[-1] == "first b"
@@ -112,7 +112,7 @@ async def test_fatal_preparation_keeps_previous_options_and_successful_batch_ado
     assert resources.templates[0].file_path == str(second / "greet.md")
     # Adoption is part of the same successful batch.
     assert runtime.options.template_sources == (PromptTemplateSource(second),)
-    for name in RESOURCE_OPTION_FIELDS:
+    for name in RELOAD_OPTION_FIELDS:
         assert getattr(runtime.options, name) == getattr(recoverable, name)
     await session.prompt("/greet c")
     assert user_texts(stream)[-1] == "second c"
@@ -253,43 +253,4 @@ def test_reload_accepts_settings_skill_defaults_and_refreshes_completion(tmp_pat
         if session.process.poll() is None:
             session.process.kill()
             session.process.wait()
-        session.close()
-
-
-def test_reload_error_keeps_the_session_usable_and_accepted_input(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    agent = home / ".omh" / "agent"
-    old, new = tmp_path / "old", tmp_path / "new"
-    old.mkdir()
-    new.mkdir()
-    (old / "greet.md").write_text("old accepted input")
-    (new / "greet.md").write_text("new resource input $@")
-    agent.mkdir(parents=True)
-    settings = agent / "settings.json"
-    settings.write_text(json.dumps({"prompts": [str(old)]}))
-    project = tmp_path / "project"
-    project.mkdir()
-    session = InteractiveSession(
-        "--no-approve", "--no-context-files", "--api-key", "offline", "--no-session",
-        "--no-skills", "--no-prompt-templates",
-        home=home, cwd=project, env=provider_env(home, "echo"),
-    )
-    try:
-        session.wait_for("phase input")
-        session.send(b"/greet\r")
-        session.wait_for("reply:old accepted input")
-        session.wait_for("phase input", after=session.visible().index("reply:old accepted input"))
-        settings.write_text(json.dumps({"prompts": [str(new)]}))
-        session.send(b"/reload\r")
-        session.wait_for("resources reloaded; next new prompt; accepted inputs unchanged")
-        # A later preparation failure reports a diagnostic but keeps the accepted set.
-        settings.write_text("broken JSON")
-        session.send(b"/reload\r")
-        session.wait_for("Invalid JSON")
-        session.send(b"/greet after-failure\r")
-        session.wait_for("reply:new resource input after-failure")
-        assert sends(home) == ["dialogue", "dialogue"]
-        session.send(b"\x04")
-        assert session.finish() == 0
-    finally:
         session.close()

@@ -174,8 +174,10 @@ sections and executable tools. It does not run a model or commit history by
 itself. Passing prepared `CodingAgentOptions` (the installed host builds a
 candidate from current trust, settings, `SYSTEM`/`APPEND_SYSTEM` files, source
 arrays and tool selection) prepares AGENTS, system, skills, templates and tool
-snippets as one batch; the candidate's resource fields replace the live session
-and runtime options only after the whole batch loads. A fatal preparation
+snippets as one batch; the candidate's reload fields (resource sources, system
+inputs, context directories, agent dir, tiers, context-file switch, tool
+selection and image limits) replace the live session and runtime options only
+after the whole batch loads. A fatal preparation
 failure therefore keeps the previous resources, sections, tools and options;
 recoverable read/parse problems stay in the published diagnostics while the
 usable set is accepted. `session.resources.diagnostics` retains path, source and

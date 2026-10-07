@@ -170,12 +170,11 @@ def describe_diagnostic(diagnostic: ApplicationDiagnostic) -> str:
         diagnostic.reason, diagnostic.message,
         f"source {diagnostic.source}", f"path {diagnostic.path}",
     ]
-    winner = getattr(diagnostic, "winner", None)
-    loser = getattr(diagnostic, "loser", None)
-    if winner is not None:
-        parts.append(f"winner {winner.name} ({winner.source})")
-    if loser is not None:
-        parts.append(f"loser {loser.name} ({loser.source})")
+    if isinstance(diagnostic, (SkillDiagnostic, PromptTemplateDiagnostic)):
+        if diagnostic.winner is not None:
+            parts.append(f"winner {diagnostic.winner.name} ({diagnostic.winner.source})")
+        if diagnostic.loser is not None:
+            parts.append(f"loser {diagnostic.loser.name} ({diagnostic.loser.source})")
     return "; ".join(parts)
 
 

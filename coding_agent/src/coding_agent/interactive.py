@@ -33,6 +33,9 @@ from omh.agent import (
     CustomAgentMessage,
     MessageHistoryEntry,
     PrepareRequestContext,
+    ProjectContextFile,
+    PromptTemplate,
+    Skill,
     validate_history,
 )
 from omh.agent.conversation.history import history_path
@@ -2805,11 +2808,10 @@ def _last_assistant_text(runtime: AgentSessionRuntime | None) -> str:
 
 def _resource_summary(resources: ApplicationResources) -> str:
     """Name each loaded resource tier so its composition stays inspectable."""
-    def counts(items: Sequence[object]) -> str:
+    def counts(items: Sequence[ProjectContextFile | Skill | PromptTemplate]) -> str:
         grouped: dict[str, int] = {}
         for item in items:
-            source = str(getattr(item, "source", "unknown"))
-            grouped[source] = grouped.get(source, 0) + 1
+            grouped[item.source] = grouped.get(item.source, 0) + 1
         return ", ".join(f"{source} {count}" for source, count in sorted(grouped.items())) or "none"
     return (
         f"resources context files {counts(resources.context_files)}; "
