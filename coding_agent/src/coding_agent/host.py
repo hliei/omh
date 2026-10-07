@@ -227,15 +227,24 @@ class CodingAgentHost:
         """
         return self._trust_unknown and self._project_resources(self._settings_cwd)
 
-    def remember_trust(self, decision: TrustDecision, *, cwd: str | Path | None = None) -> None:
+    def remembered_trust(self, cwd: str | Path) -> TrustDecision | None:
+        """Inspect the remembered decision through this host's trust store."""
+        return self._trust_store.decision(cwd)
+
+    def remember_trust(
+        self, decision: TrustDecision, *, cwd: str | Path | None = None, refresh: bool = True,
+    ) -> None:
         """Persist a project trust decision and refresh the effective layer.
 
         An explicit ``cwd`` for another project only records the decision; the
         current session's settings and system inputs stay untouched.
+        With ``refresh=False``, only the remembered decision changes; selection
+        or resource preparation must explicitly refresh the effective layer.
         """
+        # Interactive edits defer resource admission until an idle reload.
         target = Path(cwd).expanduser().resolve() if cwd is not None else self._settings_cwd
         self._trust_store.remember(target, decision)
-        if target == self._settings_cwd:
+        if refresh and target == self._settings_cwd:
             self._refresh_settings(target, [])
 
     @property

@@ -41,6 +41,10 @@ class CommandSpec:
 
     def argument_items(self, prefix: str, sources: CompletionSources) -> Sequence[CompletionItem]:
         """Return valid arguments for this command before the cursor."""
+        if self.argument_source == "trust":
+            return tuple(CompletionItem(value=value, label=value) for value in ("approve", "deny") if value.startswith(prefix))
+        if self.argument_source == "providers":
+            return tuple(CompletionItem(value=value, label=value) for value in ("deepseek", "opencode-go") if value.startswith(prefix))
         if self.argument_source in {"model", "thinking", "tools", "settings"}:
             source = self.argument_source
             base, fragment = "", prefix
@@ -133,6 +137,9 @@ AVAILABLE_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("thinking", "Choose an effective thinking level for the next request", "/thinking [level]", max_arguments=1, argument_help="one of the selected model's effective levels", argument_source="thinking"),
     CommandSpec("tools", "Choose current model tools; user shell stays available", "/tools [read,bash,edit,write | none]", max_arguments=1, argument_help="distinct tool subset, or none", argument_source="tools"),
     CommandSpec("settings", "View or edit current choices or explicit scoped defaults", "/settings [current | global | project] [field value]", max_arguments=None, argument_help="default current; persistent edits name a scope and target; see configuration guide", argument_source="settings"),
+    CommandSpec("trust", "View or remember current project resource authorization", "/trust [approve | deny]", max_arguments=1, argument_help="resource loading only; run /reload when idle to apply", argument_source="trust"),
+    CommandSpec("login", "View key sources or configure a global API key", "/login [deepseek | opencode-go]", max_arguments=1, argument_help="provider; hidden key input, no verification request", argument_source="providers"),
+    CommandSpec("logout", "Delete the saved global key and show the effective source", "/logout [deepseek | opencode-go]", max_arguments=1, argument_help="provider; default current provider", argument_source="providers"),
     CommandSpec("reload", "Accept resource defaults for the next new prompt when idle", "/reload"),
     CommandSpec("hotkeys", "Show the default keyboard shortcuts", "/hotkeys"),
     CommandSpec("copy", "Copy the last assistant answer", "/copy"),

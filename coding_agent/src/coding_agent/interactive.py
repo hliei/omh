@@ -49,6 +49,7 @@ from omh.agent.execution.events import (
     TurnStartEvent,
 )
 from omh.llm import get_supported_thinking_levels
+from omh.llm.auth.types import ApiKeyCredential
 from omh.llm.types import (
     AbortController,
     AbortSignal,
@@ -126,6 +127,7 @@ from coding_agent.session_directory import (
 from coding_agent.session_manager import ExportFormat, SaveMode
 from coding_agent.terminal import EXIT_OK
 from coding_agent.theme import resolve_theme
+from coding_agent.trust import TRUST_FILE
 from coding_agent.user_shell import UserShell
 
 
@@ -235,6 +237,9 @@ class _Session:
         self._completion: Completion | None = None
         self._phase = "input"
         self._chooser = "prompt"
+        self._login_provider: str | None = None
+        self._secret = ""
+        self._trust_answer: asyncio.Future[bool | None] | None = None
         self._request_block: str | None = None
         self._unresolved_selection: SessionSelection | None = None
         self._thinking_open = False
@@ -443,6 +448,30 @@ class _Session:
         self, selection: SessionSelection, *, derivation: _DerivationRequest | None = None,
     ) -> None:
         assert self.host is not None
+        if selection.cwd is not None and self.host.needs_trust_decision:
+            self._trust_answer = asyncio.get_running_loop().create_future()
+            self._add(f"Trust project configuration and resources? {selection.cwd} [y] approve / [n] deny; Escape skips without remembering. AGENTS and explicit/global resources stay available. This is not tool approval or a sandbox.")
+            self._redraw()
+            self._start_reader()
+            try:
+                approved = await self._trust_answer
+            except asyncio.CancelledError:
+                raise
+            else:
+                if approved is None:
+                    self._add("trust skipped; automatic project resources remain unloaded; use /trust later")
+                else:
+                    self.host.remember_trust("approved" if approved else "denied", cwd=selection.cwd)
+                    self._add(f"trust {'approved' if approved else 'denied'} for {selection.cwd}")
+                tools = () if self.args.no_tools else self.args.tools
+                if derivation is not None:
+                    selection = self.host.select_new(cwd=selection.cwd, model=f"{selection.model.provider}/{selection.model.id}" if selection.model else None, thinking=selection.thinking_level, tools=selection.tools)
+                elif selection.session_path is not None and selection.history is not None:
+                    selection = self.host.select_open(selection.session_path, cwd=selection.cwd, provider=self.args.provider, model=self.args.model, thinking=self.args.thinking, tools=tools)
+                else:
+                    selection = self.host.select_new(cwd=selection.cwd, provider=self.args.provider, model=self.args.model, thinking=self.args.thinking, tools=tools)
+            finally:
+                self._trust_answer = None
         self._unresolved_selection = selection
         diagnostics = await self.host.readiness(selection)
         for diagnostic in diagnostics:
@@ -607,6 +636,17 @@ class _Session:
         self._redraw()
 
     def _handle_key(self, key: Key) -> None:
+        if self._trust_answer is not None and not self._trust_answer.done():
+            if key.value.lower() in {"y", "n"}:
+                self._trust_answer.set_result(key.value.lower() == "y")
+            elif key.name in {"escape", "ctrl_c"}:
+                self._trust_answer.set_result(None)
+            elif key.name == "ctrl_d":
+                self._request_exit(EXIT_OK)
+            return
+        if self._login_provider is not None:
+            self._login_key(key)
+            return
         if key.name != "escape":
             self._escape_at = 0.0
         if self._model_selector is not None:
@@ -1525,6 +1565,10 @@ class _Session:
                 self._show_current_settings()
             else:
                 self._start_preference(spec.name, argument)
+        elif spec.name == "trust":
+            self._trust_command(argument)
+        elif spec.name in {"login", "logout"}:
+            self._auth_command(spec.name, argument)
         elif spec.name == "settings":
             self._settings_command(argument)
         elif spec.name == "reload":
@@ -1555,6 +1599,99 @@ class _Session:
                 self._add("notice session management is already in progress")
                 return
             self._management_task = asyncio.create_task(self._save_command(spec.name, argument))
+
+    def _trust_command(self, argument: str) -> None:
+        if self.host is None:
+            self._add("notice configuration is unavailable")
+            return
+        if argument not in {"", "approve", "deny"}:
+            self._add("notice usage: /trust [approve | deny]; nothing was sent")
+            return
+        cwd = self._cwd()
+        try:
+            if argument:
+                self.host.remember_trust("approved" if argument == "approve" else "denied", cwd=cwd, refresh=False)
+                self._add(f"trust {'approved' if argument == 'approve' else 'denied'} remembered for {cwd}; run /reload when idle; next new prompt; current resources and accepted inputs unchanged")
+            decision = self.host.remembered_trust(cwd)
+            override = "--approve" if self.args.approve else "--no-approve" if self.args.no_approve else "none"
+            self._add(f"trust project {cwd}; remembered {decision or 'unknown'}; run override {override}; prepared layer {'approved' if self.host.project_trusted else 'denied'}")
+            self._add("/trust approve or /trust deny; AGENTS and explicit/global resources are independent. Trust is resource loading authorization, not tool approval or a sandbox.")
+            if argument and override != "none":
+                self._add(f"notice {override} takes precedence for this run; restart without it to use the remembered decision")
+        except Exception as error:
+            self._add(f"notice trust write/read failed: {error}; inspect {self.host.agent_dir / TRUST_FILE} before retrying")
+
+    def _auth_command(self, command: str, provider: str) -> None:
+        if self.host is None:
+            self._add("notice configuration is unavailable")
+            return
+        if provider and provider not in {"deepseek", "opencode-go"}:
+            self._add("notice choose deepseek or opencode-go; API keys only; nothing was sent")
+            return
+        if self._closing or (self._management_task is not None and not self._management_task.done()):
+            self._add("notice session management is in progress")
+            return
+        if command == "login" and provider:
+            self._login_provider = provider
+            self._secret = ""
+            self._add(f"API key for {provider} (hidden); Enter saves globally; Escape cancels. No verification request.")
+        else:
+            session = self._current_session()
+            if command == "logout" and not provider:
+                if session is None:
+                    self._add("notice choose /logout deepseek or /logout opencode-go")
+                    return
+                provider = session.agent.state.model.provider
+            self._management_task = asyncio.create_task(self._credentials(command, provider))
+
+    def _login_key(self, key: Key) -> None:
+        provider = self._login_provider
+        assert provider is not None
+        if key.name in {"escape", "ctrl_c", "ctrl_d"}:
+            self._secret = ""
+            self._login_provider = None
+            self._add("login cancelled; key unchanged")
+        elif key.name == "enter":
+            secret = self._secret.strip()
+            if not secret or any(character.isspace() for character in secret):
+                self._add("notice API key must be a nonempty single value; input stays hidden")
+                return
+            self._secret = ""
+            self._login_provider = None
+            self._management_task = asyncio.create_task(self._credentials("save", provider, secret))
+        elif key.name == "backspace":
+            self._secret = self._secret[:-1]
+        elif key.name is None:
+            self._secret += key.value
+        self._redraw()
+
+    async def _credentials(self, command: str, provider: str, secret: str = "") -> None:
+        assert self.host is not None
+        try:
+            if command == "save":
+                await self.host.credentials.modify(provider, lambda _: ApiKeyCredential(key=secret))
+                self._add(f"saved global API key for {provider} to {self.host.credentials.path} (0600); account not verified")
+            elif command == "logout":
+                await self.host.credentials.delete(provider)
+                self._add(f"deleted saved global key for {provider}; environment and temporary override remain available")
+            for name in ((provider,) if provider else ("deepseek", "opencode-go")):
+                model = next(entry.model for entry in self.host.directory.listings() if entry.provider == name)
+                source = await self.host.key_source(model)
+                self._add(f"{name} key source: {source or 'none'}; account not verified")
+            if command == "login":
+                self._add("Configure with /login deepseek or /login opencode-go; API keys only")
+            session = self._current_session()
+            if session is not None:
+                state = session.agent.state
+                diagnostics = await self.host.readiness(SessionSelection(cwd=session.cwd, model=state.model, thinking_level=state.thinking_level))
+                self._request_block = next((item.message for item in diagnostics if item.blocking), None)
+                for item in diagnostics:
+                    self._add(f"notice {item.message}")
+        except Exception:
+            # A credential-store failure must never reflect the submitted key.
+            self._add(f"notice credential operation failed; inspect {self.host.credentials.path} permissions and JSON, then retry /login or /logout")
+        finally:
+            self._redraw()
 
     def _derivation_command(self, command: str, argument: str) -> None:
         if not self._management_idle():
@@ -2148,6 +2285,8 @@ class _Session:
                 self._add("phase cancel")
             elif message.stop_reason == "error" and message.error_message:
                 self._add(f"model error {message.error_message}")
+                if any(value in message.error_message.lower() for value in ("401", "403", "auth", "api key", "api_key", "unauthorized", "forbidden")):
+                    self._add(f"Authentication failed for {message.provider}; use /login {message.provider} to replace the global key, /login to inspect sources, or /model to choose another model. Temporary --api-key overrides saved keys; restart without it to use a replacement.")
 
     def _upsert_tool(
         self, tool_id: str, name: str, args: dict[str, object], state: str, output: str,
@@ -2371,6 +2510,10 @@ class _Session:
         return lines
 
     def _entry_layout(self, cols: int) -> tuple[list[str], int, int]:
+        if self._trust_answer is not None:
+            return _layout_entry("", width=cols, prefix="trust [y/n]> ", cursor=0)
+        if self._login_provider is not None:
+            return _layout_entry("[hidden]", width=cols, prefix="api-key> ", cursor=8)
         prefix = "directory> " if self._chooser == "cwd" else "> "
         return _layout_entry(self.editor.text, width=cols, prefix=prefix, cursor=self.editor.cursor)
 

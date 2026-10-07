@@ -300,6 +300,12 @@ def stream_fn(model, context, options):
             return stream
         emit_text(stream, output, f"reply:{user}")
         return stream
+    if SCENARIO == "auth-error":
+        if CALLS == 1:
+            emit_error(stream, output, "", "401 Unauthorized: invalid API key")
+        else:
+            emit_text(stream, output, f"reply:{user}")
+        return stream
     if SCENARIO == "error":
         if CALLS == 1:
             emit_error(stream, output, "kept visible", "provider rejected the turn")

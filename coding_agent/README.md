@@ -93,6 +93,14 @@ the model selector, Shift+Tab cycles effective thinking and Ctrl+S explicitly
 saves global thinking. Busy status separates the captured request from the next
 selection; selecting a model never sends a verification request.
 
+First startup stays in the interactive screen when no key is configured.
+Use `/login deepseek` or `/login opencode-go` for hidden global API key input;
+`/login` shows effective sources and `/logout [provider]` removes the saved key.
+Unknown project resource trust asks once and remembers `y`/`n`; `/trust` views
+or changes the decision. Apply later trust changes with `/reload` when idle.
+See [first configuration](docs/interactive.md#first-configuration-login-and-trust)
+for the complete journey and authentication repair steps.
+
 ## Create, run, save and reopen
 
 `CodingAgentHost` resolves configuration, credentials and the effective

@@ -31,6 +31,41 @@ an extra cue. `mode memory` is an in-memory session and stays `save pending`.
 `mode auto` is file-backed. `save pending`, `save saved` and `save unsaved`
 are the file states, separate from the mode.
 
+## First configuration, login and trust
+
+Start `omh` with no key and stay in the interface. When project resources need
+an unknown trust decision, choose `y` to approve or `n` to deny and remember it;
+Escape skips this time. Global and explicitly selected resources and inherited
+AGENTS remain available after denial. Trust controls automatic project loading;
+it does not grant tool approval or create a sandbox.
+
+```text
+/login
+/login opencode-go
+API key for opencode-go (hidden); Enter saves globally; Escape cancels.
+/login deepseek
+/model opencode-go/glm-5.3
+/trust
+/trust approve
+/reload
+/logout opencode-go
+```
+
+Enter the key only in hidden input. Login supports API keys for DeepSeek and
+OpenCode Go and writes global `auth.json` with mode 0600. `/login` displays the
+actual effective source and `/logout` deletes only the saved global key; an
+environment key or temporary CLI override can remain effective. Configuration,
+selection and startup never send a verification request or label the account
+verified. After a real authentication failure, configure a replacement with
+`/login`, inspect sources with `/login`, or explicitly choose another model.
+A temporary `--api-key` keeps winning until restarting without it.
+
+`/trust approve|deny` records a future loading decision even while busy. Run
+`/reload` when idle; resources join the next new prompt. The current request,
+accepted queued inputs, live model and cwd stay captured. One-run approval flags
+keep their precedence. See [credential commands](configuration.md#interactive-credential-commands)
+and [changing project trust](configuration.md#changing-project-trust).
+
 ## A turn
 
 Enter submits the editor when the session can accept work. This is one turn in
