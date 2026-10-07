@@ -254,6 +254,9 @@ A leading `/token` is dispatched before any request:
   The busy status shows the captured request separately from the next choice.
 - `/reload` accepts updated resource defaults when model and shell are idle;
   the next new prompt uses the new sections, while accepted inputs stay intact.
+- `/compact [instructions]` summarizes older context when the model and shell are
+  idle and the session is saved; see
+  [long conversations and usage](#long-conversations-compaction-and-usage).
 - `/attach [image-path | remove <n> | clear]` manages the pending image draft.
   Tab discovers paths and the available removal numbers.
 - `/new`, `/resume`, `/name`, `/session`, `/save`, `/export` and `/quit` provide
@@ -266,6 +269,35 @@ A leading `/token` is dispatched before any request:
   request.
 
 Print mode has its own control syntax; it never runs these interactive commands.
+
+## Long conversations, compaction and usage
+
+Response retries and automatic compaction use the SDK's public policy; the
+product starts no second retry or summary loop. The Agent's default retry
+budget, backoff, threshold reserve, recent-token retention, and the one
+compact-and-retry allowance for an overflow or recoverable truncated response
+are defined by the [SDK Agent contract](../../docs/agent.md#dialogue-retries);
+summary requests keep their own budget. Configure `compaction` and `retry` in
+global or project settings; the change takes effect on a new or reopened
+session, and disabling automatic compaction leaves `/compact` available.
+
+`/compact [instructions]` summarizes older context when both the model and the
+user shell are idle and the session is saved. It appends a compaction record and
+refreshes effective context without deleting the original history. The screen
+shows `phase compact`, the manual result, a clear cancellation, or the failure
+message. A busy model or shell, a session needing saving, or an in-progress
+management command refuses the request without aborting anything; Escape cancels
+a running manual compaction. New user shells are refused while it runs.
+
+`/session` reports the current effective-context estimate against the model
+window, the complete recorded usage (input, output, cache read, cache write and
+summary tokens), and the effective compaction and retry policy. The context
+number is an estimate recomputed from the current history, so it is refreshed
+after a compaction or context edit. Recorded totals include histories copied by
+fork and clone, count reasoning separately from output, mark missing or partial
+usage as unknown, and are not a count of every billed attempt. The cost line is a
+catalog-rate estimate, not a bill or an account balance; Go usage is shown as
+recorded usage, never as a remaining subscription balance.
 
 ## External editor
 

@@ -8,6 +8,7 @@ not imported from here.
 from __future__ import annotations
 
 from omh.agent.agent import Agent
+from omh.agent.compaction.preparation import estimate_history_tokens
 from omh.agent.compaction.types import (
     CompactionFailure,
     CompactionResult,
@@ -274,6 +275,7 @@ __all__ = [
     "agent_loop",
     "agent_loop_continue",
     "clear_default_stream_fn",
+    "estimate_history_tokens",
     "get_default_stream_fn",
     "run_agent_loop",
     "run_agent_loop_continue",

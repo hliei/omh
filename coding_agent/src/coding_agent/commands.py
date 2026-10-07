@@ -171,6 +171,9 @@ AVAILABLE_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("export", "Back up full JSONL or active-path HTML",
                 "/export [--retained n] [jsonl | html] <path>", max_arguments=None,
                 argument_source="export", argument_help="optional retained number and format, then destination"),
+    CommandSpec("compact", "Summarize older context when the model and shell are idle",
+                "/compact [instructions]", max_arguments=None,
+                argument_help="optional focus instructions for the summary; original history is kept"),
     CommandSpec("quit", "Exit with history and draft protection", "/quit [--discard-unsaved]",
                 max_arguments=1, argument_source="quit", argument_help="explicitly abandon histories still needing saving"),
 )

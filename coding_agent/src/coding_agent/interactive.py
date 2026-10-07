@@ -29,6 +29,7 @@ from omh.agent import (
     AgentEvent,
     AgentHistory,
     AgentOptions,
+    CompactionFailure,
     CustomAgentMessage,
     MessageHistoryEntry,
     PrepareRequestContext,
@@ -52,6 +53,7 @@ from omh.llm import get_supported_thinking_levels
 from omh.llm.auth.types import ApiKeyCredential
 from omh.llm.types import (
     AbortController,
+    AbortError,
     AbortSignal,
     AssistantMessage,
     ImageContent,
@@ -128,6 +130,16 @@ from coding_agent.session_manager import ExportFormat, SaveMode
 from coding_agent.terminal import EXIT_OK
 from coding_agent.theme import resolve_theme
 from coding_agent.trust import TRUST_FILE
+from coding_agent.usage import (
+    context_estimate,
+    context_label,
+    context_short_label,
+    cost_label,
+    coverage_label,
+    policy_label,
+    recorded_usage,
+    usage_label,
+)
 from coding_agent.user_shell import UserShell
 
 
@@ -296,6 +308,9 @@ class _Session:
         self._done: asyncio.Event | None = None
         self._signals = 0
         self._restored = False
+        #: Last status-line context indicator keyed by the history/model shape
+        #: that produced it, so streaming redraws do not re-estimate a long history.
+        self._context_cache: tuple[tuple[object, ...], str] | None = None
 
     async def run(self) -> int:
         self._done = asyncio.Event()
@@ -1095,13 +1110,18 @@ class _Session:
 
     def _escape_action(self) -> None:
         """Recall queues and cancel the model first, then a still-running shell."""
+        session = self._current_session()
+        if session is not None and session.agent.state.activity_kind == "manual_compaction":
+            self._phase = "cancel"
+            self._add("phase cancel")
+            session.agent.abort()
+            return
         if self._management_task is not None and not self._management_task.done():
             if not self._management_task.cancelling():
                 self._management_task.cancel()
             else:
                 self._add("notice handoff continues; waiting for actual current")
             return
-        session = self._current_session()
         if session is not None and self._has_queued_inputs(session):
             self._recall_queued()
         if session is not None and session.agent.state.is_busy:
@@ -1574,6 +1594,14 @@ class _Session:
         elif spec.name == "reload":
             if self._management_idle():
                 self._start_preference("reload", "")
+        elif spec.name == "compact":
+            session = self._current_session()
+            if self._management_idle():
+                if session is not None and session.save_state == "unsaved":
+                    self._show_unsaved()
+                else:
+                    self._busy = True
+                    self._management_task = asyncio.create_task(self._compact_command(argument))
         elif spec.name == "attach":
             self._attach_command(argument)
         elif spec.name == "session":
@@ -1896,7 +1924,15 @@ class _Session:
                         f"entry {source.entry_id or '(none)'} path {source.path or 'memory'}")
         if session.save_error is not None:
             self._print(f"save error {session.save_error}")
-        self._print("usage unknown")
+        history = session.agent.history
+        self._print(context_label(context_estimate(history, session.agent.state.model)))
+        if self.runtime is not None:
+            agent_options = self.runtime.options.agent_options
+            self._print(policy_label(agent_options.compaction, agent_options.retry))
+        usage = recorded_usage(history)
+        self._print(usage_label(usage))
+        self._print(cost_label(usage))
+        self._print(coverage_label(usage))
         for diagnostic in session.resources.diagnostics:
             self._print(f"resource {diagnostic}")
         assert self.runtime is not None
@@ -1910,6 +1946,36 @@ class _Session:
             if old.save_error is not None:
                 self._print(f"retained {number} save error {old.save_error}")
         self._print("Recovery: /save --retained <n> [path] or /export --retained <n> jsonl <path>")
+
+    async def _compact_command(self, argument: str) -> None:
+        """Summarize older context on the idle current session and keep history."""
+        session = self._current_session()
+        try:
+            if session is None:
+                raise ValueError("No current session")
+            result = await session.compact(argument.strip() or None)
+            self._add(
+                f"compacted {result.tokens_before} -> {result.estimated_tokens_after} estimated tokens; "
+                "older context summarized, original history kept"
+            )
+        except asyncio.CancelledError:
+            raise
+        except CompactionFailure as error:
+            if error.code == "aborted":
+                self._phase = "cancel"
+                self._add("notice compact canceled; original history kept")
+            else:
+                self._add(f"notice compact: {error}")
+        except AbortError:
+            self._phase = "cancel"
+            self._add("notice compact canceled; original history kept")
+        except Exception as error:
+            if session is not None and session.save_state == "unsaved":
+                self._add("notice compact: summary committed but saving failed; see the save notice")
+            else:
+                self._add(f"notice compact: {error}")
+        finally:
+            self._settle_activity()
 
     async def _save_command(self, command: str, argument: str) -> None:
         session = self._current_session()
@@ -2125,12 +2191,8 @@ class _Session:
             self._add(f"notice {error}")
         finally:
             self._pending_you = None
-            self._busy = False
-            self._remember_save()
             self._show_input_diagnostics(before)
-            if not self._closing:
-                self._set_phase("input")
-            self._redraw()
+            self._settle_activity()
 
     def _restore_rejected(self, text: str, pending: tuple[PendingAttachment, ...]) -> None:
         """Return a rejected prompt's text and images to the editable draft."""
@@ -2153,6 +2215,14 @@ class _Session:
         session = self._current_session()
         if session is not None and session.save_state == "unsaved":
             self._show_unsaved()
+
+    def _settle_activity(self) -> None:
+        """Return the shared UI to input after a prompt or management activity."""
+        self._busy = False
+        self._remember_save()
+        if not self._closing:
+            self._set_phase("input")
+        self._redraw()
 
     def _show_unsaved(self) -> None:
         self._add(f"notice {_UNSAVED_GUIDANCE}")
@@ -2614,7 +2684,19 @@ class _Session:
             + (f"request {self._request_selection} | next {model} thinking {thinking} tools {self._tool_names()} | " if self._busy and self._request_selection else "")
             +             f"cwd {cwd} | path {path} | pending {len(self._draft)} | shell {shell}"
             + (f" | retained unsaved {retained} (/session)" if retained else "")
+            + f" | {self._context_status(session)}"
         )
+
+    def _context_status(self, session: AgentSession | None) -> str:
+        """Compact context indicator, cached until history or model changes."""
+        if session is None:
+            return "context n/a"
+        model = session.agent.state.model
+        key = (len(session.agent.history.entries), model.provider, model.id, model.context_window)
+        if self._context_cache is None or self._context_cache[0] != key:
+            label = context_short_label(context_estimate(session.agent.history, model))
+            self._context_cache = (key, label)
+        return self._context_cache[1]
 
     def _queued_status(self, session: AgentSession | None) -> str:
         """Preview waiting steering and follow-up inputs for the status line."""

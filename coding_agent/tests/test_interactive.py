@@ -1056,7 +1056,7 @@ def test_copy_and_slash_copy_use_an_available_backend(home: Path, tmp_path: Path
         session.close()
 
 
-def test_builtin_arguments_reserved_names_and_unknown_slash(home: Path, tmp_path: Path) -> None:
+def test_builtin_arguments_and_unknown_slash(home: Path, tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     session = InteractiveSession(
@@ -1068,8 +1068,9 @@ def test_builtin_arguments_reserved_names_and_unknown_slash(home: Path, tmp_path
         session.wait_for("phase input")
         session.send(b"/copy extra\r")
         session.wait_for("takes no arguments")
+        # A manual compact on an empty history fails explicitly without a request.
         session.send(b"/compact\r")
-        session.wait_for("reserved for a later delivery")
+        session.wait_for("Nothing to compact")
         time.sleep(0.3)
         session._pump(0.1)
         assert sends(home) == []
