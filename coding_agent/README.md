@@ -6,6 +6,12 @@ installable distribution is `omh-coding-agent`; its Python import is
 does not install this application or its command. Python 3.14 on macOS or
 Linux is required.
 
+Install the CLI with the repository's [installer](../install.sh):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hliei/omh/main/install.sh | sh
+```
+
 Start with the [installed-command walkthrough](docs/getting-started.md) for
 installation, first configuration, a coding conversation, scripted output,
 cross-mode continuation and recovery without Python assembly code.

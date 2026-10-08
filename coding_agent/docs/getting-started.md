@@ -11,6 +11,27 @@ distinguishes implemented routes from completed live verification.
 
 ## Install and inspect
 
+Install the CLI on macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hliei/omh/main/install.sh | sh
+omh --version
+omh --help
+omh --list-models
+```
+
+The [installer](../../install.sh) requires `curl` and `git`, installs uv if
+needed, and uses Python 3.14 in an isolated uv tool environment. uv downloads
+Python when no matching interpreter is available. The application and SDK
+are installed from the same commit on `main`; external dependencies are
+resolved at installation time. If the command directory is outside PATH,
+apply the printed `export PATH=...` instruction and add it to your shell
+configuration for future terminals. Rerun the installer to update;
+`uv tool uninstall omh-coding-agent` removes the CLI. If uv was also installed
+outside PATH, it is available at `~/.local/bin/uv`.
+
+### Manual installation from source
+
 Use standard CPython 3.14 on macOS or Ubuntu 24.04. Build the two distributions
 from a source checkout, then install their wheels in a virtual environment
 outside that checkout:
