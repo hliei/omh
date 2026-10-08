@@ -200,10 +200,16 @@ any working directory when given its absolute path after installing both package
 
 CI builds each project's sdist and then its wheel, checks distribution contents
 and the application's SDK dependency, and runs the application tests and this
-example from outside the repository with imports from `site-packages`. SDK tests
-run against their independent installation too. Separate quality jobs run Ruff,
+example from outside the repository with imports from `site-packages`. The
+[installed journey tests](tests/test_product_acceptance.py) also take real
+four-tool changes through clone, resource reload and print continuation without
+replaying old tools. Failed or signal-cancelled print histories continue through
+interactive and strict JSON with their original identity and records intact.
+SDK tests run against their independent installation too. Separate quality jobs run Ruff,
 mypy and offline tests on macOS and Ubuntu 24.04, including file and process
-cancellation. These checks validate the Python embedding APIs; they make no
+cancellation. These checks validate the Python embedding APIs and installed
+CLI/PTY behavior; actual terminal and desktop clipboard checks remain separate.
+They make no
 live-provider or performance claim. Whether the two providers and eight target
 combinations have actually been exercised live is recorded separately in the
 [live provider support record](docs/model-support.md).
