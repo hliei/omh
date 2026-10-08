@@ -37,8 +37,8 @@ installed command in a small temporary repository: `read`, `edit`, `write` and
 | `opencode-go/kimi-k2.7-code` | text, image | fixed on, no adjustable level | no |
 | `opencode-go/deepseek-v4.1-flash` | text, image | low, high, max | no |
 | `opencode-go/deepseek-v4-pro` | text | high, max | no |
-| `deepseek/deepseek-flash` | text, image | low, high, max | no |
-| `deepseek/deepseek-v4-pro` | text | high, max | no |
+| `deepseek/deepseek-flash` | text, image | low, high, max | yes, 2026-10-08 |
+| `deepseek/deepseek-v4-pro` | text | high, max | yes, 2026-10-08 |
 
 `Live-verified` is `no` until a real task has exercised the combination under
 the shared acceptance ledger. Recording a readiness check, a configured key or
@@ -52,6 +52,39 @@ The five candidate vision targets are `opencode-go/glm-5.3-flash`,
 receive the actual PNG content (not only a path) and keep the attached image
 across save and reopen before this product calls it vision-verified. The
 remaining three combinations declare text input only.
+
+## Direct-provider execution record
+
+On 2026-10-08, an independently installed version 0.1.0 command on macOS with
+standard CPython 3.14 completed the coding task and saved-history continuation
+for both direct DeepSeek models. The command used `--mode json`, the explicit
+provider/model, a separate temporary Git project and session directory, then
+`-c` for continuation. Each model used the effective `high` thinking selection.
+The real tool sequence was `read`, `edit`, `write`, `bash`; `values.txt` changed
+from `1` to `2`, `result.txt` contained `2`, and the shell assertion passed.
+After closing and reopening, only a new `read` ran and the same identity and
+original saved history remained:
+
+| Direct model | Coding and reopen | Conversation identity |
+| --- | --- | --- |
+| `deepseek-flash` | passed | `01a1196c-2cd7-70dc-99b5-9db874dd0d35` |
+| `deepseek-v4-pro` | passed | `01a1196e-78e2-729a-bd7e-f71be05d97c4` |
+
+Direct Flash also received an actual PNG showing a red square, saved its image
+content and continued after the source PNG was deleted. Request inspection
+confirmed the same saved image data on reopen. The first image answer used
+tools to decode the PNG, so an additional fresh `--no-tools` conversation with
+the same image isolated vision: it identified a red filled square without tool
+calls. A separate explicit `low` thinking request was accepted with the actual
+`reasoning_effort=low` parameter, alongside the coding task's effective `high`. Pro also completed an explicit
+`max` request, with `reasoning_effort=max` recorded, as its alternative to `high`.
+
+All 23 actual HTTP sends used the original acceptance ledger and a 4096 output
+cap; every response reported usage. Conservative reserved cost was USD 0.213823,
+with no budget/account stop. These are finite task observations. OpenCode Go's
+six routes, four additional vision targets, fixed/single-level thinking and
+the complete default Go-model journey remain unverified. Actual terminal and
+desktop clipboard acceptance also remain separate.
 
 ## Thinking behavior
 
