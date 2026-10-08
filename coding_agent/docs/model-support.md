@@ -129,8 +129,9 @@ All sent responses reported usage. The next 4096-cap send would have brought
 the cap total to 192,512, above the 192,000 limit, and was refused before HTTP.
 The run stopped with 3584 cap tokens remaining, even though 14 attempts and
 USD 4.575686 reserved-cost headroom remained. No budget was reset, cap lowered,
-or unfinished route marked passed. The full provider and product acceptance
-remains incomplete.
+or unfinished route marked passed. This acceptance run was subsequently closed
+with the remaining live tasks and actual terminal/desktop checks waived. The
+support entries above retain their observed results.
 
 ## Thinking behavior
 
