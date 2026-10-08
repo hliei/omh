@@ -337,10 +337,15 @@ can occur after replacement.
 and prepared layer. `/trust approve` and `/trust deny` remember a decision in
 global `trust.json`. They leave accepted resources, current model, thinking,
 cwd, policies and expanded inputs in place, including while busy. Run `/reload`
-when the model, user shell and session preparation are idle to prepare resources;
-the next new prompt synchronizes the accepted system sections. A fatal reload
-failure retains the old resource snapshot. Existing history and accepted inputs
-are never rewritten or expanded again.
+when the model, user shell and session preparation are idle to prepare AGENTS,
+system, skills, templates and tool snippets as one batch; the next new prompt
+synchronizes the accepted system sections. A fatal reload failure retains the
+old resource snapshot, sections, tools and options. Recoverable read/parse
+diagnostics stay visible with their source tier: `/reload` prints them and
+`/session` shows the source tier, winner and loser of a same-name collision. A
+template that reuses a built-in command name is diagnosed and never hides or
+replaces that built-in. Existing history and accepted inputs are never rewritten
+or expanded again.
 
 The explicit `--approve` / `--no-approve` flags still take precedence for that
 run, even after `/trust` records a different future decision. Restart without

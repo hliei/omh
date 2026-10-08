@@ -159,6 +159,25 @@ def _builtin_conflicts(templates: Sequence[PromptTemplate]) -> list[PromptTempla
     ]
 
 
+def describe_diagnostic(diagnostic: ApplicationDiagnostic) -> str:
+    """One readable line naming a resource diagnostic's source and collision sides.
+
+    Context diagnostics carry only path/source/reason/message; skill and
+    template diagnostics add the winning and losing resource so a user can see
+    which tier won and which path was masked.
+    """
+    parts = [
+        diagnostic.reason, diagnostic.message,
+        f"source {diagnostic.source}", f"path {diagnostic.path}",
+    ]
+    if isinstance(diagnostic, (SkillDiagnostic, PromptTemplateDiagnostic)):
+        if diagnostic.winner is not None:
+            parts.append(f"winner {diagnostic.winner.name} ({diagnostic.winner.source})")
+        if diagnostic.loser is not None:
+            parts.append(f"loser {diagnostic.loser.name} ({diagnostic.loser.source})")
+    return "; ".join(parts)
+
+
 def load_resources(
     options: "CodingAgentOptions", cwd: Path, tools: list[AgentTool],
 ) -> tuple[ApplicationResources, dict[str, str]]:

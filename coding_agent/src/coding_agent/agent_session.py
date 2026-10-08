@@ -61,6 +61,15 @@ class UnsupportedImageModelError(RuntimeError):
     """A new image attachment was rejected because the selected model is text-only."""
 
 
+#: Option fields an idle reload re-prepares and adopts as one batch.
+#: ``cwd``, ``model``, ``thinking_level`` and execution policies stay outside it.
+RELOAD_OPTION_FIELDS: tuple[str, ...] = (
+    "agent_dir", "context_dirs", "skill_sources", "template_sources",
+    "custom_prompt", "append_system_prompt", "resource_tiers",
+    "load_context_files", "tools", "image_limits",
+)
+
+
 @dataclass(slots=True)
 class CodingAgentOptions:
     cwd: str | Path | None = None
@@ -228,9 +237,14 @@ class AgentSession:
     def _vision_model_suggestions(self) -> list[str]:
         if self._resource_options is None:
             return []
+        candidates = [*self._resource_options.available_models]
+        current = self.agent.state.model
+        if current not in candidates:
+            # A derived session may fall back to a source model outside the
+            # directory list; keep it visible in the manual-choice guidance.
+            candidates.append(current)
         return [
-            f"{candidate.provider}/{candidate.id}"
-            for candidate in self._resource_options.available_models
+            f"{candidate.provider}/{candidate.id}" for candidate in candidates
             if "image" in candidate.input
         ]
 
@@ -284,14 +298,31 @@ class AgentSession:
         await self.agent.set_system_sections(sections)
         self._resource_options.tools = names
 
-    async def reload_resources(self) -> ApplicationResources:
-        """Load current options before publishing next-prompt sections and live tools."""
-        if self._resource_options is None:
+    async def reload_resources(self, options: CodingAgentOptions | None = None) -> ApplicationResources:
+        """Prepare one resource batch before publishing sections, tools and options.
+
+        ``options`` is an already resolved candidate, such as the host's freshly
+        assembled application options. Every resource loads before anything is
+        published, so a fatal preparation failure keeps the previous snapshot,
+        sections and tools. The candidate's reload fields (:data:`RELOAD_OPTION_FIELDS`)
+        replace the session's live options only after a successful load, which
+        shares the new sources with the runtime and later sessions. A recoverable
+        read or parse problem stays in the published diagnostics while usable
+        resources load. Passing no candidate re-prepares the session's current
+        options in place, which is what an embedding that already changed them
+        expects.
+        """
+        target = self._resource_options
+        if target is None:
             raise ValueError("Resource reload requires application options")
-        tools = _create_tools(self._resource_options.tools, self.cwd, image_limits=self._resource_options.image_limits)
-        resources, sections = load_resources(self._resource_options, self.cwd, tools)
+        candidate = options if options is not None else target
+        tools = _create_tools(candidate.tools, self.cwd, image_limits=candidate.image_limits)
+        resources, sections = load_resources(candidate, self.cwd, tools)
         await self.agent.set_system_sections(sections)
         await self.agent.set_tools(tools)
+        if candidate is not target:
+            for name in RELOAD_OPTION_FIELDS:
+                setattr(target, name, getattr(candidate, name))
         self.resources = resources
         return resources
 

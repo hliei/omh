@@ -206,12 +206,13 @@ captured choices. Write future defaults explicitly, for example
 `/settings current theme light` changes the current display only.
 
 `/trust approve` or `/trust deny` remembers project loading authorization.
-`/reload` accepts resource defaults while idle for the next new prompt.
-Skills use `/skill:<name>` and templates use `/<name>`; builtins take priority.
+`/reload` re-prepares AGENTS, system, skills, templates and tool snippets as one
+idle batch for the next new prompt; a busy reload is refused without canceling
+the running work, and a fatal preparation failure keeps the old resources.
+Skills use `/skill:<name>` and templates use `/<name>`; builtins take priority,
+and a same-name template is diagnosed instead of hiding the built-in.
 See [resources and trust](configuration.md#project-trust) for directories,
-source priority and system/append input. Complete resource reload and conflict
-acceptance is still pending; the command's presence and existing trust/default
-tests do not establish every reload behavior.
+source priority, conflict diagnostics and system/append input.
 
 Dark and light themes, `NO_COLOR=1`, `TERM=dumb`, narrow windows and resize
 have controlled PTY coverage. Actual terminal usability and desktop clipboard
