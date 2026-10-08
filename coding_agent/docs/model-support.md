@@ -31,11 +31,11 @@ installed command in a small temporary repository: `read`, `edit`, `write` and
 
 | Combination | Input | Thinking levels | Live-verified |
 | --- | --- | --- | --- |
-| `opencode-go/glm-5.3` | text | low, high, max | no |
+| `opencode-go/glm-5.3` | text | low, high, max | coding passed; reopen incomplete |
 | `opencode-go/glm-5.3-flash` | text, image | low, high, max | no |
 | `opencode-go/kimi-k3` | text, image | max | no |
 | `opencode-go/kimi-k2.7-code` | text, image | fixed on, no adjustable level | no |
-| `opencode-go/deepseek-v4.1-flash` | text, image | low, high, max | no |
+| `opencode-go/deepseek-v4.1-flash` | text, image | low, high, max | coding and reopen, 2026-10-08 |
 | `opencode-go/deepseek-v4-pro` | text | high, max | no |
 | `deepseek/deepseek-flash` | text, image | low, high, max | yes, 2026-10-08 |
 | `deepseek/deepseek-v4-pro` | text | high, max | yes, 2026-10-08 |
@@ -81,10 +81,56 @@ calls. A separate explicit `low` thinking request was accepted with the actual
 
 All 23 actual HTTP sends used the original acceptance ledger and a 4096 output
 cap; every response reported usage. Conservative reserved cost was USD 0.213823,
-with no budget/account stop. These are finite task observations. OpenCode Go's
-six routes, four additional vision targets, fixed/single-level thinking and
-the complete default Go-model journey remain unverified. Actual terminal and
-desktop clipboard acceptance also remain separate.
+with no budget/account stop. These are finite direct-provider observations.
+The later [Go execution record](#go-execution-record) continues the same ledger. Actual
+terminal and desktop clipboard acceptance remain separate.
+
+## Go execution record
+
+On 2026-10-08, the same installed command completed the coding task and
+saved-history continuation for `opencode-go/deepseek-v4.1-flash`, using effective
+`high` thinking. Its four tools changed `values.txt` from `1` to `2`, created
+`result.txt` containing `done`, and passed the shell assertion. Reopening kept
+identity `01a1199d-5830-7674-8d08-57604ad81645` and the original history; only a
+new `read` executed.
+
+That conversation also completed the default Go-model journey through the
+interactive and print entries. Interactive used all four tools to change the
+value to `3` and passed the test. Steering and follow-up were queued, recalled,
+and an active bash tool was cooperatively cancelled. A real manual `/compact`
+retained the full history and appended a summary record. For this small
+acceptance conversation, the isolated HOME configured the documented
+`compaction.keepRecentTokens=128` and disabled automatic compaction; the default
+20,000-token retention had correctly reported nothing to compact. The manual
+summary used two separately reserved sends. Text and strict JSON print then
+continued with the same identity and history, and the saved conversation
+reopened interactively. PTY terminal state was restored on exit; these runs
+provide no actual desktop or clipboard result.
+
+`opencode-go/glm-5.3` completed the four-tool coding task with `high` thinking:
+`values.txt` and `result.txt` contained `2`, and the assertion passed. Identity
+`01a119a8-3875-7749-afb5-189799949048` reopened and a new `read` completed, but
+the next model send was refused by the shared budget gate. Its complete reopen
+chain remains unverified.
+
+Go Flash received an actual PNG containing a red square in a fresh
+`--no-tools` conversation. It described a red inverted triangle, so this vision
+check failed. Saved-image continuation was not executed, and no repeated
+sampling was used to obtain a passing answer. The other three Go vision
+routes, four remaining Go coding routes, alternative Go thinking and
+fixed/single-level behavior remain unverified.
+
+All 23 Go sends used the Go Chat Completions route, an omh user-agent and the
+conversation's stable `x-opencode-session`, including summary and reopened
+requests. Combined with the earlier 23 direct sends, the original ledger now
+records 46 actual sends, 77,873 estimated input tokens, 188,416 sent output-cap
+tokens and USD 0.424314 conservatively reserved cost (USD 0.213823 direct).
+All sent responses reported usage. The next 4096-cap send would have brought
+the cap total to 192,512, above the 192,000 limit, and was refused before HTTP.
+The run stopped with 3584 cap tokens remaining, even though 14 attempts and
+USD 4.575686 reserved-cost headroom remained. No budget was reset, cap lowered,
+or unfinished route marked passed. The full provider and product acceptance
+remains incomplete.
 
 ## Thinking behavior
 
